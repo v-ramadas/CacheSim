@@ -27,26 +27,26 @@ void try_write(const ooo_model_instr inst, Cache *cache, const int64_t block_siz
     }
 }
 
-void histogram(const ooo_model_instr inst, std::map<uint64_t, uint64_t> &count, const uint64_t histogram_granularity, const uint64_t block_size) {
-    for (auto& smem:inst.source_memory) {
-        auto size = histogram_granularity;
-        auto cacheline_size = block_size;
-        auto cacheline = (smem.to<uint64_t>()/cacheline_size)*cacheline_size;
+//void histogram(const ooo_model_instr inst, std::map<uint64_t, uint64_t> &count, const uint64_t histogram_granularity, const uint64_t block_size) {
+//    for (auto& smem:inst.source_memory) {
+//        auto size = histogram_granularity;
+//        auto cacheline_size = block_size;
+//        auto cacheline = (smem.to<uint64_t>()/cacheline_size)*cacheline_size;
+//
+//        auto aligned_addr = (cacheline/size)*size;
+//        if (count.find(aligned_addr) == count.end()) {
+//            count.insert(std::pair<uint64_t, uint64_t>(aligned_addr, 1));
+//        } else {
+//            count[aligned_addr]++;
+//        }
+//    }
+//}
 
-        auto aligned_addr = (cacheline/size)*size;
-        if (count.find(aligned_addr) == count.end()) {
-            count.insert(std::pair<uint64_t, uint64_t>(aligned_addr, 1));
-        } else {
-            count[aligned_addr]++;
-        }
-    }
-}
-
-void print_histogram(std::map<uint64_t, uint64_t> &count, const uint64_t block_size) {
-    fmt::print("Histogram\n");
-    std::map<uint64_t, uint64_t> freq;
-    uint64_t sum = 0;
-    uint64_t num = 0;
+//void print_histogram(std::map<uint64_t, uint64_t> &count, const uint64_t block_size) {
+//    fmt::print("Histogram\n");
+//    std::map<uint64_t, uint64_t> freq;
+//    uint64_t sum = 0;
+//    uint64_t num = 0;
 //    for (auto const&it : count) {
 //        if (freq.find(it.second) == freq.end()) {
 //            freq.insert(std::pair<uint64_t, uint64_t>(it.second, 1));
@@ -60,8 +60,8 @@ void print_histogram(std::map<uint64_t, uint64_t> &count, const uint64_t block_s
 //        fmt::print("Accesses {:#x}, Count {}\n", it.first, it.second);
 //    }
 //     fmt::print("Average reuse {:4f}\n", ((float)sum)/num);
-    fmt::print("Footprint: {}\n", count.size()*block_size);
-}
+//    fmt::print("Footprint: {}\n", count.size()*block_size);
+//}
 
 int main(int argc, char** argv) {
 
