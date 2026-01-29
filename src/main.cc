@@ -91,7 +91,7 @@ int main(int argc, char** argv) {
         //histogram(inst, page_count, 64, block_size);
 
         try_read(inst, cache, block_size);
-        //try_write(inst, cache, block_size);
+        try_write(inst, cache, block_size);
     }
 
     auto mpki = (((float)(cache->get_misses()))/inst_count)*1000;
