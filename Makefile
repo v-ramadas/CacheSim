@@ -13,13 +13,17 @@ MRC_SRC = src/mrc.cc
 MAIN_SRC = src/main.cc
 TRACEREADER_SRC = $(CHAMPSIM_DIR)/src/tracereader.cc
 TARGET = cachesim
+TARGET_MULTI = cachesim_multi
 
 # Object files
 CACHE_OBJ = $(OBJ_DIR)/cachesim.o
 MRC_OBJ = $(OBJ_DIR)/mrc.o
 MAIN_OBJ = $(OBJ_DIR)/main.o
+MULTI_MAIN_OBJ = $(OBJ_DIR)/multi_main.o
 TRACEREADER_OBJ = $(OBJ_DIR)/tracereader.o
 OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(MAIN_OBJ)
+MULTI_LEVEL_OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(MULTI_MAIN_OBJ)
+
 
 # --- VCPKG Integration ---
 
@@ -54,11 +58,14 @@ LDFLAGS = $(VCPKG_LIB_FLAGS) $(VCPKG_LIBS)
 .PHONY: all clean
 
 # Default rule: builds the target executable
-all: $(TARGET)
+all: $(TARGET) $(TARGET_MULTI)
 
 # 1. Linking rule: Links all object files and VCPKG libraries into the final executable
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) -o $@
+
+$(TARGET_MULTI): $(MULTI_LEVEL_OBJS)
+	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) -o $@ -DMULTI_LEVEL
 
 # 2. Compilation rule for your C++ file
 # Your file needs access to ChampSim headers and VCPKG headers.
@@ -70,6 +77,10 @@ $(MRC_OBJ): $(MRC_SRC)
 
 $(MAIN_OBJ): $(MAIN_SRC)
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
+
+$(MULTI_MAIN_OBJ): $(MAIN_SRC)
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@ -DMULTI_LEVEL
+
 
 # 3. Compilation rule for the ChampSim utility file
 # This file also needs access to ChampSim headers and VCPKG headers.
