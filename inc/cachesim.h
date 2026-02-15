@@ -9,6 +9,7 @@
 #include <fmt/core.h>
 #include <list>
 #include "mrc.h"
+#include "packet.h"
 
 const uint64_t CACHELINE_SIZE = 64;
 namespace cachesim {
@@ -26,6 +27,7 @@ class CacheSet {
     std::vector<bool> valid;
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
+    std::vector<bool> footprint;
 
     bool do_mrc = true;
 
@@ -47,16 +49,18 @@ class CacheSet {
     CacheSet(uint64_t num_ways, uint64_t blk_size, uint64_t set_idx, uint64_t level);
     ~CacheSet() {}
 
-    bool try_hit(uint64_t address, bool is_read);
-    uint32_t handle_miss(uint64_t address);
-    uint32_t handle_fill(std::vector<uint64_t> address);
-    std::vector<uint64_t> handle_evict(uint64_t num_blocks_to_evict);
-    void handle_invalidate(uint64_t address);
+    bool try_hit(PacketPtr packet);
+    uint32_t handle_fill(PacketPtr packet);
+    void handle_evict(PacketPtr eviction_packet);
+    void handle_invalidate(PacketPtr packet);
 
     uint64_t get_block_size() const { return block_size; }
     uint64_t get_distance_count(uint64_t way) const { return distance_counts[way]; }
     bool get_do_mrc() {return do_mrc;}
     void set_do_mrc(bool mrc) {do_mrc = mrc;}
+
+    bool get_footprint(uint64_t way_idx, uint64_t word_idx);
+    void set_footprint(uint64_t way_idx, uint64_t word_idx);
 };
 
 class Cache {
@@ -77,6 +81,7 @@ class Cache {
     uint64_t write_hits = 0;
     uint64_t write_misses = 0;
     uint64_t evictions = 0;
+    uint64_t num_blocks_used = 0;
     std::vector<uint64_t> partial_misses;
     
     public:
@@ -84,11 +89,11 @@ class Cache {
     Cache(std::string name, uint64_t num_sets, uint64_t num_ways, uint64_t block_size, uint64_t level, InsertionPolicy policy=EXCLUSIVE);
     ~Cache() {}
     uint64_t get_set_idx(uint64_t address);
-    bool try_hit(uint64_t address, bool is_read);
-    void handle_fill(std::vector<uint64_t> address, uint64_t num_blocks_to_fill, int level);
-    void handle_fill(uint64_t address, int level);
-    std::vector<uint64_t> handle_evict(uint64_t address, uint64_t size, int level);
-    void handle_invalidate(uint64_t address);
+    bool try_hit(PacketPtr packet);
+    void handle_fill(PacketPtr packet, uint64_t num_blocks_to_fill, int level);
+    void handle_fill(PacketPtr packet, int level);
+    void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level);
+    void handle_invalidate(PacketPtr packet);
 
     bool can_insert_at_level(int level);
 
@@ -108,6 +113,8 @@ class Cache {
     uint64_t get_read_misses() const { return read_misses; }
     uint64_t get_write_hits() const { return write_hits; }
     uint64_t get_write_misses() const { return write_misses; }
+    uint64_t get_evictions() const {return evictions; }
+    uint64_t get_num_blocks_used() const {return num_blocks_used; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}
 
     void set_do_mrc(bool mrc) {
