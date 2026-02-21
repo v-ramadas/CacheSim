@@ -44,22 +44,22 @@ void access_multi_level(std::vector<Cache*> &cache,
         for (int i = 1; i < num_levels; i++) {
             cache[i]->handle_invalidate(access_packet);
             if (downgrade_address.size() > 0) {
-                cache[i]->handle_evict(access_packet, eviction_packet, 0);
+                //cache[i]->handle_evict(access_packet, eviction_packet, 0);
                 //eviction_packet.blocks = downgrade_address;
-                cache[i]->handle_fill(eviction_packet, 0);
+                cache[i]->handle_fill(access_packet, eviction_packet, 0);
                 //eviction_packet.blocks = evicted_address;
             } else {
                 break;
             }
         }
     } else {
-        cache[0]->handle_evict(access_packet, eviction_packet, 0);
+        //cache[0]->handle_evict(access_packet, eviction_packet, 0);
         //eviction_packet.blocks = downgrade_address;
-        cache[0]->handle_fill(access_packet, 0);
+        cache[0]->handle_fill(access_packet, eviction_packet, 0);
         for (int i = 1; i < num_levels; i++) {
             if (eviction_packet->blocks.size() > 0) {
-                cache[i]->handle_evict(access_packet, eviction_packet, 0);
-                cache[i]->handle_fill(eviction_packet, 0);
+                //cache[i]->handle_evict(access_packet, eviction_packet, 0);
+                cache[i]->handle_fill(access_packet, eviction_packet, 0);
                 //eviction_packet.blocks = evicted_address;
             } else {
                 break;
@@ -82,8 +82,8 @@ void access_single_level(Cache *cache,
     eviction_packet->size = CACHELINE_SIZE;
     bool hit = cache->try_hit(access_packet);
     if (!hit) {
-        cache->handle_evict(access_packet, eviction_packet, 0);                
-        cache->handle_fill(fill_packet, 0);
+        //cache->handle_evict(access_packet, eviction_packet, 0);                
+        cache->handle_fill(fill_packet, eviction_packet, 0);
     }
     return;
 }
@@ -175,8 +175,8 @@ int main(int argc, char** argv) {
 
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
-    cache.push_back(new Cache("L1D", 128, 16, block_size, 0, insertion_policy));
-    cache.push_back(new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, insertion_policy));
+    cache.push_back(new Cache("L1D", 1, 16, block_size, 0, insertion_policy));
+    cache.push_back(new Cache("LLC", 4, 16, block_size, 1, insertion_policy));
     cache[0]->set_do_mrc(false);
 #else
     Cache* cache = new Cache("L1D", 1, 16, block_size, 0);

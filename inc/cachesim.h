@@ -50,9 +50,10 @@ class CacheSet {
     ~CacheSet() {}
 
     bool try_hit(PacketPtr packet);
-    uint32_t handle_fill(PacketPtr packet);
+    void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
     void handle_invalidate(PacketPtr packet);
+    void populate_fill_packet(PacketPtr packet);
 
     uint64_t get_block_size() const { return block_size; }
     uint64_t get_distance_count(uint64_t way) const { return distance_counts[way]; }
@@ -60,7 +61,7 @@ class CacheSet {
     void set_do_mrc(bool mrc) {do_mrc = mrc;}
 
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
-    void set_footprint(uint64_t way_idx, uint64_t word_idx);
+    void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
 };
 
 class Cache {
@@ -91,7 +92,7 @@ class Cache {
     uint64_t get_set_idx(uint64_t address);
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet, uint64_t num_blocks_to_fill, int level);
-    void handle_fill(PacketPtr packet, int level);
+    void handle_fill(PacketPtr fill_packet, PacketPtr eviction_packet, int level);
     void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level);
     void handle_invalidate(PacketPtr packet);
 
