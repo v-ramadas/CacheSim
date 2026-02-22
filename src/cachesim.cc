@@ -108,12 +108,13 @@ void CacheSet::populate_fill_packet(PacketPtr fill_packet) {
         }
         return;
     } else {
-        for (uint64_t address = fill_packet->aligned_address; address < fill_packet->aligned_address + CACHELINE_SIZE; address += block_size) {
+        for (uint64_t address = fill_packet->aligned_address; address < fill_packet->aligned_address + fill_packet->size; address += block_size) {
             auto try_hit = std::find(ways.begin(), ways.end(), address);
             if (try_hit != ways.end()) {
                 auto way_idx = std::distance(ways.begin(), try_hit);
                 assert(valid[way_idx] == true);
-                fmt::print("Block address {:#x} already present in set {} way {}. Not adding to fill packet\n", address, set_idx, way_idx);
+                if (cachesim::DEBUG)
+                    fmt::print("Block address {:#x} already present in set {} way {}. Not adding to fill packet\n", address, set_idx, way_idx);
                 continue;
             }
             fill_packet->blocks.push_back(address);
@@ -287,47 +288,61 @@ bool Cache::try_hit(PacketPtr packet) {
     return hit;
 }
 
-void Cache::handle_fill(PacketPtr packet, uint64_t num_blocks_to_fill, int level = 0) {
+void Cache::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) {
     if (can_insert_at_level(level) == false) {
         return;
     }
 
-    if (packet->blocks.size() == 0) {
+    if (fill_packet->blocks.size() == 0) {
         if (cachesim::DEBUG)
             fmt::print("Level {} No blocks to fill since block list is empty\n", level);
         return;
     }
-    auto set_idx = get_set_idx(packet->blocks[0]);
-    auto block_size = sets[set_idx].get_block_size();
-    if (packet->blocks.size() != num_blocks_to_fill) {
-        fmt::print("{} Not enoughblocks provided. Expected {} blocks to fill for address {:#x} at set {}\n", __func__, packet->blocks.size(), num_blocks_to_fill, packet->blocks[0], set_idx);
-        packet->blocks.resize(num_blocks_to_fill);
-        packet->aligned_address = packet->blocks[0];
-        // Populate the vector
-        for (uint64_t i = 1; i < num_blocks_to_fill; i++) {
-           packet->blocks[i] = packet->aligned_address + i*block_size;
+    Packet fill_block_packet;
+    fill_block_packet.blocks.resize(1);
+    uint32_t block_misses = 0;
+    for (auto block: fill_packet->blocks) {
+        if (cachesim::DEBUG)
+            fmt::print("Level {} Trying to fill block address {:#x} @ set {}\n", level, block, get_set_idx(block));
+        auto set_idx = get_set_idx(block);
+        auto block_size = sets[set_idx].get_block_size();
+        fill_block_packet.address = block;
+        fill_block_packet.aligned_address = align_address(block, block_size);
+        fill_block_packet.size = block_size;
+        fill_block_packet.blocks[0] = block;
+        sets[set_idx].populate_fill_packet(&fill_block_packet);
+        if (fill_block_packet.blocks.size() == 0) {
+            continue;
         }
+        eviction_packet->size = fill_block_packet.blocks.size()*sets[set_idx].get_block_size();
+        eviction_packet->blocks.clear();
+        eviction_packet->footprint = 0;
+        sets[set_idx].handle_evict(eviction_packet);
+        num_blocks_used += eviction_packet->footprint;
+        evictions+=eviction_packet->blocks.size();
+        sets[set_idx].handle_fill(&fill_block_packet);
+        block_misses++;
     }
-    sets[set_idx].handle_fill(packet);
-    partial_misses[packet->blocks.size()-1]++;
-
+    if (block_misses > 0)
+        partial_misses[block_misses-1]++;
+    fill_packet->blocks.clear();
     return;
 }
 
-void Cache::handle_fill(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) {
+void Cache::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) {
     if (can_insert_at_level(level) == false) {
         return;
     }
     auto set_idx = get_set_idx(fill_packet->address);
-    std::vector<uint64_t> blocks;
     fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
     // Populate the vector
     sets[set_idx].populate_fill_packet(fill_packet);
     eviction_packet->size = fill_packet->blocks.size()*sets[set_idx].get_block_size();
     eviction_packet->blocks.clear();
+    eviction_packet->footprint = 0;
     sets[set_idx].handle_evict(eviction_packet);
     num_blocks_used += eviction_packet->footprint;
-    if (eviction_packet->blocks.size() != 0) evictions++;
+    evictions+=eviction_packet->blocks.size();
     sets[set_idx].handle_fill(fill_packet);
     partial_misses[fill_packet->blocks.size()-1]++;
     fill_packet->blocks.clear();

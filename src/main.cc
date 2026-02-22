@@ -21,6 +21,8 @@ void access_multi_level(std::vector<Cache*> &cache,
     fill_packet->clear_address();
     access_packet->address = address;
     access_packet->is_read = is_read;
+    access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
+    fill_packet->address = access_packet->address;
     int num_levels = cache.size();
     int hit_at_level = num_levels;
     bool hit = false;
@@ -33,34 +35,27 @@ void access_multi_level(std::vector<Cache*> &cache,
         }
     }
     
+    bool needs_invalidate = false;
     if (hit) {
-        // If Hit, handle here
-        std::vector<uint64_t> downgrade_address = {};
-        if (hit_at_level != 0) {
-            cache[0]->handle_evict(access_packet, eviction_packet, 0);
-            //access_packet->blocks = {align_address(access_packet->address, cache[0]->get_block_size(set_idx))};
-            cache[0]->handle_fill(access_packet, access_packet->blocks.size(), 0);
-        }
-        for (int i = 1; i < num_levels; i++) {
-            cache[i]->handle_invalidate(access_packet);
-            if (downgrade_address.size() > 0) {
-                //cache[i]->handle_evict(access_packet, eviction_packet, 0);
-                //eviction_packet.blocks = downgrade_address;
-                cache[i]->handle_fill(access_packet, eviction_packet, 0);
-                //eviction_packet.blocks = evicted_address;
-            } else {
-                break;
-            }
-        }
+        fill_packet->size = access_packet->size;
+        eviction_packet->size = access_packet->size;
+        needs_invalidate = true;
     } else {
-        //cache[0]->handle_evict(access_packet, eviction_packet, 0);
-        //eviction_packet.blocks = downgrade_address;
-        cache[0]->handle_fill(access_packet, eviction_packet, 0);
+        fill_packet->size = CACHELINE_SIZE;
+        eviction_packet->size = CACHELINE_SIZE;
+        fill_packet->address = access_packet->address;
+        needs_invalidate = false;
+    }
+
+    if (hit_at_level != 0) {
+        cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
         for (int i = 1; i < num_levels; i++) {
+            if (needs_invalidate)
+                cache[i]->handle_invalidate(fill_packet);
+
             if (eviction_packet->blocks.size() > 0) {
-                //cache[i]->handle_evict(access_packet, eviction_packet, 0);
-                cache[i]->handle_fill(access_packet, eviction_packet, 0);
-                //eviction_packet.blocks = evicted_address;
+                fill_packet->blocks = eviction_packet->blocks;
+                cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 0);
             } else {
                 break;
             }
@@ -83,7 +78,7 @@ void access_single_level(Cache *cache,
     bool hit = cache->try_hit(access_packet);
     if (!hit) {
         //cache->handle_evict(access_packet, eviction_packet, 0);                
-        cache->handle_fill(fill_packet, eviction_packet, 0);
+        cache->handle_fill_line(fill_packet, eviction_packet, 0);
     }
     return;
 }
@@ -135,7 +130,7 @@ void print_stats(Cache* cache, uint64_t inst_count, std::string tracename, uint6
     fmt::print("Miss Rate {:4f}\n", miss_rate);
     fmt::print("MPKI {:10f}\n", mpki);
     if (cache->get_evictions() > 0) {
-        fmt::print("Utilization {:4f} \n", 100*(float)(cache->get_num_blocks_used())/(cache->get_evictions()*8));
+        fmt::print("Utilization {:4f} \n", 100*(float)(cache->get_num_blocks_used())/(cache->get_evictions()*(block_size/8)));
     } else {
         fmt::print("Utilization undefined (No evictions)\n");
     }
@@ -175,11 +170,12 @@ int main(int argc, char** argv) {
 
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
-    cache.push_back(new Cache("L1D", 1, 16, block_size, 0, insertion_policy));
-    cache.push_back(new Cache("LLC", 4, 16, block_size, 1, insertion_policy));
+    cache.resize(2);
+    cache[0] = new Cache("L1D", 256, 16, block_size, 0, insertion_policy);
+    cache[1] = new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, insertion_policy);
     cache[0]->set_do_mrc(false);
 #else
-    Cache* cache = new Cache("L1D", 1, 16, block_size, 0);
+    Cache* cache = new Cache("L1D", llc_num_sets, llc_num_ways, block_size, 0, insertion_policy);
 #endif
     champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
     uint64_t inst_count = 0;
@@ -223,9 +219,6 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     print_stats(cache[0], inst_count, tracename, 128, 16, block_size);
     print_stats(cache[1], inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
-    for (auto level : cache) {
-        delete level;
-    } 
     cache.clear();
 #else
     print_stats(cache, inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
