@@ -47,7 +47,14 @@ class CacheSet {
     public:
     CacheSet();
     CacheSet(uint64_t num_ways, uint64_t blk_size, uint64_t set_idx, uint64_t level);
-    ~CacheSet() {}
+    ~CacheSet() {
+    //    ways.clear();
+    //    lru.clear();
+    //    valid.clear();
+    //    dirty.clear();
+    //    distance_counts.clear();
+    //    footprint.clear();
+    }
 
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
@@ -88,11 +95,14 @@ class Cache {
     public:
     Cache();
     Cache(std::string name, uint64_t num_sets, uint64_t num_ways, uint64_t block_size, uint64_t level, InsertionPolicy policy=EXCLUSIVE);
-    ~Cache() {}
+    //~Cache() {
+        //partial_misses.clear();
+        //sets.clear();
+    //}
     uint64_t get_set_idx(uint64_t address);
     bool try_hit(PacketPtr packet);
-    void handle_fill(PacketPtr packet, uint64_t num_blocks_to_fill, int level);
-    void handle_fill(PacketPtr fill_packet, PacketPtr eviction_packet, int level);
+    void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level);
+    void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level);
     void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level);
     void handle_invalidate(PacketPtr packet);
 
