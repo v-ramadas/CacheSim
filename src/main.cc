@@ -1,4 +1,6 @@
 #include "cachesim.h"
+#include "predictor.h"
+#include "packet.h"
 
 #include <algorithm>
 #include <chrono>
@@ -13,9 +15,10 @@
 
 bool cachesim::DEBUG = false;
 
+#ifdef MULTI_LEVEL
 void access_multi_level(std::vector<Cache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet,
-            uint64_t address, bool is_read) {
+            SparsityPredictor* predictor, uint64_t address, bool is_read) {
     access_packet->clear_address();
     eviction_packet->clear_address();
     fill_packet->clear_address();
@@ -33,6 +36,14 @@ void access_multi_level(std::vector<Cache*> &cache,
             hit_at_level = i;
             break;
         }
+        bool is_sparse = predictor->predict(access_packet);
+        access_packet->is_sparse = is_sparse;
+    }
+
+    if (hit && access_packet->is_sparse) {
+        if (cachesim::DEBUG)
+            fmt::print("Hit at level {}, address {:#x}. Access is to a sparse block, so nothing else to do\n", hit_at_level, access_packet->address);
+        return;
     }
     
     bool needs_invalidate = false;
@@ -54,7 +65,12 @@ void access_multi_level(std::vector<Cache*> &cache,
                 cache[i]->handle_invalidate(fill_packet);
 
             if (eviction_packet->blocks.size() > 0) {
+                predictor->insert(eviction_packet);
+                predictor->update(eviction_packet);
+                bool is_sparse = predictor->predict(eviction_packet);
+                fill_packet->is_sparse = is_sparse;
                 fill_packet->blocks = eviction_packet->blocks;
+                fill_packet->footprint = eviction_packet->footprint;
                 cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 0);
             } else {
                 break;
@@ -62,7 +78,7 @@ void access_multi_level(std::vector<Cache*> &cache,
         }
     }
 }
-
+#else
 void access_single_level(Cache *cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet,
             uint64_t address, bool is_read) {
@@ -82,6 +98,7 @@ void access_single_level(Cache *cache,
     }
     return;
 }
+#endif
 //void histogram(const ooo_model_instr inst, std::map<uint64_t, uint64_t> &count, const uint64_t histogram_granularity, const uint64_t block_size) {
 //    for (auto& smem:inst.source_memory) {
 //        auto size = histogram_granularity;
@@ -171,9 +188,10 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
     cache.resize(2);
-    cache[0] = new Cache("L1D", 256, 16, block_size, 0, insertion_policy);
-    cache[1] = new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, insertion_policy);
+    cache[0] = new Cache("L1D", 1, 16, CACHELINE_SIZE, 0, insertion_policy);
+    cache[1] = new Cache("LLC", 1, 16, block_size, 1, insertion_policy);
     cache[0]->set_do_mrc(false);
+    SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 10);
 #else
     Cache* cache = new Cache("L1D", llc_num_sets, llc_num_ways, block_size, 0, insertion_policy);
 #endif
@@ -201,10 +219,12 @@ int main(int argc, char** argv) {
         fill_packet->pc = inst.ip.to<uint64_t>();
 #ifdef MULTI_LEVEL
         for (auto& smem:inst.source_memory) {
-            access_multi_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
+            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+                predictor,smem.to<uint64_t>(), true);
         }
         for (auto& dmem:inst.destination_memory) {
-            access_multi_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
+            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+                predictor, dmem.to<uint64_t>(), false);
         }
 #else
         for (auto& smem:inst.source_memory) {
@@ -220,6 +240,7 @@ int main(int argc, char** argv) {
     print_stats(cache[0], inst_count, tracename, 128, 16, block_size);
     print_stats(cache[1], inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
     cache.clear();
+    delete predictor;
 #else
     print_stats(cache, inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
     delete cache;

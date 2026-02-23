@@ -1,6 +1,8 @@
-#ifndef __PACKET_H_
-#define _PACKET_H_
+#ifndef __PACKET_H__
+#define __PACKET_H__
 
+#include <stdint.h>
+#include <vector>
 struct Packet {
     uint64_t pc;
     uint64_t address;
@@ -11,7 +13,9 @@ struct Packet {
     bool is_sparse;
     uint64_t footprint;
 
-    Packet() {}
+    Packet() {
+        clear();
+    }
     void clear() {
         pc = 0;
         address = 0;

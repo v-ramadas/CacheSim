@@ -137,4 +137,5 @@ class Cache {
 
 uint64_t align_address(uint64_t address, uint64_t align_size);
 
+uint64_t count_footprint(uint64_t footprint);
 #endif
