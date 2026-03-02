@@ -7,6 +7,7 @@
 #include <map>
 class SparsityPredictor {
     private:
+        bool _enable;
         float threshold;
         uint64_t size;
         float default_footprint;
@@ -21,6 +22,7 @@ class SparsityPredictor {
             default_footprint(default_footprint), warmup_accesses(warmup_accesses) {
                 assert(threshold > 0 && threshold <= 8);
                 assert(default_footprint > 0 && default_footprint <= 8);
+                disable();
             }
         
         bool predict(PacketPtr packet);
@@ -29,5 +31,7 @@ class SparsityPredictor {
         void clear() {
             history.clear();
         }
+        void enable() {_enable = true;}
+        void disable() {_enable = false;}
 };
 #endif

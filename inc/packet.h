@@ -14,10 +14,11 @@ struct Packet {
     uint64_t footprint;
 
     Packet() {
+        clear_pc();
         clear();
     }
     void clear() {
-        pc = 0;
+        //pc = 0;
         address = 0;
         aligned_address = 0;
         size = 0;

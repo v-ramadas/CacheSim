@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <list>
 #include <vector>
+#include <cstdint>
 
 class MRC {
     // MRC

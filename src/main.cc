@@ -14,43 +14,78 @@
 #include "tracereader.h"
 
 bool cachesim::DEBUG = false;
+uint64_t WARMUP_INSTS = 1000000;
+
 
 #ifdef MULTI_LEVEL
 void access_multi_level(std::vector<Cache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet,
-            SparsityPredictor* predictor, uint64_t address, bool is_read) {
-    access_packet->clear_address();
-    eviction_packet->clear_address();
-    fill_packet->clear_address();
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count) {
+    access_packet->clear();
+    eviction_packet->clear();
+    fill_packet->clear();
     access_packet->address = address;
     access_packet->is_read = is_read;
     access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
+    access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
     fill_packet->address = access_packet->address;
+
+    access_packet->pc = pc;
+    fill_packet->pc = pc;
+    eviction_packet->pc = pc;
+
     int num_levels = cache.size();
     int hit_at_level = num_levels;
     bool hit = false;
+    bool is_sparse = false;
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
+
+        if (access_packet->is_sparse) {
+            access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
+            access_packet->blocks.clear();
+            access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
+            access_packet->blocks.push_back(access_packet->aligned_address);
+        }
+
         hit = cache[i]->try_hit(access_packet);
+        //fmt::print("Level {}: Accessing {:#x} ({}) for {}\n", i, access_packet->address, hit ? "HIT" : "MISS", is_read ? "READ" : "WRITE");
+
         if (hit) {
             hit_at_level = i;
             break;
         }
-        bool is_sparse = predictor->predict(access_packet);
+
+        if (inst_count >= WARMUP_INSTS) {
+            is_sparse = predictor->predict(access_packet);
+        }
+        
         access_packet->is_sparse = is_sparse;
+        if (!access_packet->is_sparse) {
+            access_packet->size = CACHELINE_SIZE;
+            access_packet->blocks.clear();
+            access_packet->aligned_address = align_address(access_packet->address, CACHELINE_SIZE);
+        }
+
     }
 
-    if (hit && access_packet->is_sparse) {
+    /*if (hit && access_packet->is_sparse) {
         if (cachesim::DEBUG)
             fmt::print("Hit at level {}, address {:#x}. Access is to a sparse block, so nothing else to do\n", hit_at_level, access_packet->address);
         return;
-    }
+    }*/
     
     bool needs_invalidate = false;
     if (hit) {
-        fill_packet->size = access_packet->size;
-        eviction_packet->size = access_packet->size;
-        needs_invalidate = true;
+        if (access_packet->is_sparse) {
+            fill_packet->size = access_packet->size;
+            eviction_packet->size = access_packet->size;
+            needs_invalidate = true;
+        } else {
+            fill_packet->size = CACHELINE_SIZE;
+            eviction_packet->size = CACHELINE_SIZE;
+            needs_invalidate = true;
+        }
     } else {
         fill_packet->size = CACHELINE_SIZE;
         eviction_packet->size = CACHELINE_SIZE;
@@ -60,21 +95,34 @@ void access_multi_level(std::vector<Cache*> &cache,
 
     if (hit_at_level != 0) {
         cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
+        auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
+        auto curr_cache_block_size = prev_cache_block_size;
         for (int i = 1; i < num_levels; i++) {
+            curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(fill_packet->address));
+
+            if (prev_cache_block_size != curr_cache_block_size) {
+                resize_packet(eviction_packet, curr_cache_block_size);       
+            }
             if (needs_invalidate)
                 cache[i]->handle_invalidate(fill_packet);
 
             if (eviction_packet->blocks.size() > 0) {
+                bool is_sparse = false;
                 predictor->insert(eviction_packet);
                 predictor->update(eviction_packet);
-                bool is_sparse = predictor->predict(eviction_packet);
+                if (inst_count >= WARMUP_INSTS) {
+                    is_sparse = predictor->predict(access_packet);
+                }
                 fill_packet->is_sparse = is_sparse;
                 fill_packet->blocks = eviction_packet->blocks;
                 fill_packet->footprint = eviction_packet->footprint;
                 cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 0);
+                //fmt::print("Level {}: Filled line {:#x}\n", i, fill_packet->address);
+
             } else {
                 break;
             }
+            prev_cache_block_size = curr_cache_block_size;
         }
     }
 }
@@ -90,11 +138,14 @@ void access_single_level(Cache *cache,
     access_packet->size = cache->get_block_size(cache->get_set_idx(access_packet->address));
     fill_packet->address = access_packet->address;
     fill_packet->size = CACHELINE_SIZE;
+    fill_packet->is_sparse = true;
     eviction_packet->size = CACHELINE_SIZE;
     bool hit = cache->try_hit(access_packet);
+    //fmt::print("Accessing {:#x} ({}) for {}\n", access_packet->address, hit ? "HIT" : "MISS", is_read ? "READ" : "WRITE");
     if (!hit) {
         //cache->handle_evict(access_packet, eviction_packet, 0);                
         cache->handle_fill_line(fill_packet, eviction_packet, 0);
+        //fmt::print("Filled line {:#x}\n", fill_packet->address);
     }
     return;
 }
@@ -167,6 +218,47 @@ void print_stats(Cache* cache, uint64_t inst_count, std::string tracename, uint6
 
 }
 
+#ifdef MULTI_LEVEL
+void useLogFile(std::vector<Cache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet) {
+#else
+void useLogFile(Cache* cache, const std::string& filename, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet) {
+#endif
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open the file!" << std::endl;
+        return;
+    }
+
+    std::string line;
+    std::string delimiter = "0x";
+    uint64_t inst_count = 0;
+    while (std::getline(file, line)) {
+        uint64_t pc;
+        uint64_t address;
+        char action[16];
+        inst_count++;
+        if (std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx", &pc, action, &address) == 3) {
+            try {
+                // Extract from the start of "0x" to the end of the line
+                bool is_read = (strcmp(action, "read") == 0) ? true : false;
+                if (pc != 2 /*&& pc != 4*/) continue;
+#ifdef MULTI_LEVEL
+                access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+                    predictor, address, pc, is_read, inst_count);
+#else
+                access_single_level(cache, access_packet, eviction_packet, fill_packet, address, is_read);
+#endif
+
+            } catch (const std::exception& e) {
+                std::cerr << "Conversion error on line: " << line << " -> " <<e.what() << std::endl;
+            }
+        }
+    }
+    file.close();
+    return;
+}
+
 int main(int argc, char** argv) {
 
     CLI::App app{"CacheSim"};
@@ -185,59 +277,71 @@ int main(int argc, char** argv) {
     app.add_flag("--debug", cachesim::DEBUG, "Enable debug mode");
     CLI11_PARSE(app, argc, argv);
 
+    /*if (cachesim::DEBUG) {
+        llc_num_sets = 1;
+        llc_num_ways = 16;
+    }*/
+
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
     cache.resize(2);
-    cache[0] = new Cache("L1D", 1, 16, CACHELINE_SIZE, 0, insertion_policy);
-    cache[1] = new Cache("LLC", 1, 16, block_size, 1, insertion_policy);
+    cache[0] = new Cache("L1D", 128, 16, block_size, 0, insertion_policy);
+    cache[1] = new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, insertion_policy);
     cache[0]->set_do_mrc(false);
-    SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 10);
+    cache[1]->set_do_mrc(false);
+    SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 8192);
+    if (block_size < CACHELINE_SIZE) predictor->enable();
+    else predictor->disable();
+
 #else
     Cache* cache = new Cache("L1D", llc_num_sets, llc_num_ways, block_size, 0, insertion_policy);
+    cache->set_do_mrc(false);
 #endif
-    champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
     uint64_t inst_count = 0;
  
     std::map<uint64_t, uint64_t> page_count;
     Packet* access_packet = new Packet();
     Packet* eviction_packet = new Packet();
     Packet* fill_packet = new Packet();
-
-    while (!trace.eof()) {
-        if (cachesim::DEBUG) {
-            if (inst_count > 2500000) {
-                break;
-            }
-        }
-        inst_count++;
-        auto inst = trace();
-        access_packet->clear();
-        eviction_packet->clear();
-        fill_packet->clear();
-        access_packet->pc = inst.ip.to<uint64_t>();
-        eviction_packet->pc = inst.ip.to<uint64_t>();
-        fill_packet->pc = inst.ip.to<uint64_t>();
 #ifdef MULTI_LEVEL
-        for (auto& smem:inst.source_memory) {
-            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-                predictor,smem.to<uint64_t>(), true);
-        }
-        for (auto& dmem:inst.destination_memory) {
-            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-                predictor, dmem.to<uint64_t>(), false);
-        }
+    useLogFile(cache, tracename, predictor, access_packet, eviction_packet, fill_packet);
 #else
-        for (auto& smem:inst.source_memory) {
-            access_single_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
-        }
-        for (auto& dmem:inst.destination_memory) {
-            access_single_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
-        }
+    useLogFile(cache, tracename, access_packet, eviction_packet, fill_packet);
 #endif
-    }
+    inst_count = 100000000;
+//    champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
+//    while (!trace.eof()) {
+//        if (cachesim::DEBUG) {
+//            if (inst_count > 2500000) {
+//                break;
+//            }
+//        }
+//        inst_count++;
+//        auto inst = trace();
+//        access_packet->clear();
+//        eviction_packet->clear();
+//        fill_packet->clear();
+//#ifdef MULTI_LEVEL
+//        for (auto& smem:inst.source_memory) {
+//            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+//                predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count);
+//        }
+//        for (auto& dmem:inst.destination_memory) {
+//            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+//                predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count);
+//        }
+//#else
+//        for (auto& smem:inst.source_memory) {
+//            access_single_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
+//        }
+//        for (auto& dmem:inst.destination_memory) {
+//            access_single_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
+//        }
+//#endif
+//    }
 
 #ifdef MULTI_LEVEL
-    print_stats(cache[0], inst_count, tracename, 128, 16, block_size);
+    print_stats(cache[0], inst_count, tracename, 128, 16, CACHELINE_SIZE);
     print_stats(cache[1], inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
     cache.clear();
     delete predictor;

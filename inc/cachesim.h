@@ -36,8 +36,8 @@ class CacheSet {
     uint64_t num_blocks;
     uint64_t level = 0;
 
-    uint64_t global_counter1 = 1;
-    uint64_t global_counter2 = 1;
+    uint64_t lru_counter = 0;
+    uint64_t mru_counter = 0;
 
     public:
     uint64_t reuse_dist = 0;
@@ -60,7 +60,6 @@ class CacheSet {
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
     void handle_invalidate(PacketPtr packet);
-    void populate_fill_packet(PacketPtr packet);
 
     uint64_t get_block_size() const { return block_size; }
     uint64_t get_distance_count(uint64_t way) const { return distance_counts[way]; }
@@ -69,6 +68,9 @@ class CacheSet {
 
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
     void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
+
+    const std::vector<uint64_t>& get_ways() const {return ways;}
+    bool get_valid(uint64_t idx) const {return valid[idx];}
 };
 
 class Cache {
@@ -105,6 +107,7 @@ class Cache {
     void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level);
     void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level);
     void handle_invalidate(PacketPtr packet);
+    void populate_fill_packet(PacketPtr packet);
 
     bool can_insert_at_level(int level);
 
@@ -127,6 +130,7 @@ class Cache {
     uint64_t get_evictions() const {return evictions; }
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}
+    const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx).get_ways();}
 
     void set_do_mrc(bool mrc) {
         for (auto& set: sets) {
@@ -138,4 +142,6 @@ class Cache {
 uint64_t align_address(uint64_t address, uint64_t align_size);
 
 uint64_t count_footprint(uint64_t footprint);
+
+void resize_packet(PacketPtr packet, uint64_t block_size);
 #endif

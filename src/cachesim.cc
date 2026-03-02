@@ -94,57 +94,30 @@ void CacheSet::set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed)
     return;
 }
 
-void CacheSet::populate_fill_packet(PacketPtr fill_packet) {
-    if (fill_packet->blocks.size() != 0) {
-        auto is_sparse = fill_packet->is_sparse;
-        int idx = 0;
-        for (const auto block: fill_packet->blocks) {
-            auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
-            auto try_hit = std::find(ways.begin(), ways.end(), block);
-            if (try_hit != ways.end() || (is_sparse && !was_accessed)) {
-                auto way_idx = std::distance(ways.begin(), try_hit);
-                if (cachesim::DEBUG && try_hit != ways.end())
-                    fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", block, set_idx, way_idx);
-                else if (cachesim::DEBUG && (is_sparse && !was_accessed))
-                    fmt::print("Block address {:#x} in set {} way {} was not accessed in the past. Footprint {} block idx {}. Removing from fill packet\n", block, set_idx, way_idx, fill_packet->footprint, idx);
-                //assert(valid[way_idx] == true);
-                fill_packet->blocks.erase(std::remove(fill_packet->blocks.begin(), fill_packet->blocks.end(), block), fill_packet->blocks.end());
-            }
-            idx++;
-        }
-        return;
-    } else {
-        for (uint64_t address = fill_packet->aligned_address; address < fill_packet->aligned_address + fill_packet->size; address += block_size) {
-            auto try_hit = std::find(ways.begin(), ways.end(), address);
-            if (try_hit != ways.end()) {
-                auto way_idx = std::distance(ways.begin(), try_hit);
-                assert(valid[way_idx] == true);
-                if (cachesim::DEBUG)
-                    fmt::print("Block address {:#x} already present in set {} way {}. Not adding to fill packet\n", address, set_idx, way_idx);
-                continue;
-            }
-            fill_packet->blocks.push_back(address);
-       }
-    }
-    return;
-}
-
 bool CacheSet::try_hit(PacketPtr packet) {
     bool hit = true;
-
+    uint64_t hit_counter = UINT64_MAX;
+    std::vector<uint64_t> way_idx_list;
     for (const auto block: packet->blocks) {
         auto way = std::find(ways.begin(), ways.end(), block);
+        auto way_idx = std::distance(ways.begin(), way);
+        if (lru[way_idx] < hit_counter) hit_counter = lru[way_idx];
+
         hit &= (way != ways.end());// && (valid[way_idx] == true);
+
+        if (cachesim::DEBUG)
+            fmt::print("{} level {} hit {} address {:#x} set {} way {} size {}\n", __func__, level, (hit) ? "HIT" : "MISS", block, set_idx, way_idx, packet->blocks.size());
         if (!hit) {
             break;
         }
+
+        way_idx_list.push_back(way_idx);
     }
 
     accesses++;
-    auto way_idx = std::distance(ways.begin(), std::find(ways.begin(), ways.end(), packet->aligned_address));
 
     if (hit) {
-        const uint64_t hit_counter = lru[way_idx];
+        mru_counter += num_ways;
         if (do_mrc) {
             uint64_t distance = std::count_if(
                 lru.begin(), lru.end(),
@@ -154,18 +127,16 @@ bool CacheSet::try_hit(PacketPtr packet) {
             distance_counts[distance]++;
             reuse_dist += distance;
         }
-    
-        lru[way_idx] = global_counter1++;
-        if (!packet->is_read) {
-            dirty[way_idx] = true;
+        for (auto way_idx: way_idx_list) {
+            if (!packet->is_read) {
+                dirty[way_idx] = true;
+            }
+            auto word_idx = (packet->address - packet->aligned_address) >> 3;
+            set_footprint(way_idx, word_idx, true);
+            lru[way_idx] = mru_counter;
         }
-        auto word_idx = (packet->aligned_address - align_address(packet->aligned_address, block_size)) >> 3;
-        set_footprint(way_idx, word_idx, true);
-        hits++;
-    }
 
-    if (cachesim::DEBUG) {
-        fmt::print("{} level {} address {:#x} hit {} set {} way {} size {}\n", __func__, level, packet->address, (hit) ? "HIT" : "MISS", set_idx, way_idx, packet->blocks.size());
+        hits++;
     }
 
     return hit;
@@ -174,23 +145,31 @@ bool CacheSet::try_hit(PacketPtr packet) {
 void CacheSet::handle_fill(PacketPtr packet) {
     //auto fill_address = align_address(address, CACHELINE_SIZE);
     auto way = valid.begin();
-    global_counter1++;
+    mru_counter+=num_ways;
+    if (packet->is_sparse) {
+        lru_counter++;
+    }
+
     for (const auto block_address: packet->blocks) {
         way = std::find(way, valid.end(), false);
         auto way_idx = std::distance(valid.begin(), way);
+
         valid[way_idx] = true;
-        lru[way_idx] = global_counter1;
+        if (packet->is_sparse) {
+            lru[way_idx] = lru_counter;
+        } else {
+            lru[way_idx] = mru_counter;
+        }
         ways[way_idx] = block_address;
-        if (block_address == packet->address) {
-            lru[way_idx] = global_counter1+1;
-            auto word_idx = (block_address - packet->address) >> 3;
+        if (align_address(packet->address, block_size) == block_address) {
+            lru[way_idx] = mru_counter;
+            auto word_idx = (packet->address - block_address) >> 3;
             set_footprint(way_idx, word_idx, true);
         }
 
         if (cachesim::DEBUG)
             fmt::print("Level {} Inserting address {:#x} @ set {} way {} valid {}\n", level, block_address, set_idx, way_idx, (uint32_t)valid[way_idx]);
     }
-    global_counter1++;
     return;
 }
 
@@ -224,8 +203,9 @@ void CacheSet::handle_evict(PacketPtr packet) {
         }
 
         if (cachesim::DEBUG)//&& valid[way_idx])
-            fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {}\n",
-                level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx]);
+            fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} lru {}\n",
+                level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], lru[way_idx]);
+
 
         valid[way_idx] = false;
         lru[way_idx] = UINT64_MAX;
@@ -234,7 +214,7 @@ void CacheSet::handle_evict(PacketPtr packet) {
     }
 
     if (cachesim::DEBUG)
-        fmt::print("Level {} Num invalid blocks {} Evicted blocks {} Evicted Line Footprint {}\n",
+        fmt::print("Level {} Num invalid blocks {} Evicted blocks {} Evicted Line Footprint {:#x}\n",
             level, num_invalid_blocks, num_blocks_evicted, packet->footprint);
 
     return;
@@ -306,18 +286,29 @@ void Cache::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet,
     }
     Packet fill_block_packet;
     fill_block_packet.blocks.resize(1);
+    fill_block_packet.is_sparse = fill_packet->is_sparse;
     uint32_t block_misses = 0;
+    uint64_t idx = 0;
     for (const auto block: fill_packet->blocks) {
-        if (cachesim::DEBUG)
-            fmt::print("Level {} Trying to fill block address {:#x} @ set {}\n", level, block, get_set_idx(block));
+//        if (cachesim::DEBUG)
+//            fmt::print("Level {} Trying to fill block address {:#x} @ set {}\n", level, block, get_set_idx(block));
         auto set_idx = get_set_idx(block);
         auto block_size = sets[set_idx].get_block_size();
         fill_block_packet.address = block;
-        fill_block_packet.aligned_address = align_address(block, block_size);
         fill_block_packet.size = block_size;
+        fill_block_packet.aligned_address = align_address(block, block_size);
         fill_block_packet.blocks[0] = block;
-        sets[set_idx].populate_fill_packet(&fill_block_packet);
+        fill_block_packet.footprint = (fill_packet->footprint >> idx);
+        auto was_accessed = fill_block_packet.footprint & 0x1;
+        if (fill_packet->is_sparse && !was_accessed) {
+            if (cachesim::DEBUG)
+                fmt::print("Block address {:#x} in set {} not accessed in sparse line. Footprint {} block idx {}. Dropping it\n", block, set_idx, fill_block_packet.footprint, idx);
+            idx++;
+            continue;
+        }
+        populate_fill_packet(&fill_block_packet);
         if (fill_block_packet.blocks.size() == 0) {
+            idx++;
             continue;
         }
         eviction_packet->size = fill_block_packet.blocks.size()*sets[set_idx].get_block_size();
@@ -328,6 +319,7 @@ void Cache::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet,
         evictions+=eviction_packet->blocks.size();
         sets[set_idx].handle_fill(&fill_block_packet);
         block_misses++;
+        idx++;
     }
     if (block_misses > 0)
         partial_misses[block_misses-1]++;
@@ -342,8 +334,8 @@ void Cache::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, i
     auto set_idx = get_set_idx(fill_packet->address);
     fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
     // Populate the vector
-    sets[set_idx].populate_fill_packet(fill_packet);
-    eviction_packet->size = fill_packet->blocks.size()*sets[set_idx].get_block_size();
+    populate_fill_packet(fill_packet);
+    eviction_packet->size = fill_packet->size;
     eviction_packet->blocks.clear();
     eviction_packet->footprint = 0;
     sets[set_idx].handle_evict(eviction_packet);
@@ -369,21 +361,88 @@ void Cache::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int
 }
 
 void Cache::handle_invalidate(PacketPtr packet) {
+    Packet invalidate_packet;
+    invalidate_packet.blocks.resize(1);
+    invalidate_packet.is_sparse = packet->is_sparse;
     auto set_idx = get_set_idx(packet->address);
-    sets[set_idx].handle_invalidate(packet);
+    auto block_size = sets[set_idx].get_block_size();
+    for (uint64_t block = 0; block < packet->size; block += block_size) {
+        invalidate_packet.address = packet->aligned_address + block;
+        invalidate_packet.size = block_size;
+        invalidate_packet.aligned_address = align_address(invalidate_packet.address, block_size);
+        invalidate_packet.blocks[0] = invalidate_packet.address;
+        //fill_block_packet.footprint = (fill_packet->footprint >> idx);
+        sets[set_idx].handle_invalidate(&invalidate_packet);
+    }
+
     return;
 }
 
 void Cache::print_reuse_distance() {
     auto set_idx = 0;
     fmt::print("Reuse Distance\nSet Idx | Accumulated Reuse Distance | Hits | Accesses | Avg Reuse Distance Per Hit | Avg Reuse Distance Per Access\n");
-    for (const auto set: sets) {
+    for (const auto &set: sets) {
         fmt::print("{} | {} | {} | {} | {:.4f} | {:.4f}\n",
                 set.first, set.second.reuse_dist, set.second.hits, set.second.accesses, (float)(set.second.reuse_dist)/set.second.hits, (float)(set.second.reuse_dist)/set.second.accesses); 
         set_idx++;
     }
 }
 
+void Cache::populate_fill_packet(PacketPtr fill_packet) {
+    if (fill_packet->blocks.size() != 0)  {
+        auto is_sparse = fill_packet->is_sparse;
+        int idx = 0;
+        for (const auto block: fill_packet->blocks) {
+            auto set_idx = get_set_idx(fill_packet->address);
+            auto ways = get_ways(set_idx);
+            auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
+            auto try_hit = std::find(ways.begin(), ways.end(), block);
+            if (try_hit != ways.end() || (is_sparse && !was_accessed)) {
+                auto way_idx = std::distance(ways.begin(), try_hit);
+                if (cachesim::DEBUG && try_hit != ways.end())
+                    fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", block, set_idx, way_idx);
+                else if (cachesim::DEBUG && (is_sparse && !was_accessed))
+                    fmt::print("Block address {:#x} in set {} way {} unneeded in sparse line. Footprint {} block idx {}. Removing from fill packet\n", block, set_idx, way_idx, fill_packet->footprint, idx);
+                //assert(valid[way_idx] == true);
+                fill_packet->blocks.erase(std::remove(fill_packet->blocks.begin(), fill_packet->blocks.end(), block), fill_packet->blocks.end());
+            }
+            idx++;
+        }
+        return;
+    } else {
+        auto set_idx = get_set_idx(fill_packet->address);
+        auto ways = get_ways(set_idx);
+        auto block_size = sets[set_idx].get_block_size();
+        for (uint64_t address = fill_packet->aligned_address; address < fill_packet->aligned_address + fill_packet->size; address += block_size) {
+            auto try_hit = std::find(ways.begin(), ways.end(), address);
+            if (try_hit != ways.end()) {
+                auto way_idx = std::distance(ways.begin(), try_hit);
+                assert(sets[set_idx].get_valid(way_idx) == true);
+                if (cachesim::DEBUG)
+                    fmt::print("Block address {:#x} already present in set {} way {}. Not adding to fill packet\n", address, set_idx, way_idx);
+                continue;
+            }
+            fill_packet->blocks.push_back(address);
+       }
+    }
+    return;
+}
+
 uint64_t count_footprint(uint64_t footprint) {
     return __builtin_popcountll(footprint);
 }
+
+void resize_packet(PacketPtr packet, uint64_t block_size) {
+    auto num_blocks = packet->size/block_size;
+    if (packet->blocks.size() > 0 &&
+            packet->blocks.size() != num_blocks) {
+        packet->blocks.resize(num_blocks);
+        auto aligned_address = 
+            align_address(packet->blocks[0], packet->size);
+        for (uint64_t idx = 0; idx < block_size; ++idx) {
+            packet->blocks[idx] = aligned_address + idx*block_size;
+        }
+    }
+}
+
+
