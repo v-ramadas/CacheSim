@@ -28,17 +28,18 @@ class CacheSet {
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
     std::vector<bool> footprint;
-
     bool do_mrc = true;
 
     uint64_t block_size = 64;
     uint64_t set_idx = 1;
     uint64_t num_blocks;
+    uint64_t num_lines;
     uint64_t level = 0;
 
     uint64_t lru_counter = 0;
     uint64_t mru_counter = 0;
 
+    bool is_sectored;
     public:
     uint64_t reuse_dist = 0;
     uint64_t accesses = 0;
@@ -46,7 +47,7 @@ class CacheSet {
 
     public:
     CacheSet();
-    CacheSet(uint64_t num_ways, uint64_t blk_size, uint64_t set_idx, uint64_t level);
+    CacheSet(uint64_t num_ways, uint64_t blk_size, uint64_t set_idx, uint64_t level, bool is_sectored);
     ~CacheSet() {
     //    ways.clear();
     //    lru.clear();
@@ -80,7 +81,7 @@ class Cache {
     uint64_t total_accesses = 0;
     uint64_t level = 0;
     std::unordered_map<uint64_t, CacheSet> sets;
-
+    bool is_sectored;
     MRC mrc;
     const InsertionPolicy insertion_policy = EXCLUSIVE;
     //Stats
@@ -96,7 +97,7 @@ class Cache {
     
     public:
     Cache();
-    Cache(std::string name, uint64_t num_sets, uint64_t num_ways, uint64_t block_size, uint64_t level, InsertionPolicy policy=EXCLUSIVE);
+    Cache(std::string name, uint64_t num_sets, uint64_t num_ways, uint64_t block_size, uint64_t level, bool is_sectored, InsertionPolicy policy=EXCLUSIVE);
     //~Cache() {
         //partial_misses.clear();
         //sets.clear();
@@ -118,6 +119,7 @@ class Cache {
     InsertionPolicy get_insertion_policy() const { return insertion_policy; }
     uint64_t get_block_size(uint64_t set_idx) { return sets[set_idx].get_block_size(); }
     bool get_do_mrc() {return sets[0].get_do_mrc();}
+    bool get_is_sectored() {return is_sectored;}
 
     //Stats
     uint64_t get_hits() const { return hits; }

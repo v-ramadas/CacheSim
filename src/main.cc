@@ -291,8 +291,8 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
     cache.resize(2);
-    cache[0] = new Cache("L1D", 128, 16, block_size, 0, insertion_policy);
-    cache[1] = new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, insertion_policy);
+    cache[0] = new Cache("L1D", 128, 16, block_size, 0, false, insertion_policy);
+    cache[1] = new Cache("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, insertion_policy);
     cache[0]->set_do_mrc(false);
     cache[1]->set_do_mrc(false);
     SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 8192);

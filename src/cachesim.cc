@@ -5,13 +5,15 @@
 CacheSet::CacheSet() {
 }
 
-CacheSet::CacheSet(uint64_t way, uint64_t blk_size, uint64_t set_id, uint64_t level):
+CacheSet::CacheSet(uint64_t way, uint64_t blk_size, uint64_t set_id, uint64_t level, bool _is_sectored):
     num_ways(way),
     block_size(blk_size),
     set_idx(set_id),
-    level(level)
+    level(level),
+    is_sectored(_is_sectored)
 {
     num_blocks = CACHELINE_SIZE/block_size;
+    num_lines = num_ways/num_blocks;
     ways.resize(num_ways, UINT64_MAX);
     lru.resize(num_ways, 0);
     valid.resize(num_ways, false);
@@ -27,22 +29,24 @@ Cache::Cache():
     insertion_policy(EXCLUSIVE)
 {
     num_ways = 16;
+    is_sectored = false;
     for (uint64_t i = 0; i < num_sets; ++i) {
-        sets[i] = CacheSet(num_ways, 64, i, level);
+        sets[i] = CacheSet(num_ways, 64, i, level, is_sectored);
     }
     partial_misses.resize(CACHELINE_SIZE/64, 0);
 }
 
 Cache::Cache(std::string name, uint64_t set, uint64_t ways, uint64_t blk_size, uint64_t level,
-            InsertionPolicy policy): 
+            bool _is_sectored, InsertionPolicy policy):
     NAME(name),
     num_sets(set),
     level(level),
+    is_sectored(_is_sectored),
     insertion_policy(policy)
 {
     num_ways = ways*CACHELINE_SIZE/blk_size;
     for (uint64_t i = 0; i < num_sets; ++i) {
-        sets[i] = CacheSet(num_ways, blk_size, i, level);
+        sets[i] = CacheSet(num_ways, blk_size, i, level, is_sectored);
     }
     partial_misses.resize(CACHELINE_SIZE/blk_size, 0);
 }
@@ -371,7 +375,6 @@ void Cache::handle_invalidate(PacketPtr packet) {
         invalidate_packet.size = block_size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, block_size);
         invalidate_packet.blocks[0] = invalidate_packet.address;
-        //fill_block_packet.footprint = (fill_packet->footprint >> idx);
         sets[set_idx].handle_invalidate(&invalidate_packet);
     }
 
