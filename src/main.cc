@@ -16,6 +16,11 @@
 bool cachesim::DEBUG = false;
 uint64_t WARMUP_INSTS = 1000000;
 
+enum TraceFormat {
+    CHAMPSIM,
+    ADDRESSES,
+};
+
 
 #ifdef MULTI_LEVEL
 void access_multi_level(std::vector<Cache*> &cache,
@@ -94,6 +99,9 @@ void access_multi_level(std::vector<Cache*> &cache,
     }
 
     if (hit_at_level != 0) {
+        if (needs_invalidate)
+            cache[hit_at_level]->handle_invalidate(fill_packet);
+        
         cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
         auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
         auto curr_cache_block_size = prev_cache_block_size;
@@ -103,8 +111,6 @@ void access_multi_level(std::vector<Cache*> &cache,
             if (prev_cache_block_size != curr_cache_block_size) {
                 resize_packet(eviction_packet, curr_cache_block_size);       
             }
-            if (needs_invalidate)
-                cache[i]->handle_invalidate(fill_packet);
 
             if (eviction_packet->blocks.size() > 0) {
                 bool is_sparse = false;
@@ -219,9 +225,9 @@ void print_stats(Cache* cache, uint64_t inst_count, std::string tracename, uint6
 }
 
 #ifdef MULTI_LEVEL
-void useLogFile(std::vector<Cache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet) {
+void useLogFile(std::vector<Cache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, uint64_t &inst_count) {
 #else
-void useLogFile(Cache* cache, const std::string& filename, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet) {
+void useLogFile(Cache* cache, const std::string& filename, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, uint64_t &inst_count) {
 #endif
     std::ifstream file(filename);
 
@@ -232,7 +238,6 @@ void useLogFile(Cache* cache, const std::string& filename, PacketPtr access_pack
 
     std::string line;
     std::string delimiter = "0x";
-    uint64_t inst_count = 0;
     while (std::getline(file, line)) {
         uint64_t pc;
         uint64_t address;
@@ -263,11 +268,16 @@ int main(int argc, char** argv) {
 
     CLI::App app{"CacheSim"};
     std::string tracename;
+    TraceFormat trace_format = CHAMPSIM;
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
     uint64_t block_size = CACHELINE_SIZE;
     InsertionPolicy insertion_policy = EXCLUSIVE;
     app.add_option("--trace", tracename, "Path to input trace file")->required()->expected(1)->check(CLI::ExistingFile);
+    app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
+        {"champsim", TraceFormat::CHAMPSIM},
+        {"addresses", TraceFormat::ADDRESSES},
+    }));
     app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache")->required();
     app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache")->required();
     app.add_option("--cache-block-size", block_size, "Cache block size");
@@ -277,10 +287,6 @@ int main(int argc, char** argv) {
     app.add_flag("--debug", cachesim::DEBUG, "Enable debug mode");
     CLI11_PARSE(app, argc, argv);
 
-    /*if (cachesim::DEBUG) {
-        llc_num_sets = 1;
-        llc_num_ways = 16;
-    }*/
 
 #ifdef MULTI_LEVEL
     std::vector<Cache*> cache;
@@ -303,42 +309,44 @@ int main(int argc, char** argv) {
     Packet* access_packet = new Packet();
     Packet* eviction_packet = new Packet();
     Packet* fill_packet = new Packet();
+    if (trace_format == TraceFormat::ADDRESSES) {
 #ifdef MULTI_LEVEL
-    useLogFile(cache, tracename, predictor, access_packet, eviction_packet, fill_packet);
+        useLogFile(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, inst_count);
 #else
-    useLogFile(cache, tracename, access_packet, eviction_packet, fill_packet);
+        useLogFile(cache, tracename, access_packet, eviction_packet, fill_packet, inst_count);
 #endif
-    inst_count = 100000000;
-//    champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
-//    while (!trace.eof()) {
-//        if (cachesim::DEBUG) {
-//            if (inst_count > 2500000) {
-//                break;
-//            }
-//        }
-//        inst_count++;
-//        auto inst = trace();
-//        access_packet->clear();
-//        eviction_packet->clear();
-//        fill_packet->clear();
-//#ifdef MULTI_LEVEL
-//        for (auto& smem:inst.source_memory) {
-//            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-//                predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count);
-//        }
-//        for (auto& dmem:inst.destination_memory) {
-//            access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-//                predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count);
-//        }
-//#else
-//        for (auto& smem:inst.source_memory) {
-//            access_single_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
-//        }
-//        for (auto& dmem:inst.destination_memory) {
-//            access_single_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
-//        }
-//#endif
-//    }
+    } else {
+        champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
+        while (!trace.eof()) {
+            if (cachesim::DEBUG) {
+                if (inst_count > 2500000) {
+                    break;
+                }
+            }
+            inst_count++;
+            auto inst = trace();
+            access_packet->clear();
+            eviction_packet->clear();
+            fill_packet->clear();
+#ifdef MULTI_LEVEL
+            for (auto& smem:inst.source_memory) {
+                access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+                    predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count);
+            }
+            for (auto& dmem:inst.destination_memory) {
+                access_multi_level(cache, access_packet, eviction_packet, fill_packet,
+                    predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count);
+            }
+#else
+            for (auto& smem:inst.source_memory) {
+                access_single_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
+            }
+            for (auto& dmem:inst.destination_memory) {
+                access_single_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
+            }
+#endif
+        }
+    }
 
 #ifdef MULTI_LEVEL
     print_stats(cache[0], inst_count, tracename, 128, 16, CACHELINE_SIZE);
