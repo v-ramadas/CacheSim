@@ -26,6 +26,7 @@ class SparsityPredictor {
             }
         
         bool predict(PacketPtr packet);
+        uint64_t get_footprint(PacketPtr packet);
         void insert(PacketPtr packet);
         void update(PacketPtr packet);
         void clear() {

@@ -13,18 +13,17 @@ bool SparsityPredictor::predict(PacketPtr packet) {
     }
     
     auto is_sparse = (std::get<1>(history[packet->pc]) < threshold);
-    if (cachesim::DEBUG) {
+    if (cachesim::DEBUG)
         fmt::print("PredictorModel: Predicting PC {:#x} address {:#x} as {} (footprint {:4f})\n", packet->pc, packet->address, is_sparse ? "sparse" : "dense", std::get<1>(history[packet->pc]));
-    }
     return is_sparse;
 }
 
 void SparsityPredictor::insert(PacketPtr packet) {
     if (!_enable) return;
 
-    if (pc_map.find(packet->address) == pc_map.end()) {
-        pc_map[packet->address] = packet->pc;
-    }
+    //if (pc_map.find(packet->address) == pc_map.end()) {
+    //    pc_map[packet->address] = packet->pc;
+    //}
     if (history.find(packet->pc) == history.end()) {
         history[packet->pc] = std::make_pair(1, default_footprint); // default footprint
         if (cachesim::DEBUG)
@@ -35,8 +34,9 @@ void SparsityPredictor::insert(PacketPtr packet) {
 void SparsityPredictor::update(PacketPtr packet) {
     if (!_enable) return;
 
-    auto pc = pc_map[packet->address];
-    pc_map.erase(packet->address); // clear mapping after update
+    //auto pc = pc_map[packet->address];
+    //pc_map.erase(packet->address); // clear mapping after update
+    auto pc = packet->pc;
     auto footprint = __builtin_popcountll(packet->footprint);
     auto accesses = std::get<0>(history[pc]);
 
@@ -47,4 +47,19 @@ void SparsityPredictor::update(PacketPtr packet) {
         fmt::print("PredictorModel: Updating PC {:#x} with accesses {}, old_footprint {}, footprint of access {} new_footprint {}\n",
                 packet->pc, std::get<0>(history[pc]), old_footprint, footprint, std::get<1>(history[pc]));
 
+}
+
+uint64_t SparsityPredictor::get_footprint(PacketPtr packet) {
+    if (!_enable) return 0xff;
+
+    if (history.find(packet->pc) == history.end()) {
+        return 0xff; // default to dense
+    }
+
+    if (std::get<0>(history[packet->pc]) < warmup_accesses) {
+        return 0xff; // default to dense during warmup
+    }
+    
+    auto footprint = (std::get<1>(history[packet->pc]));
+    return footprint;
 }
