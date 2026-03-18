@@ -70,6 +70,18 @@ void Cache<T>::print_stats(uint64_t inst_count, std::string tracename) {
 
     //print_reuse_distance();
     //print_histogram(page_count, get_block_size(0));
+    for (auto& [pc, misses]: data_var_misses) {
+        fmt::print("PC {:#x} MPKI {:4f}\n", pc, ((float)(misses)/inst_count)*1000);
+    }
+
+    for (auto& [pc, pairs]: data_var_utilization) {
+        fmt::print("PC {:#x} Utilization {:4f}\n", pc, (100*(float)(std::get<1>(pairs))/(std::get<0>(pairs)*get_block_size(0)/8)));
+    }
+
+    for (auto& [pc, pairs]: data_var_utilization) {
+        fmt::print("PC {:#x} Evictions {}\n", pc, std::get<0>(pairs)*get_block_size(0)/8);
+    }
+
 
 
 }
@@ -206,7 +218,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
     auto way = valid.begin();
     mru_counter+=num_ways;
     if (packet->is_sparse) {
-        lru_counter++/;
+        lru_counter++;
     }
     uint64_t block_idx = 0;
     for (const auto block_address: packet->blocks) {
@@ -222,8 +234,13 @@ void CacheSet::handle_fill(PacketPtr packet) {
         }
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
-//        if (align_address(packet->address, block_size) == block_address) {
-        if ((packet->footprint >> block_idx) & 0x1) {
+        auto is_critical_word = false;
+        if (packet->footprint != 0 && (packet->footprint >> block_idx) & 0x1) {
+            is_critical_word = true;
+        } else if (align_address(packet->address, block_size) == block_address) {
+            is_critical_word = true;
+        }
+        if (is_critical_word) {
             lru[way_idx] = mru_counter;
             //auto word_idx = (packet->address - block_address) >> 3;
             set_footprint(way_idx, block_idx, true);
@@ -285,6 +302,7 @@ void CacheSet::handle_evict(PacketPtr packet) {
             packet->blocks.push_back(ways[way_idx]);
         }
 
+        auto previous_footprint = packet->footprint;
         for (uint64_t i = 0; i < block_size/8; ++i) {
             packet->footprint |= get_footprint(way_idx, i) << (i + num_blocks_evicted*(block_size/8));
             set_footprint(way_idx, i, false);
@@ -301,6 +319,9 @@ void CacheSet::handle_evict(PacketPtr packet) {
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
         num_blocks_evicted++;
+        cache->update_data_var_utilization(packet->pc, 1,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+
     }
 
     if (cachesim::DEBUG)
@@ -359,7 +380,9 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     ways[way_idx] = UINT64_MAX;
     packet->pc = pc[way_idx];
     pc[way_idx] = UINT64_MAX;
-   
+    
+    cache->update_data_var_utilization(packet->pc, packet->blocks.size(),
+            count_footprint(packet->footprint));
 
     if (cachesim::DEBUG)
         fmt::print("Level {} Num invalid blocks {} Evicted Line Footprint {:#x}\n",
@@ -368,18 +391,23 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     return;
 }
 
-uint64_t CacheSet::handle_invalidate(PacketPtr packet) {
+uint64_t CacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     auto try_hit = std::find(ways.begin(), ways.end(), packet->address);
     uint64_t inv_address = UINT64_MAX;
     if (try_hit != ways.end()) {
         auto way_idx = std::distance(ways.begin(), try_hit);
         inv_address = ways[way_idx];
+        auto previous_footprint = packet->footprint;
+        packet->footprint |= get_footprint(way_idx, 0) << (block_num*(block_size/8));
+        set_footprint(way_idx, 0, false);
         valid[way_idx] = false;
         dirty[way_idx] = false;
         lru[way_idx] = UINT64_MAX;
         ways[way_idx] = UINT64_MAX;
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        cache->update_data_var_utilization(packet->pc, 1,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
         if (cachesim::DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx);
         }
@@ -387,11 +415,14 @@ uint64_t CacheSet::handle_invalidate(PacketPtr packet) {
     return inv_address;
 }
 
-Sector SectoredCacheSet::handle_invalidate(PacketPtr packet) {
+Sector SectoredCacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     auto try_hit = std::find(ways.begin(), ways.end(), packet->aligned_address);
     Sector inv_sector(num_blocks);
     if (try_hit != ways.end()) {
         auto way_idx = std::distance(ways.begin(), try_hit);
+        auto previous_footprint = packet->footprint;
+        packet->footprint |= get_footprint(way_idx, 0) << (block_num*(block_size/8));
+        set_footprint(way_idx, 0, false);
         valid[way_idx] = false;
         dirty[way_idx] = false;
         lru[way_idx] = UINT64_MAX;
@@ -400,6 +431,9 @@ Sector SectoredCacheSet::handle_invalidate(PacketPtr packet) {
         way_sectors[way_idx].invalidate();
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        cache->update_data_var_utilization(packet->pc, 1,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+
         if (cachesim::DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx);
         }
@@ -445,6 +479,13 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         misses++;
         if (packet->is_read) read_misses++;
         else write_misses++;
+    }
+
+    if (!hit) {
+        if (data_var_misses.find(packet->pc) == data_var_misses.end())
+            data_var_misses[packet->pc] = 1;
+        else
+            data_var_misses[packet->pc]++;
     }
     return hit;
 }
@@ -558,7 +599,7 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
         invalidate_packet.address = packet->address;
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
-         auto address = sets[set_idx].handle_invalidate(&invalidate_packet);
+         auto address = sets[set_idx].handle_invalidate(&invalidate_packet, 0);
         inv_address = address.sectors;
     } else {
         invalidate_packet.blocks.resize(1);
@@ -567,10 +608,14 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
             invalidate_packet.address = aligned_address + block*block_size;
             invalidate_packet.size = block_size;
             invalidate_packet.aligned_address = align_address(invalidate_packet.address, block_size);
-            auto address = sets[set_idx].handle_invalidate(&invalidate_packet);
+            auto address = sets[set_idx].handle_invalidate(&invalidate_packet, block);
             inv_address[block] = address;
         }
     }
+
+    num_blocks_used += count_footprint(invalidate_packet.footprint);
+    evictions+=std::count_if(inv_address.begin(), inv_address.end(),
+            [](int addr){return (addr != UINT64_MAX);});
 
     return inv_address;
 }

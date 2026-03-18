@@ -11,6 +11,16 @@
 #include "mrc.h"
 #include "packet.h"
 #include <cassert>
+#include <iostream>
+
+class BaseCache;
+
+uint64_t align_address(uint64_t address, uint64_t align_size);
+
+uint64_t count_footprint(uint64_t footprint);
+
+void resize_packet(PacketPtr packet, uint64_t block_size);
+
 
 const uint64_t CACHELINE_SIZE = 64;
 namespace cachesim {
@@ -66,6 +76,7 @@ struct Sector {
 class CacheSet {
 
     protected:
+    BaseCache* cache;
     uint64_t num_ways;
     std::vector<uint64_t> ways;
     std::vector<uint64_t> lru;
@@ -92,7 +103,8 @@ class CacheSet {
 
     public:
     CacheSet() {}
-    CacheSet(uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+    CacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+        cache = p;
         num_ways = _num_ways;
         block_size = blk_size;
         set_idx = _set_idx;
@@ -114,7 +126,7 @@ class CacheSet {
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
-    uint64_t handle_invalidate(PacketPtr packet);
+    uint64_t handle_invalidate(PacketPtr packet, uint64_t block_num);
 
     uint64_t get_block_size() const { return block_size; }
     uint64_t get_distance_count(uint64_t way) const { return distance_counts[way]; }
@@ -130,11 +142,13 @@ class CacheSet {
 
 class SectoredCacheSet: public CacheSet {
     protected:
+    BaseCache* cache;
     std::vector<Sector> way_sectors;
 
     public:
     SectoredCacheSet() {}
-    SectoredCacheSet(uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+    SectoredCacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+        cache = p;
         num_ways = _num_ways;
         block_size = blk_size;
         set_idx = _set_idx;
@@ -154,7 +168,7 @@ class SectoredCacheSet: public CacheSet {
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
-    Sector handle_invalidate(PacketPtr packet);
+    Sector handle_invalidate(PacketPtr packet, uint64_t block_num);
     uint64_t get_block_size() const { return block_size; }
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
     void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
@@ -178,6 +192,9 @@ class BaseCache {
     virtual bool can_insert_at_level(int level) = 0;
 
     virtual MRC* get_mrc() = 0;
+
+    virtual void update_data_var_utilization(uint64_t pc, uint64_t evictions, uint64_t footprint) = 0;
+
     virtual void print_mpki_curve(uint64_t inst_count) = 0;
     virtual void print_stats(uint64_t inst_count, std::string tracename) = 0;
     virtual void print_reuse_distance() = 0;
@@ -223,6 +240,20 @@ class Cache: public BaseCache {
     uint64_t evictions = 0;
     uint64_t num_blocks_used = 0;
     std::vector<uint64_t> partial_misses;
+
+
+    // Workload Behavior
+    std::unordered_map<uint64_t, uint64_t> data_var_misses;
+    std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> data_var_utilization;
+    void update_data_var_utilization(uint64_t pc, uint64_t _evictions, uint64_t _footprint) {
+        if (data_var_utilization.find(pc) == data_var_utilization.end()) {
+            data_var_utilization[pc] = std::pair<uint64_t, uint64_t>(0, 0);
+        }
+        auto& [evictions, footprint] = data_var_utilization[pc];
+        // 2. Update the members directly
+        evictions += _evictions;
+        footprint += _footprint;
+    }
     
     public:
     Cache():
@@ -231,9 +262,10 @@ class Cache: public BaseCache {
         level(0),
         is_sectored(false),
         insertion_policy(EXCLUSIVE) {
+
         num_ways = 16;
         for (uint64_t i = 0; i < num_sets; ++i) {
-            sets[i] = T(num_ways, 64, i, level);
+            sets[i] = T(this, num_ways, 64, i, level);
         }
         partial_misses.resize(CACHELINE_SIZE/64, 0);
     }
@@ -253,7 +285,7 @@ class Cache: public BaseCache {
             num_ways = num_ways*CACHELINE_SIZE/block_size;
         }
         for (uint64_t i = 0; i < num_sets; ++i) {
-                sets[i] = T(num_ways, block_size, i, level);
+            sets[i] = T(this, num_ways, block_size, i, level);
         }
     
         partial_misses.resize(CACHELINE_SIZE/block_size, 0);
@@ -299,9 +331,4 @@ class Cache: public BaseCache {
     }
 };
 
-uint64_t align_address(uint64_t address, uint64_t align_size);
-
-uint64_t count_footprint(uint64_t footprint);
-
-void resize_packet(PacketPtr packet, uint64_t block_size);
 #endif

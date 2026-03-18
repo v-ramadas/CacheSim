@@ -141,16 +141,18 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 template <typename T>
 void access_single_level(Cache<T> *cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet,
-            uint64_t address, bool is_read) {
+            uint64_t pc, uint64_t address, bool is_read) {
     access_packet->clear_address();
     eviction_packet->clear_address();
     fill_packet->clear_address();
     access_packet->address = address;
     access_packet->is_read = is_read;
     access_packet->size = cache->get_block_size(cache->get_set_idx(access_packet->address));
+    access_packet->pc = pc;
     fill_packet->address = access_packet->address;
     fill_packet->size = CACHELINE_SIZE;
     fill_packet->is_sparse = true;
+    fill_packet->pc = pc;
     eviction_packet->size = CACHELINE_SIZE;
     bool hit = cache->try_hit(access_packet);
     //fmt::print("Accessing {:#x} ({}) for {}\n", access_packet->address, hit ? "HIT" : "MISS", is_read ? "READ" : "WRITE");
@@ -231,7 +233,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet,
                     predictor, address, pc, is_read, inst_count);
 #else
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, address, is_read);
+                access_single_level(cache, access_packet, eviction_packet, fill_packet, pc,address, is_read);
 #endif
 
             } catch (const std::exception& e) {
@@ -286,7 +288,7 @@ int main(int argc, char** argv) {
     cache->set_do_mrc(false);
 #endif
     uint64_t inst_count = 0;
- 
+
     std::map<uint64_t, uint64_t> page_count;
     Packet* access_packet = new Packet();
     Packet* eviction_packet = new Packet();
@@ -321,10 +323,12 @@ int main(int argc, char** argv) {
             }
 #else
             for (auto& smem:inst.source_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, smem.to<uint64_t>(), true);
+                access_single_level(cache, access_packet, eviction_packet, fill_packet,
+                        inst.ip.to<uint64_t>(), smem.to<uint64_t>(), true);
             }
             for (auto& dmem:inst.destination_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, dmem.to<uint64_t>(), false);
+                access_single_level(cache, access_packet, eviction_packet, fill_packet, 
+                        inst.ip.to<uint64_t>(), dmem.to<uint64_t>(), false);
             }
 #endif
         }
