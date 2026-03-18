@@ -253,7 +253,8 @@ int main(int argc, char** argv) {
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
     uint64_t block_size = CACHELINE_SIZE;
-    InsertionPolicy insertion_policy = EXCLUSIVE;
+    ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
+    InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     app.add_option("--trace", tracename, "Path to input trace file")->required()->expected(1)->check(CLI::ExistingFile);
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
@@ -262,6 +263,10 @@ int main(int argc, char** argv) {
     app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache")->required();
     app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache")->required();
     app.add_option("--cache-block-size", block_size, "Cache block size");
+
+    app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
+        {"lru", ReplacementPolicy::LRU},
+    }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
     }));
@@ -273,10 +278,10 @@ int main(int argc, char** argv) {
     std::vector<BaseCache*> cache;
     cache.resize(2);
     if (block_size == CACHELINE_SIZE)
-        cache[0] = new Cache<CacheSet>("L1D", 128, 16, block_size, 0, false, insertion_policy);
+        cache[0] = new Cache<CacheSet>("L1D", 128, 16, block_size, 0, false, replacement_policy, insertion_policy);
     else
-        cache[0] = new Cache<SectoredCacheSet>("L1D", 128, 16, block_size, 0, true, insertion_policy);
-    cache[1] = new Cache<CacheSet>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, insertion_policy);
+        cache[0] = new Cache<SectoredCacheSet>("L1D", 128, 16, block_size, 0, true, replacement_policy, insertion_policy);
+    cache[1] = new Cache<CacheSet>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
     cache[0]->set_do_mrc(false);
     cache[1]->set_do_mrc(false);
     SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 81920);
@@ -284,7 +289,7 @@ int main(int argc, char** argv) {
     else predictor->disable();
 
 #else
-    Cache<CacheSet>* cache = new Cache<CacheSet>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, insertion_policy);
+    Cache<CacheSet>* cache = new Cache<CacheSet>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
     cache->set_do_mrc(false);
 #endif
     uint64_t inst_count = 0;

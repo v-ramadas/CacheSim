@@ -10,10 +10,13 @@
 #include <list>
 #include "mrc.h"
 #include "packet.h"
+#include "lru_replacement_policy.h"
 #include <cassert>
+#include <cstdlib>
 #include <iostream>
 
 class BaseCache;
+class LRU;
 
 uint64_t align_address(uint64_t address, uint64_t align_size);
 
@@ -27,7 +30,7 @@ namespace cachesim {
     extern bool DEBUG;
 };
 
-enum InsertionPolicy {
+enum class InsertionPolicy {
     EXCLUSIVE,
 };
 
@@ -79,7 +82,7 @@ class CacheSet {
     BaseCache* cache;
     uint64_t num_ways;
     std::vector<uint64_t> ways;
-    std::vector<uint64_t> lru;
+    BasePolicy* repl_counter;
     std::vector<bool> valid;
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
@@ -103,7 +106,7 @@ class CacheSet {
 
     public:
     CacheSet() {}
-    CacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+    CacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, uint64_t _level) {
         cache = p;
         num_ways = _num_ways;
         block_size = blk_size;
@@ -112,7 +115,8 @@ class CacheSet {
         num_blocks = CACHELINE_SIZE/block_size;
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
-        lru.resize(num_ways, 0);
+        repl_counter = create_policy(policy, num_ways);
+        assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
@@ -121,6 +125,7 @@ class CacheSet {
     }
 
     ~CacheSet() {
+        delete repl_counter;
     }
 
     bool try_hit(PacketPtr packet);
@@ -147,7 +152,7 @@ class SectoredCacheSet: public CacheSet {
 
     public:
     SectoredCacheSet() {}
-    SectoredCacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, uint64_t _level) {
+    SectoredCacheSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, uint64_t _level) {
         cache = p;
         num_ways = _num_ways;
         block_size = blk_size;
@@ -157,14 +162,20 @@ class SectoredCacheSet: public CacheSet {
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
         way_sectors.assign(num_ways, Sector(num_blocks));
-        lru.resize(num_ways, 0);
+        repl_counter = create_policy(policy, num_ways);
+        assert(repl_counter != nullptr);
+
         valid.resize(num_ways, false);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size, false);
     }
-    ~SectoredCacheSet() {}
+
+    ~SectoredCacheSet() {
+        delete repl_counter;
+    }
+
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
@@ -226,10 +237,10 @@ class Cache: public BaseCache {
     uint64_t num_ways;
     uint64_t total_accesses = 0;
     uint64_t level = 0;
-    std::unordered_map<uint64_t, T> sets;
+    std::unordered_map<uint64_t, T*> sets;
     const bool is_sectored;
     MRC mrc;
-    const InsertionPolicy insertion_policy = EXCLUSIVE;
+    const InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     //Stats
     uint64_t hits = 0;
     uint64_t misses = 0;
@@ -261,16 +272,16 @@ class Cache: public BaseCache {
         num_sets(1024),
         level(0),
         is_sectored(false),
-        insertion_policy(EXCLUSIVE) {
+        insertion_policy(InsertionPolicy::EXCLUSIVE) {
 
         num_ways = 16;
         for (uint64_t i = 0; i < num_sets; ++i) {
-            sets[i] = T(this, num_ways, 64, i, level);
+            sets[i] = new T(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
         }
         partial_misses.resize(CACHELINE_SIZE/64, 0);
     }
 
-    Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, uint64_t level, bool is_sectored, InsertionPolicy policy=EXCLUSIVE):
+    Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, uint64_t level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy=InsertionPolicy::EXCLUSIVE):
         NAME(name),
         num_sets(_num_sets),
         num_ways(_num_ways),
@@ -285,7 +296,7 @@ class Cache: public BaseCache {
             num_ways = num_ways*CACHELINE_SIZE/block_size;
         }
         for (uint64_t i = 0; i < num_sets; ++i) {
-            sets[i] = T(this, num_ways, block_size, i, level);
+            sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
         }
     
         partial_misses.resize(CACHELINE_SIZE/block_size, 0);
@@ -307,8 +318,8 @@ class Cache: public BaseCache {
     void print_reuse_distance();
 
     InsertionPolicy get_insertion_policy() const { return insertion_policy; }
-    uint64_t get_block_size(uint64_t set_idx) { return sets[set_idx].get_block_size(); }
-    bool get_do_mrc() {return sets[0].get_do_mrc();}
+    uint64_t get_block_size(uint64_t set_idx) { return sets[set_idx]->get_block_size(); }
+    bool get_do_mrc() {return sets[0]->get_do_mrc();}
     bool get_is_sectored() {return is_sectored;}
 
     //Stats
@@ -322,11 +333,11 @@ class Cache: public BaseCache {
     uint64_t get_evictions() const {return evictions; }
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}
-    const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx).get_ways();}
+    const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx)->get_ways();}
 
     void set_do_mrc(bool mrc) {
         for (auto& set: sets) {
-            set.second.set_do_mrc(mrc);
+            set.second->set_do_mrc(mrc);
         }
     }
 };
