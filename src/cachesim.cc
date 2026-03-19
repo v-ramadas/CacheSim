@@ -142,7 +142,7 @@ bool CacheSet::try_hit(PacketPtr packet) {
             }
             auto word_idx = (packet->address - packet->aligned_address) >> 3;
             set_footprint(way_idx, word_idx, true);
-            repl_counter->update(way_idx, false);
+            repl_counter->hit_update(way_idx);
         }
 
         hits++;
@@ -190,7 +190,7 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
             distance_counts[distance]++;
             reuse_dist += distance;
         }
-        repl_counter->update(way_idx, false);
+        repl_counter->hit_update(way_idx);
         for (auto sector_idx: sector_idx_list) {
             if (!packet->is_read) {
                 dirty[sector_idx] = true;
@@ -212,7 +212,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
     for (const auto block_address: packet->blocks) {
         way = std::find(way, valid.end(), false);
         auto way_idx = std::distance(valid.begin(), way);
-        repl_counter->update(way_idx, packet->is_sparse);
+        repl_counter->fill_update(way_idx, packet->is_sparse);
         if (block_address != UINT64_MAX) {
             ways[way_idx] = block_address;
         }
@@ -226,7 +226,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
             is_critical_word = true;
         }
         if (is_critical_word) {
-            repl_counter->update(way_idx, false);
+            repl_counter->hit_update(way_idx);
             //auto word_idx = (packet->address - block_address) >> 3;
             set_footprint(way_idx, block_idx, true);
         }
@@ -245,7 +245,7 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
     pc[way_idx] = packet->pc;
-    repl_counter->update(way_idx, false);
+    repl_counter->fill_update(way_idx, false);
     auto way_sector = &way_sectors[way_idx];
     for (const auto block_address: packet->blocks) {
         if (block_address != UINT64_MAX) {
@@ -683,10 +683,14 @@ void resize_packet(PacketPtr packet, uint64_t block_size) {
     }
 }
 
-BasePolicy* create_policy(ReplacementPolicy policy, uint64_t num_ways) {
+BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways) {
     switch (policy) {
         case ReplacementPolicy::LRU:
-            return new LRU(num_ways);
+            return new LRU(set_idx, num_ways);
+        case ReplacementPolicy::SRRIP:
+            return new SRRIP(set_idx, num_ways);
+        case ReplacementPolicy::DRRIP:
+            return new DRRIP(set_idx, num_ways);
         default:
             return nullptr;
     }

@@ -11,12 +11,13 @@
 #include "mrc.h"
 #include "packet.h"
 #include "lru_replacement_policy.h"
+#include "srrip_replacement_policy.h"
+#include "drrip_replacement_policy.h"
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
 
 class BaseCache;
-class LRU;
 
 uint64_t align_address(uint64_t address, uint64_t align_size);
 
@@ -115,7 +116,7 @@ class CacheSet {
         num_blocks = CACHELINE_SIZE/block_size;
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
-        repl_counter = create_policy(policy, num_ways);
+        repl_counter = create_policy(policy, set_idx, num_ways);
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         dirty.resize(num_ways, false);
@@ -162,7 +163,7 @@ class SectoredCacheSet: public CacheSet {
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
         way_sectors.assign(num_ways, Sector(num_blocks));
-        repl_counter = create_policy(policy, num_ways);
+        repl_counter = create_policy(policy, set_idx, num_ways);
         assert(repl_counter != nullptr);
 
         valid.resize(num_ways, false);

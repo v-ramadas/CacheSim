@@ -266,6 +266,8 @@ int main(int argc, char** argv) {
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
+        {"srrip", ReplacementPolicy::SRRIP},
+        {"drrip", ReplacementPolicy::DRRIP},
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
