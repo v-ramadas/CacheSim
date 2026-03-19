@@ -11,6 +11,8 @@ CHAMPSIM_DIR = ../ChampSim
 CACHE_SRC = src/cachesim.cc
 PREDICTOR_SRC = src/predictor.cc
 LRU_SRC = src/lru_replacement_policy.cc
+SRRIP_SRC = src/srrip_replacement_policy.cc
+DRRIP_SRC = src/drrip_replacement_policy.cc
 MRC_SRC = src/mrc.cc
 MAIN_SRC = src/main.cc
 TRACEREADER_SRC = $(CHAMPSIM_DIR)/src/tracereader.cc
@@ -21,13 +23,15 @@ TARGET_MULTI = cachesim_multi
 CACHE_OBJ = $(OBJ_DIR)/cachesim.o
 PREDICTOR_OBJ = $(OBJ_DIR)/predictor.o
 LRU_OBJ = $(OBJ_DIR)/lru_replacement_policy.o
+SRRIP_OBJ = $(OBJ_DIR)/srrip_replacement_policy.o
+DRRIP_OBJ = $(OBJ_DIR)/drrip_replacement_policy.o
 MRC_OBJ = $(OBJ_DIR)/mrc.o
 MAIN_OBJ = $(OBJ_DIR)/main.o
 MULTI_MAIN_OBJ = $(OBJ_DIR)/multi_main.o
 TRACEREADER_OBJ = $(OBJ_DIR)/tracereader.o
-OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(LRU_OBJ) $(MAIN_OBJ)
-MULTI_LEVEL_OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(PREDICTOR_OBJ) $(MRC_OBJ) $(LRU_OBJ) $(MULTI_MAIN_OBJ)
-ALL_OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(MAIN_OBJ) $(MULTI_MAIN_OBJ) $(PREDICTOR_OBJ) $(LRU_OBJ)
+OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(LRU_OBJ) $(SRRIP_OBJ) $(DRRIP_OBJ) $(MAIN_OBJ)
+MULTI_LEVEL_OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(PREDICTOR_OBJ) $(MRC_OBJ) $(LRU_OBJ) $(SRRIP_OBJ) $(DRRIP_OBJ) $(MULTI_MAIN_OBJ)
+ALL_OBJS = $(TRACEREADER_OBJ) $(CACHE_OBJ) $(MRC_OBJ) $(MAIN_OBJ) $(MULTI_MAIN_OBJ) $(PREDICTOR_OBJ) $(LRU_OBJ) $(SRRIP_OBJ) $(DRRIP_OBJ)
 
 # --- VCPKG Integration ---
 
@@ -77,6 +81,12 @@ $(CACHE_OBJ): $(CACHE_SRC)
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
 
 $(LRU_OBJ): $(LRU_SRC)
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
+
+$(SRRIP_OBJ): $(SRRIP_SRC)
+	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
+
+$(DRRIP_OBJ): $(DRRIP_SRC)
 	$(CXX) $(CXXFLAGS) $(INC_FLAGS) -c $< -o $@
 
 $(PREDICTOR_OBJ): $(PREDICTOR_SRC)
