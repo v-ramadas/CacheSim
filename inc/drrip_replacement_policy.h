@@ -4,7 +4,7 @@
 #include "replacement_policy.h"
 
 class DRRIP : public BasePolicy {
-    static constexpr uint64_t maxRRPV = 3;
+    const uint64_t maxRRPV ;
     static constexpr std::size_t NUM_POLICY = 2;
     static constexpr std::size_t SDM_SIZE = 32;
     static constexpr uint64_t BIP_MAX = 32;
@@ -15,18 +15,19 @@ class DRRIP : public BasePolicy {
     uint64_t PSEL = 0;
 
     public:
-    DRRIP() {}
-    DRRIP(uint64_t _set_idx, uint64_t _num_ways) {
+    DRRIP() : maxRRPV(3) {}
+    DRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) : maxRRPV(_num_ways-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, maxRRPV);
+        level = _level;
     }
     
-    void init_counter(bool is_sparse);
+    void init_counter(PacketPtr packet);
 
     void hit_update(uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, bool is_sparse);
+    void fill_update(uint64_t way_idx, PacketPtr packet);
 
     uint64_t get_eviction_candidate();
 

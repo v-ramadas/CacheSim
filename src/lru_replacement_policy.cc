@@ -2,9 +2,9 @@
 #include <fmt/core.h>
 
 
-void LRU::init_counter(bool is_sparse) {
+void LRU::init_counter(PacketPtr packet) {
     mru_counter += num_ways;
-    if (is_sparse) {
+    if (packet->is_sparse) {
         lru_counter++;
     }
 }
@@ -13,8 +13,8 @@ void LRU::hit_update(uint64_t way_idx) {
     counter[way_idx] = mru_counter;
 }
 
-void LRU::fill_update(uint64_t way_idx, bool is_sparse) {
-    if (is_sparse) {
+void LRU::fill_update(uint64_t way_idx, PacketPtr packet) {
+    if (packet->is_sparse) {
         counter[way_idx] = lru_counter;
     } else {
         counter[way_idx] = mru_counter;

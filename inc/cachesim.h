@@ -5,6 +5,7 @@
 #include <chrono>
 #include <numeric>
 #include <vector>
+#include <map>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include <list>
@@ -116,7 +117,7 @@ class CacheSet {
         num_blocks = CACHELINE_SIZE/block_size;
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
-        repl_counter = create_policy(policy, set_idx, num_ways);
+        repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         dirty.resize(num_ways, false);
@@ -163,7 +164,7 @@ class SectoredCacheSet: public CacheSet {
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
         way_sectors.assign(num_ways, Sector(num_blocks));
-        repl_counter = create_policy(policy, set_idx, num_ways);
+        repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
 
         valid.resize(num_ways, false);
@@ -197,7 +198,7 @@ class BaseCache {
     virtual bool try_hit(PacketPtr packet) = 0;
     virtual void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
     virtual void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
-    virtual void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level = 0) = 0;
+    virtual void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) = 0;
     virtual std::vector<uint64_t> handle_invalidate(PacketPtr packet) = 0;
     virtual void populate_fill_packet(PacketPtr packet) = 0;
 
@@ -206,6 +207,9 @@ class BaseCache {
     virtual MRC* get_mrc() = 0;
 
     virtual void update_data_var_utilization(uint64_t pc, uint64_t evictions, uint64_t footprint) = 0;
+    virtual void update_data_var_footprint(uint64_t pc, uint64_t footprint) = 0;
+
+    virtual void update_data_var_hits(uint64_t pc) = 0;
 
     virtual void print_mpki_curve(uint64_t inst_count) = 0;
     virtual void print_stats(uint64_t inst_count, std::string tracename) = 0;
@@ -257,6 +261,8 @@ class Cache: public BaseCache {
     // Workload Behavior
     std::unordered_map<uint64_t, uint64_t> data_var_misses;
     std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> data_var_utilization;
+    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_footprint;
+    std::map<uint64_t, uint64_t> data_var_hits;
     void update_data_var_utilization(uint64_t pc, uint64_t _evictions, uint64_t _footprint) {
         if (data_var_utilization.find(pc) == data_var_utilization.end()) {
             data_var_utilization[pc] = std::pair<uint64_t, uint64_t>(0, 0);
@@ -266,6 +272,31 @@ class Cache: public BaseCache {
         evictions += _evictions;
         footprint += _footprint;
     }
+
+    void update_data_var_footprint(uint64_t pc, uint64_t _footprint) {
+        if (data_var_utilization.find(pc) == data_var_utilization.end()) {
+            std::map<uint64_t, uint64_t> footprint_hist;
+            footprint_hist[0]=0;
+            footprint_hist[1]=0;
+            footprint_hist[2]=0;
+            footprint_hist[3]=0;
+            footprint_hist[4]=0;
+            footprint_hist[5]=0;
+            footprint_hist[6]=0;
+            footprint_hist[7]=0;
+
+            data_var_footprint[pc] = footprint_hist;
+        }
+        data_var_footprint[pc][_footprint] += 1;
+    }
+
+    void update_data_var_hits(uint64_t pc) {
+        if (data_var_hits.find(pc) == data_var_hits.end()) {
+            data_var_hits[pc] = 0;
+        }
+        data_var_hits[pc]++;
+    }
+
     
     public:
     Cache():
@@ -307,7 +338,7 @@ class Cache: public BaseCache {
     bool try_hit(PacketPtr packet);
     void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
     void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
-    void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level = 0);
+    void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet);
     std::vector<uint64_t> handle_invalidate(PacketPtr packet);
     void populate_fill_packet(PacketPtr packet);
 

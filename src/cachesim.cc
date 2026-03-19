@@ -70,17 +70,26 @@ void Cache<T>::print_stats(uint64_t inst_count, std::string tracename) {
 
     //print_reuse_distance();
     //print_histogram(page_count, get_block_size(0));
-//    for (auto& [pc, misses]: data_var_misses) {
-//        fmt::print("PC {:#x} MPKI {:4f}\n", pc, ((float)(misses)/inst_count)*1000);
-//    }
-//
+    for (auto& [pc, misses]: data_var_misses) {
+        fmt::print("PC {:#x} Misses {}\n", pc, misses);
+    }
+
+    for (auto& [pc, hits]: data_var_hits) {
+        fmt::print("PC {:#x} Hits {}\n", pc, hits);
+    }
+
 //    for (auto& [pc, pairs]: data_var_utilization) {
 //        fmt::print("PC {:#x} Utilization {:4f}\n", pc, (100*(float)(std::get<1>(pairs))/(std::get<0>(pairs)*get_block_size(0)/8)));
 //    }
-//
-//    for (auto& [pc, pairs]: data_var_utilization) {
-//        fmt::print("PC {:#x} Evictions {}\n", pc, std::get<0>(pairs)*get_block_size(0)/8);
-//    }
+
+    for (auto& [pc, pairs]: data_var_utilization) {
+        fmt::print("PC {:#x} Evictions {}\n", pc, std::get<0>(pairs)*get_block_size(0)/8);
+    }
+
+    for (auto& [pc, hist]: data_var_footprint) {
+        for (auto& [footprint, count]: hist)
+            fmt::print("PC {:#x} Density {} Count {}\n", pc, footprint, count);
+    }
 }
 
 bool CacheSet::get_footprint(uint64_t way_idx, uint64_t word_idx) {
@@ -130,7 +139,7 @@ bool CacheSet::try_hit(PacketPtr packet) {
     accesses++;
 
     if (hit) {
-        repl_counter->init_counter(false);
+        repl_counter->init_counter(packet);
         if (do_mrc) {
             auto distance = repl_counter->count_distance(hit_counter);
             distance_counts[distance]++;
@@ -184,7 +193,7 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
     accesses++;
 
     if (hit) {
-        repl_counter->init_counter(false);
+        repl_counter->init_counter(packet);
         if (do_mrc) {
             auto distance = repl_counter->count_distance(hit_counter);
             distance_counts[distance]++;
@@ -198,7 +207,6 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
         }
         auto word_idx = (packet->address - packet->aligned_address) >> 3;
         set_footprint(way_idx, word_idx, true);
-
         hits++;
     }
 
@@ -207,12 +215,12 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
 
 void CacheSet::handle_fill(PacketPtr packet) {
     auto way = valid.begin();
-    repl_counter->init_counter(packet->is_sparse);
+    repl_counter->init_counter(packet);
     uint64_t block_idx = 0;
     for (const auto block_address: packet->blocks) {
         way = std::find(way, valid.end(), false);
         auto way_idx = std::distance(valid.begin(), way);
-        repl_counter->fill_update(way_idx, packet->is_sparse);
+        repl_counter->fill_update(way_idx, packet);
         if (block_address != UINT64_MAX) {
             ways[way_idx] = block_address;
         }
@@ -232,7 +240,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
         }
         block_idx++;
         if (cachesim::DEBUG)
-            fmt::print("Level {} Inserting address {:#x} @ set {} way {} valid {} repl_counter {}\n", level, ways[way_idx], set_idx, way_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx));
+            fmt::print("Level {} Inserting address {:#x} @ set {} way {} valid {} repl_counter {} pc {:#x}\n", level, ways[way_idx], set_idx, way_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx]);
     }
     return;
 }
@@ -241,11 +249,11 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
     auto way = std::find(valid.begin(), valid.end(), false);
     auto way_idx = std::distance(valid.begin(), way);
     auto sector_idx = 0;
-    repl_counter->init_counter(false);
+    repl_counter->init_counter(packet);
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
     pc[way_idx] = packet->pc;
-    repl_counter->fill_update(way_idx, false);
+    repl_counter->fill_update(way_idx, packet);
     auto way_sector = &way_sectors[way_idx];
     for (const auto block_address: packet->blocks) {
         if (block_address != UINT64_MAX) {
@@ -257,7 +265,7 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
             set_footprint(way_idx, word_idx, true);
         }
         if (cachesim::DEBUG)
-            fmt::print("Level {} Inserting address {:#x} @ set {} way {} sector {} valid {} repl_counter {}\n", level, way_sectors[way_idx].sectors[sector_idx], set_idx, way_idx, sector_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx));
+            fmt::print("Level {} Inserting address {:#x} @ set {} way {} sector {} valid {} repl_counter {} pc {:#x}\n", level, way_sectors[way_idx].sectors[sector_idx], set_idx, way_idx, sector_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx]);
 
         sector_idx++;
     }
@@ -268,6 +276,10 @@ void CacheSet::handle_evict(PacketPtr packet) {
     uint64_t num_blocks_evicted = 0;
     uint64_t num_blocks_to_evict = packet->size/block_size;
     uint64_t num_invalid_blocks = (uint64_t)(std::count(valid.begin(), valid.end(), false));
+    if (cachesim::DEBUG)
+        fmt::print("Level {} Num invalid blocks {} Evicted blocks {} packet size {}\n",
+            level, num_invalid_blocks, num_blocks_evicted, packet->size);
+
     bool eviction_needed = (num_invalid_blocks < num_blocks_to_evict);
     if (!eviction_needed) {
         if (cachesim::DEBUG)
@@ -293,9 +305,9 @@ void CacheSet::handle_evict(PacketPtr packet) {
         }
 
         if (cachesim::DEBUG)//&& valid[way_idx])
-            fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {}\n",
-                level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx));
-
+            fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} num_blocks_to_evict {}\n",
+                level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
+                pc[way_idx], num_blocks_to_evict);
 
         valid[way_idx] = false;
         repl_counter->evict(way_idx);
@@ -304,6 +316,8 @@ void CacheSet::handle_evict(PacketPtr packet) {
         pc[way_idx] = UINT64_MAX;
         num_blocks_evicted++;
         cache->update_data_var_utilization(packet->pc, 1,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        cache->update_data_var_footprint(packet->pc,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
     }
@@ -354,8 +368,9 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     }
 
     if (cachesim::DEBUG)//&& valid[way_idx])
-        fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {}\n",
-            level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx));
+        fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x}\n",
+            level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
+            pc[way_idx]);
 
 
     valid[way_idx] = false;
@@ -366,6 +381,7 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     
     cache->update_data_var_utilization(packet->pc, packet->blocks.size(),
             count_footprint(packet->footprint));
+    cache->update_data_var_footprint(packet->pc, count_footprint(packet->footprint));
 
     if (cachesim::DEBUG)
         fmt::print("Level {} Num invalid blocks {} Evicted Line Footprint {:#x}\n",
@@ -391,6 +407,9 @@ uint64_t CacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         pc[way_idx] = UINT64_MAX;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        cache->update_data_var_footprint(packet->pc,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+
         if (cachesim::DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx);
         }
@@ -415,6 +434,8 @@ Sector SectoredCacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num)
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
         cache->update_data_var_utilization(packet->pc, 1,
+            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        cache->update_data_var_footprint(packet->pc,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
         if (cachesim::DEBUG) {
@@ -458,6 +479,7 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         hits++;
         if (packet->is_read) read_hits++;
         else write_hits++;
+        update_data_var_hits(packet->pc);
     } else {
         misses++;
         if (packet->is_read) read_misses++;
@@ -518,6 +540,15 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     eviction_packet->blocks.clear();
     eviction_packet->footprint = 0;
     sets[set_idx]->handle_evict(eviction_packet);
+    if (eviction_packet->blocks.size() == 0) {
+        eviction_packet->address = UINT64_MAX;
+    } else {
+        eviction_packet->address = *(std::find_if(eviction_packet->blocks.begin(),
+            eviction_packet->blocks.end(), [](uint64_t n) {
+                return n != UINT64_MAX;
+            }));
+    }
+    eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
     sets[set_idx]->handle_fill(fill_packet);
@@ -548,6 +579,15 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     sets[set_idx]->handle_evict(eviction_packet);
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
+    if (eviction_packet->blocks.size() == 0) {
+        eviction_packet->address = UINT64_MAX;
+    } else {
+        eviction_packet->address = *(std::find_if(eviction_packet->blocks.begin(),
+            eviction_packet->blocks.end(), [](uint64_t n) {
+                return n != UINT64_MAX;
+            }));
+    }
+    eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     sets[set_idx]->handle_fill(fill_packet);
     partial_misses[fill_packet->blocks.size()-1]++;
     fill_packet->blocks.clear();
@@ -557,7 +597,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
 }
 
 template<typename T>
-void Cache<T>::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet, int level) {
+void Cache<T>::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) {
 //    if (can_insert_at_level(level) == false) {
 //        return;
 //    }  
@@ -676,21 +716,25 @@ void resize_packet(PacketPtr packet, uint64_t block_size) {
             packet->blocks.size() != num_blocks) {
         packet->blocks.resize(num_blocks);
         auto aligned_address = 
-            align_address(packet->blocks[0], packet->size);
+            align_address(packet->address, packet->size);
         for (uint64_t idx = 0; idx < block_size; ++idx) {
             packet->blocks[idx] = aligned_address + idx*block_size;
         }
     }
 }
 
-BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways) {
+BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level) {
+    if (level == 0) {
+        return new LRU(set_idx, num_ways, level);
+    }
+
     switch (policy) {
         case ReplacementPolicy::LRU:
-            return new LRU(set_idx, num_ways);
+            return new LRU(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
-            return new SRRIP(set_idx, num_ways);
+            return new SRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::DRRIP:
-            return new DRRIP(set_idx, num_ways);
+            return new DRRIP(set_idx, num_ways, level);
         default:
             return nullptr;
     }

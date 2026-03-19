@@ -10,14 +10,14 @@ void DRRIP::update_bip(uint64_t way_idx) {
     }
 }
 
-void DRRIP::init_counter(bool is_sparse) {
+void DRRIP::init_counter(PacketPtr packet) {
 }
 
 void DRRIP::hit_update(uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void DRRIP::fill_update(uint64_t way_idx, bool is_sparse) {
+void DRRIP::fill_update(uint64_t way_idx, PacketPtr packet) {
     auto leader_idx = NUM_POLICY*SDM_SIZE;
     if (set_idx > NUM_POLICY*SDM_SIZE) { // follower sets
         if (PSEL > (PSEL_WIDTH/2)) { // follow BIP

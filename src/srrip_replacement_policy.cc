@@ -1,32 +1,65 @@
 #include "srrip_replacement_policy.h"
 #include <fmt/core.h>
 
-
-void SRRIP::init_counter(bool is_sparse) {
+void SRRIP::init_counter(PacketPtr packet) {
+    if (diff < maxRRPV)
+        std::transform(std::cbegin(counter), std::cend(counter), std::begin(counter), [_diff = diff](auto x) { return x + _diff; });
+    diff = UINT64_MAX;
+    global_clock++;
 }
 
 void SRRIP::hit_update(uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void SRRIP::fill_update(uint64_t way_idx, bool is_sparse) {
-    if (is_sparse) {
-        counter[way_idx] = sparseRRPV - 3;
-    } else {
+void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet) {
+    if (packet->pc != 10 && level != 0) {
         counter[way_idx] = denseRRPV - 1;
+    } else {
+        counter[way_idx] = sparseRRPV - 1;
     }
+    insertion_clock[way_idx] = global_clock;
 }
 
 uint64_t SRRIP::get_eviction_candidate() {
-    auto way = std::max_element(std::begin(counter), std::end(counter));
-    uint64_t way_idx = std::distance(std::begin(counter), way);
-    std::transform(std::cbegin(counter), std::cend(counter), std::begin(counter), [diff = maxRRPV - *way](auto x) { return x + diff; });
+//    auto way = std::max_element(std::begin(counter), std::end(counter),
+//            [this](uint64_t a, uint64_t b) {
+//                bool a_valid = a <= maxRRPV;
+//                bool b_valid = b <= maxRRPV;
+//                if (!a_valid && b_valid) return true;
+//                if (a_valid && !b_valid) return false;
+//                return a < b;
+//            });
+    auto candidate_idx = 0;
+    auto candidate = counter[candidate_idx];
+    for (uint64_t idx = 0; idx < num_ways; idx++) {
+        candidate = counter[candidate_idx];
+        auto way = counter[idx];
 
-    return way_idx;
+        if (way > maxRRPV) continue;
+        if (candidate > maxRRPV) {
+            candidate_idx = idx;
+            continue;
+        }
+
+        if (way > candidate) candidate_idx = idx;
+        else if (way == candidate) {
+            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
+                candidate_idx = idx;
+            }
+        }
+    }
+
+    //uint64_t way_idx = std::distance(std::begin(counter), way);
+    //diff = std::min(diff, maxRRPV - *way);
+    //return way_idx;
+    diff = std::min(diff, maxRRPV - candidate);
+    return candidate_idx;
 }
 
 void SRRIP::evict(uint64_t way_idx) {
-    counter[way_idx] = maxRRPV-1;
+    counter[way_idx] = UINT_MAX;
+    insertion_clock[way_idx] = UINT_MAX;
 }
 
 uint64_t SRRIP::get_counter_value(uint64_t way_idx) {
@@ -43,6 +76,4 @@ uint64_t SRRIP::count_distance(uint64_t threshold) {
 }
 
 void SRRIP::print() {
-    fmt::print("SRRIP\n");
-    std::fflush(stdout);
 }
