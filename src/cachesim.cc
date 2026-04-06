@@ -8,7 +8,7 @@ uint64_t align_address(uint64_t address, uint64_t align_size) {
 }
 
 template<typename T>
-uint64_t Cache<T>::get_set_idx(uint64_t address) {
+uint64_t Cache<T>::get_set_idx(uint64_t address) const {
     uint64_t offset_bits = champsim::msl::lg2(CACHELINE_SIZE);
     uint64_t set_bits = champsim::msl::lg2(num_sets);
     uint64_t set_idx = (address >> offset_bits) & ((0x1 << set_bits) - 1);
@@ -228,10 +228,12 @@ void CacheSet::handle_fill(PacketPtr packet) {
         pc[way_idx] = packet->pc;
         auto is_critical_word = false;
         //TODO: Check this logic
-        if (packet->footprint != 0 && (packet->footprint >> block_idx) & 0x1) {
-            is_critical_word = true;
-        } else if (align_address(packet->address, block_size) == block_address) {
-            is_critical_word = true;
+        if (block_size != CACHELINE_SIZE) {
+            if (packet->footprint != 0 && (packet->footprint >> block_idx) & 0x1) {
+                is_critical_word = true;
+            } else if (align_address(packet->address, block_size) == block_address) {
+                is_critical_word = true;
+            }
         }
         if (is_critical_word) {
             repl_counter->hit_update(way_idx);
@@ -274,14 +276,13 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
 
 void CacheSet::handle_evict(PacketPtr packet) {
     uint64_t num_blocks_evicted = 0;
+    auto num_invalid_blocks = get_num_invalid();
     uint64_t num_blocks_to_evict = packet->size/block_size;
-    uint64_t num_invalid_blocks = (uint64_t)(std::count(valid.begin(), valid.end(), false));
     if (cachesim::DEBUG)
         fmt::print("Level {} Num invalid blocks {} Evicted blocks {} packet size {}\n",
             level, num_invalid_blocks, num_blocks_evicted, packet->size);
 
-    bool eviction_needed = (num_invalid_blocks < num_blocks_to_evict);
-    if (!eviction_needed) {
+    if (!is_eviction_needed(num_blocks_to_evict)) {
         if (cachesim::DEBUG)
             fmt::print("Level {} No eviction needed for set {} because there are {} invalid ways\n", level, set_idx, std::count(valid.begin(), valid.end(), false));
         return;
@@ -330,8 +331,8 @@ void CacheSet::handle_evict(PacketPtr packet) {
 }
 
 void SectoredCacheSet::handle_evict(PacketPtr packet) {
-    uint64_t num_invalid_blocks = (uint64_t)(std::count(valid.begin(), valid.end(), false));
     auto try_hit = std::find(ways.begin(), ways.end(), packet->aligned_address);
+    auto num_invalid_blocks = get_num_invalid();
     bool hit = (try_hit != ways.end());
     bool eviction_needed = (num_invalid_blocks == 0) && (hit != true);
     if (!eviction_needed) {
@@ -341,7 +342,7 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
 
         } else {
             if (cachesim::DEBUG)
-                fmt::print("Level {} No eviction needed for set {} because there are {} invalid ways\n", level, set_idx, std::count(valid.begin(), valid.end(), false));
+                fmt::print("Level {} No eviction needed for set {} because there are {} invalid ways\n", level, set_idx, get_num_invalid());
         }
         return;
     }
@@ -706,6 +707,13 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
     return;
 }
 
+template<typename T>
+bool Cache<T>::is_eviction_needed(PacketPtr packet) const {
+    auto set_idx = get_set_idx(packet->address);
+    uint64_t num_blocks = packet->size/sets.at(set_idx)->get_block_size();
+    return sets.at(set_idx)->is_eviction_needed(num_blocks);
+}
+ 
 uint64_t count_footprint(uint64_t footprint) {
     return __builtin_popcountll(footprint);
 }
@@ -724,10 +732,6 @@ void resize_packet(PacketPtr packet, uint64_t block_size) {
 }
 
 BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level) {
-    if (level == 0) {
-        return new LRU(set_idx, num_ways, level);
-    }
-
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);

@@ -145,6 +145,11 @@ class CacheSet {
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
+    uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
+
+    bool is_eviction_needed(uint64_t num_ways) const {
+        return (get_num_invalid() < num_ways);
+    }
 };
 
 class SectoredCacheSet: public CacheSet {
@@ -188,13 +193,17 @@ class SectoredCacheSet: public CacheSet {
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
+    uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
 
+    bool is_eviction_needed(uint64_t num_ways) const {
+        return (get_num_invalid() < num_ways);
+    }
 };
 
 class BaseCache {
     public:
     virtual ~BaseCache() = default;
-    virtual uint64_t get_set_idx(uint64_t address) = 0;
+    virtual uint64_t get_set_idx(uint64_t address) const = 0;
     virtual bool try_hit(PacketPtr packet) = 0;
     virtual void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
     virtual void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
@@ -216,7 +225,7 @@ class BaseCache {
     virtual void print_reuse_distance() = 0;
 
     virtual InsertionPolicy get_insertion_policy() const = 0;
-    virtual uint64_t get_block_size(uint64_t set_idx) = 0;
+    virtual uint64_t get_block_size(uint64_t set_idx) const = 0;
     virtual bool get_do_mrc() = 0;
     virtual bool get_is_sectored() = 0;
 
@@ -233,6 +242,7 @@ class BaseCache {
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
 
     virtual void set_do_mrc(bool mrc)  = 0;
+    virtual bool is_eviction_needed(PacketPtr packet) const = 0;
 };
 
 template<typename T>
@@ -334,7 +344,7 @@ class Cache: public BaseCache {
         partial_misses.resize(CACHELINE_SIZE/block_size, 0);
     }
 
-    uint64_t get_set_idx(uint64_t address);
+    uint64_t get_set_idx(uint64_t address) const;
     bool try_hit(PacketPtr packet);
     void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
     void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
@@ -342,6 +352,7 @@ class Cache: public BaseCache {
     std::vector<uint64_t> handle_invalidate(PacketPtr packet);
     void populate_fill_packet(PacketPtr packet);
 
+    bool is_eviction_needed(PacketPtr packet) const;
     bool can_insert_at_level(int level);
 
     MRC* get_mrc() {return &mrc;};
@@ -350,7 +361,7 @@ class Cache: public BaseCache {
     void print_reuse_distance();
 
     InsertionPolicy get_insertion_policy() const { return insertion_policy; }
-    uint64_t get_block_size(uint64_t set_idx) { return sets[set_idx]->get_block_size(); }
+    uint64_t get_block_size(uint64_t set_idx) const { return sets.at(set_idx)->get_block_size(); }
     bool get_do_mrc() {return sets[0]->get_do_mrc();}
     bool get_is_sectored() {return is_sectored;}
 
@@ -372,6 +383,7 @@ class Cache: public BaseCache {
             set.second->set_do_mrc(mrc);
         }
     }
+
 };
 
 #endif

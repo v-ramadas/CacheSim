@@ -73,11 +73,11 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     }
 
-    if (hit && access_packet->is_sparse && (predictor->get_footprint(access_packet) < 2)) {
-        if (cachesim::DEBUG)
-            fmt::print("Hit at level {}, address {:#x}. Access is to a sparse block, so nothing else to do\n", hit_at_level, access_packet->address);
-        return;
-    }
+//    if (hit && access_packet->is_sparse && (predictor->get_footprint(access_packet) < 2)) {
+//        if (cachesim::DEBUG)
+//            fmt::print("Hit at level {}, address {:#x}. Access is to a sparse block, so nothing else to do\n", hit_at_level, access_packet->address);
+//        return;
+//    }
     
     bool needs_invalidate = false;
     if (hit) {
@@ -101,9 +101,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     if (hit_at_level != 0) {
         if (needs_invalidate) {
             fill_packet->blocks = cache[hit_at_level]->handle_invalidate(fill_packet);
-            fill_packet->address = fill_packet->blocks[0];
+            //fill_packet->address = fill_packet->blocks[0];
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
         } else {
+            cache[1]->handle_invalidate(fill_packet);
             cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
         }
         auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
@@ -127,9 +128,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 fill_packet->aligned_address = eviction_packet->aligned_address;
                 fill_packet->blocks = eviction_packet->blocks;
                 fill_packet->footprint = eviction_packet->footprint;
-                cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
-                //fmt::print("Level {}: Filled line {:#x}\n", i, fill_packet->address);
-
+                fill_packet->pc = eviction_packet->pc;
+//                if (!cache[i]->is_eviction_needed(fill_packet) || fill_packet->pc == 10)
+                if (fill_packet->pc == 10)
+                    cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
             } else {
                 break;
             }
@@ -280,9 +282,9 @@ int main(int argc, char** argv) {
     std::vector<BaseCache*> cache;
     cache.resize(2);
     if (block_size == CACHELINE_SIZE)
-        cache[0] = new Cache<CacheSet>("L1D", 128, 16, block_size, 0, false, replacement_policy, insertion_policy);
+        cache[0] = new Cache<CacheSet>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
     else
-        cache[0] = new Cache<SectoredCacheSet>("L1D", 128, 16, block_size, 0, true, replacement_policy, insertion_policy);
+        cache[0] = new Cache<SectoredCacheSet>("L1D", 128, 16, block_size, 0, true, ReplacementPolicy::LRU, insertion_policy);
     cache[1] = new Cache<CacheSet>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
     cache[0]->set_do_mrc(false);
     cache[1]->set_do_mrc(false);

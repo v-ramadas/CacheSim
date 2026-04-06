@@ -15,13 +15,14 @@ class SRRIP : public BasePolicy {
     SRRIP(): maxRRPV(3) {}
 
     SRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
-        maxRRPV((1ul << (64 - __builtin_clz(_num_ways))-1)) {
+//        maxRRPV(((1ul) << ((64) - (__builtin_clz(_num_ways)))-1)) {
+        maxRRPV(_num_ways-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, UINT_MAX);
+        counter.resize(num_ways, maxRRPV);
         insertion_clock.resize(num_ways, UINT64_MAX);
         denseRRPV = maxRRPV;
-        sparseRRPV = maxRRPV/2;
+        sparseRRPV = maxRRPV;
         level = _level;
         global_clock = 0;
     }

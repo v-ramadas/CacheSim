@@ -3,9 +3,15 @@
 
 void SRRIP::init_counter(PacketPtr packet) {
     if (diff < maxRRPV)
-        std::transform(std::cbegin(counter), std::cend(counter), std::begin(counter), [_diff = diff](auto x) { return x + _diff; });
+        std::transform(std::cbegin(counter), std::cend(counter), std::begin(counter), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
+                uint64_t val = x + _diff;
+                if (val <= _maxRRPV) return val;
+                else return _maxRRPV;
+        });
+
     diff = UINT64_MAX;
     global_clock++;
+
 }
 
 void SRRIP::hit_update(uint64_t way_idx) {
@@ -22,14 +28,6 @@ void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet) {
 }
 
 uint64_t SRRIP::get_eviction_candidate() {
-//    auto way = std::max_element(std::begin(counter), std::end(counter),
-//            [this](uint64_t a, uint64_t b) {
-//                bool a_valid = a <= maxRRPV;
-//                bool b_valid = b <= maxRRPV;
-//                if (!a_valid && b_valid) return true;
-//                if (a_valid && !b_valid) return false;
-//                return a < b;
-//            });
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];
     for (uint64_t idx = 0; idx < num_ways; idx++) {
@@ -50,15 +48,12 @@ uint64_t SRRIP::get_eviction_candidate() {
         }
     }
 
-    //uint64_t way_idx = std::distance(std::begin(counter), way);
-    //diff = std::min(diff, maxRRPV - *way);
-    //return way_idx;
     diff = std::min(diff, maxRRPV - candidate);
     return candidate_idx;
 }
 
 void SRRIP::evict(uint64_t way_idx) {
-    counter[way_idx] = UINT_MAX;
+    counter[way_idx] = maxRRPV;
     insertion_clock[way_idx] = UINT_MAX;
 }
 
