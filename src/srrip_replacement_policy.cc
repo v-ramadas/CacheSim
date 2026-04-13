@@ -9,6 +9,7 @@ void SRRIP::init_counter(PacketPtr packet) {
                 else return _maxRRPV;
         });
 
+
     diff = UINT64_MAX;
     global_clock++;
 
@@ -53,7 +54,7 @@ uint64_t SRRIP::get_eviction_candidate() {
 }
 
 void SRRIP::evict(uint64_t way_idx) {
-    counter[way_idx] = maxRRPV;
+    counter[way_idx] = UINT_MAX;
     insertion_clock[way_idx] = UINT_MAX;
 }
 

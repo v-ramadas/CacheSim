@@ -53,7 +53,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         }
 
         hit = cache[i]->try_hit(access_packet);
-        //fmt::print("Level {}: Accessing {:#x} ({}) for {}\n", i, access_packet->address, hit ? "HIT" : "MISS", is_read ? "READ" : "WRITE");
 
         if (hit) {
             hit_at_level = i;
@@ -73,12 +72,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     }
 
-//    if (hit && access_packet->is_sparse && (predictor->get_footprint(access_packet) < 2)) {
-//        if (cachesim::DEBUG)
-//            fmt::print("Hit at level {}, address {:#x}. Access is to a sparse block, so nothing else to do\n", hit_at_level, access_packet->address);
-//        return;
-//    }
-    
     bool needs_invalidate = false;
     if (hit) {
         if (access_packet->is_sparse && !cache[0]->get_is_sectored()) {
@@ -129,9 +122,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 fill_packet->blocks = eviction_packet->blocks;
                 fill_packet->footprint = eviction_packet->footprint;
                 fill_packet->pc = eviction_packet->pc;
-//                if (!cache[i]->is_eviction_needed(fill_packet) || fill_packet->pc == 10)
-                if (fill_packet->pc == 10)
-                    cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
+                cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
             } else {
                 break;
             }
@@ -157,48 +148,12 @@ void access_single_level(Cache<T> *cache,
     fill_packet->pc = pc;
     eviction_packet->size = CACHELINE_SIZE;
     bool hit = cache->try_hit(access_packet);
-    //fmt::print("Accessing {:#x} ({}) for {}\n", access_packet->address, hit ? "HIT" : "MISS", is_read ? "READ" : "WRITE");
     if (!hit) {
         cache->handle_fill_line(fill_packet, eviction_packet, 0);
     }
     return;
 }
 #endif
-//void histogram(const ooo_model_instr inst, std::map<uint64_t, uint64_t> &count, const uint64_t histogram_granularity, const uint64_t block_size) {
-//    for (auto& smem:inst.source_memory) {
-//        auto size = histogram_granularity;
-//        auto cacheline_size = block_size;
-//        auto cacheline = (smem.to<uint64_t>()/cacheline_size)*cacheline_size;
-//
-//        auto aligned_addr = (cacheline/size)*size;
-//        if (count.find(aligned_addr) == count.end()) {
-//            count.insert(std::pair<uint64_t, uint64_t>(aligned_addr, 1));
-//        } else {
-//            count[aligned_addr]++;
-//        }
-//    }
-//}
-
-//void print_histogram(std::map<uint64_t, uint64_t> &count, const uint64_t block_size) {
-//    fmt::print("Histogram\n");
-//    std::map<uint64_t, uint64_t> freq;
-//    uint64_t sum = 0;
-//    uint64_t num = 0;
-//    for (auto const&it : count) {
-//        if (freq.find(it.second) == freq.end()) {
-//            freq.insert(std::pair<uint64_t, uint64_t>(it.second, 1));
-//        } else {
-//            freq[it.second]++;
-//        }        
-//        num++;
-//        sum += it.second;
-//    }
-//    for (auto const& it : count) {
-//        fmt::print("Accesses {:#x}, Count {}\n", it.first, it.second);
-//    }
-//     fmt::print("Average reuse {:4f}\n", ((float)sum)/num);
-//    fmt::print("Footprint: {}\n", count.size()*block_size);
-//}
 
 #ifdef MULTI_LEVEL
 void useLogFile(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, uint64_t &inst_count) {
@@ -220,7 +175,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
         uint64_t address;
         char action[16];
         if (cachesim::DEBUG) {
-            if (inst_count > 25000000) {
+            if (inst_count > 25000) {
                 break;
             }
         }
@@ -346,13 +301,10 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     for (auto cache_inst: cache)
         cache_inst->print_stats(inst_count, tracename);
-//    print_stats(cache[0], inst_count, tracename, 128, 16, CACHELINE_SIZE);
-//    print_stats(cache[1], inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
     cache.clear();
     delete predictor;
 #else
     cache->print_stats(inst_count, tracename);
-//    print_stats(cache, inst_count, tracename, llc_num_sets, llc_num_ways, block_size);
     delete cache;
 #endif
     delete access_packet;

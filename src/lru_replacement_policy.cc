@@ -6,6 +6,7 @@ void LRU::init_counter(PacketPtr packet) {
     mru_counter += num_ways;
     if (packet->is_sparse) {
         lru_counter++;
+        mru_counter++;
     }
 }
 
