@@ -226,6 +226,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
         }
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
+        serviced_from_llc[way_idx] = packet->serviced_from_llc;
         auto is_critical_word = false;
         //TODO: Check this logic
         if (block_size != CACHELINE_SIZE) {
@@ -237,7 +238,6 @@ void CacheSet::handle_fill(PacketPtr packet) {
         }
         if (is_critical_word) {
             repl_counter->hit_update(way_idx);
-            //auto word_idx = (packet->address - block_address) >> 3;
             set_footprint(way_idx, block_idx, true);
         }
         block_idx++;
@@ -255,6 +255,8 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
     pc[way_idx] = packet->pc;
+    serviced_from_llc[way_idx] = packet->serviced_from_llc;
+
     repl_counter->fill_update(way_idx, packet);
     auto way_sector = &way_sectors[way_idx];
     for (const auto block_address: packet->blocks) {
@@ -315,6 +317,8 @@ void CacheSet::handle_evict(PacketPtr packet) {
         ways[way_idx] = UINT64_MAX;
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        packet->serviced_from_llc = serviced_from_llc[way_idx];
+        serviced_from_llc[way_idx] = false;
         num_blocks_evicted++;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -379,6 +383,8 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     ways[way_idx] = UINT64_MAX;
     packet->pc = pc[way_idx];
     pc[way_idx] = UINT64_MAX;
+    packet->serviced_from_llc = serviced_from_llc[way_idx];
+    serviced_from_llc[way_idx] = false;
     
     cache->update_data_var_utilization(packet->pc, packet->blocks.size(),
             count_footprint(packet->footprint));
@@ -406,6 +412,7 @@ uint64_t CacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         ways[way_idx] = UINT64_MAX;
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        serviced_from_llc[way_idx] = false;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
         cache->update_data_var_footprint(packet->pc,
@@ -434,6 +441,7 @@ Sector SectoredCacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num)
         way_sectors[way_idx].invalidate();
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        serviced_from_llc[way_idx] = false;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
         cache->update_data_var_footprint(packet->pc,
@@ -498,9 +506,6 @@ bool Cache<T>::try_hit(PacketPtr packet) {
 
 template<typename T>
 void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level) {
-//    if (can_insert_at_level(level) == false) {
-//        return;
- //   }
 
     if (fill_packet->blocks.size() == 0) {
         if (cachesim::DEBUG)
@@ -508,33 +513,17 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
         return;
     }
     Packet fill_block_packet;
-    //fill_block_packet.blocks.resize(1);
-    //fill_block_packet.is_sparse = fill_packet->is_sparse;
-    //uint32_t block_misses = 0;
     uint64_t idx = 0;
-//    for (const auto block: fill_packet->blocks) {
 
     auto set_idx = get_set_idx(fill_packet->blocks[0]);
     auto block_size = sets[set_idx]->get_block_size();
-    //fill_packet.address = block;
-    //fill_packet.size = block_size;
     if (is_sectored)
         fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     else
         fill_packet->aligned_address = align_address(fill_packet->address, block_size);
-        //fill_block_packet.blocks[0] = block;
-        //fill_block_packet.footprint = (fill_packet->footprint >> idx);
-        //auto was_accessed = fill_block_packet.footprint & 0x1;
-        //if (fill_packet->is_sparse && !was_accessed) {
-        //    if (cachesim::DEBUG)
-        //        fmt::print("Block address {:#x} in set {} not accessed in sparse line. Footprint {} block idx {}. Dropping it\n", block, set_idx, fill_block_packet.footprint, idx);
-        //    idx++;
-        //    continue;
-        //}
+
     populate_fill_packet(fill_packet);
     if (fill_packet->blocks.size() == 0) {
-            //idx++;
-            //continue;
         return;
     }
     eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
@@ -553,23 +542,16 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
     sets[set_idx]->handle_fill(fill_packet);
-    //block_misses++;
     idx++;
     if (cachesim::DEBUG)
         fmt::print("Level {} Inserted address {:#x} @ set {}\n", level, fill_packet->address, set_idx);
 
-//    }
-    //if (block_misses > 0)
-    //    partial_misses[block_misses-1]++;
     fill_packet->blocks.clear();
     return;
 }
 
 template<typename T>
 void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level) {
-//    if (can_insert_at_level(level) == false) {
-//        return;
-//    }
     auto set_idx = get_set_idx(fill_packet->address);
     fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
     // Populate the vector
@@ -599,9 +581,6 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
 
 template<typename T>
 void Cache<T>::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) {
-//    if (can_insert_at_level(level) == false) {
-//        return;
-//    }  
     auto set_idx = get_set_idx(access_packet->address);
     sets[set_idx]->handle_evict(eviction_packet);
     num_blocks_used += count_footprint(eviction_packet->footprint);

@@ -12,6 +12,7 @@ struct Packet {
     bool is_read;
     bool is_sparse;
     uint64_t footprint;
+    bool serviced_from_llc;
 
     Packet() {
         clear_pc();
@@ -25,6 +26,7 @@ struct Packet {
         blocks.clear();
         is_read = false;
         is_sparse = false;
+        serviced_from_llc = false;
         footprint = 0;
     }
 

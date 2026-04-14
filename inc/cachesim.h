@@ -86,6 +86,7 @@ class CacheSet {
     std::vector<uint64_t> ways;
     BasePolicy* repl_counter;
     std::vector<bool> valid;
+    std::vector<bool> serviced_from_llc;
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
     std::vector<bool> footprint;
@@ -120,6 +121,7 @@ class CacheSet {
         repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
+        serviced_from_llc.resize(num_ways, false);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
@@ -145,6 +147,7 @@ class CacheSet {
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
+    bool get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
 
     bool is_eviction_needed(uint64_t num_ways) const {
@@ -171,8 +174,8 @@ class SectoredCacheSet: public CacheSet {
         way_sectors.assign(num_ways, Sector(num_blocks));
         repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
-
         valid.resize(num_ways, false);
+        serviced_from_llc.resize(num_ways, false);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
@@ -193,6 +196,7 @@ class SectoredCacheSet: public CacheSet {
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
+    bool get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
 
     bool is_eviction_needed(uint64_t num_ways) const {
@@ -229,6 +233,7 @@ class BaseCache {
     virtual bool get_do_mrc() = 0;
     virtual bool get_is_sectored() = 0;
 
+    virtual std::string get_name() const = 0;
     virtual uint64_t get_hits() const = 0; 
     virtual uint64_t get_misses() const = 0; 
     virtual uint64_t get_accesses() const = 0; 
@@ -344,6 +349,7 @@ class Cache: public BaseCache {
         partial_misses.resize(CACHELINE_SIZE/block_size, 0);
     }
 
+    std::string get_name() const {return NAME;}
     uint64_t get_set_idx(uint64_t address) const;
     bool try_hit(PacketPtr packet);
     void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);

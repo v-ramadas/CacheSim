@@ -9,21 +9,20 @@ void SRRIP::init_counter(PacketPtr packet) {
                 else return _maxRRPV;
         });
 
-
     diff = UINT64_MAX;
     global_clock++;
 
 }
 
 void SRRIP::hit_update(uint64_t way_idx) {
-    counter[way_idx] = 0;
+//    counter[way_idx] = 0;
 }
 
 void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet) {
-    if (packet->pc != 10 && level != 0) {
-        counter[way_idx] = denseRRPV - 1;
+    if (packet->serviced_from_llc == true) {
+        counter[way_idx] = 0;
     } else {
-        counter[way_idx] = sparseRRPV - 1;
+        counter[way_idx] = denseRRPV - 1;
     }
     insertion_clock[way_idx] = global_clock;
 }
