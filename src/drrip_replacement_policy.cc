@@ -43,6 +43,32 @@ uint64_t DRRIP::get_eviction_candidate() {
     return way_idx;
 }
 
+uint64_t DRRIP::get_reserved_eviction_candidate() {
+//    assert(reserved_ways == 0);
+//    auto candidate_idx = 0;
+//    auto candidate = counter[candidate_idx];
+//    for (uint64_t idx = num_ways; idx < num_ways+reserved_ways; idx++) {
+//        candidate = counter[candidate_idx];
+//        auto way = counter[idx];
+//
+//        if (way > maxRRPV) continue;
+//        if (candidate > maxRRPV) {
+//            candidate_idx = idx;
+//            continue;
+//        }
+//
+//        if (way > candidate) candidate_idx = idx;
+//        else if (way == candidate) {
+//            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
+//                candidate_idx = idx;
+//            }
+//        }
+//    }
+//
+//    diff = std::min(diff, maxRRPV - candidate);
+//    return candidate_idx;
+}
+
 void DRRIP::evict(uint64_t way_idx) {
     counter[way_idx] = maxRRPV;
 }
@@ -60,7 +86,7 @@ uint64_t DRRIP::count_distance(uint64_t threshold) {
     return distance;
 }
 
-void DRRIP::print() {
-    fmt::print("DRRIP\n");
-    std::fflush(stdout);
+void DRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
+    num_ways -= num_ways_to_reserve;
+    reserved_ways = num_ways_to_reserve;
 }

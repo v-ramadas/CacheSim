@@ -5,9 +5,11 @@
 #include <vector>
 #include <cstdint>
 #include "packet.h"
+#include <cassert>
 
 enum class ReplacementPolicy {
     LRU,
+    PLRU,
     SRRIP,
     DRRIP,
 };
@@ -18,6 +20,7 @@ class BasePolicy {
     std::vector<uint64_t> insertion_clock;
     uint64_t set_idx;
     uint64_t num_ways;
+    uint64_t reserved_ways;
     uint64_t level;
     uint64_t global_clock;
 
@@ -28,10 +31,12 @@ class BasePolicy {
     virtual void hit_update(uint64_t way_idx) = 0;
     virtual void fill_update(uint64_t way_idx, PacketPtr packet) = 0;
     virtual uint64_t get_eviction_candidate() = 0;
+    virtual uint64_t get_reserved_eviction_candidate() = 0;
     virtual void evict(uint64_t way_idx) = 0;
     virtual uint64_t get_counter_value(uint64_t way_idx) = 0;
     virtual uint64_t count_distance(uint64_t threshold) = 0;
-    virtual void print() = 0;
+    virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;
+    virtual uint64_t get_reserved_ways() = 0;
 };
 
 BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level);

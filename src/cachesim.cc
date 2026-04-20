@@ -292,7 +292,7 @@ void CacheSet::handle_evict(PacketPtr packet) {
 
     num_blocks_to_evict -= num_invalid_blocks;
     while (num_blocks_evicted < num_blocks_to_evict) {
-        auto way_idx = repl_counter->get_eviction_candidate(); 
+        auto way_idx = repl_counter->get_eviction_candidate();
 
         if (dirty[way_idx]) {
             dirty[way_idx] = false;
@@ -517,6 +517,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
 
     auto set_idx = get_set_idx(fill_packet->blocks[0]);
     auto block_size = sets[set_idx]->get_block_size();
+
     if (is_sectored)
         fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     else
@@ -637,7 +638,6 @@ void Cache<T>::print_reuse_distance() {
 template<typename T>
 void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
     if (fill_packet->blocks.size() != 0)  {
-        //auto is_sparse = fill_packet->is_sparse;
         int idx = 0;
         for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
             if (*it == UINT64_MAX) {
@@ -651,15 +651,11 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
             }
             auto set_idx = get_set_idx(fill_packet->address);
             auto ways = get_ways(set_idx);
-            //auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
             auto try_hit = std::find(ways.begin(), ways.end(), *it);
-            if (try_hit != ways.end()) {// || (is_sparse && !was_accessed)) {
+            if (try_hit != ways.end()) {
                 auto way_idx = std::distance(ways.begin(), try_hit);
                 if (cachesim::DEBUG && try_hit != ways.end())
                     fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
-//                else if (cachesim::DEBUG && (is_sparse && !was_accessed))
-//                    fmt::print("Block address {:#x} in set {} way {} unneeded in sparse line. Footprint {} block idx {}. Removing from fill packet\n", *it, set_idx, way_idx, fill_packet->footprint, idx);
-                //assert(valid[way_idx] == true);
                 fill_packet->blocks.erase(it);
             } else {
                 ++it;
@@ -713,6 +709,8 @@ void resize_packet(PacketPtr packet, uint64_t block_size) {
 BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level) {
     switch (policy) {
         case ReplacementPolicy::LRU:
+            return new LRU(set_idx, num_ways, level);
+        case ReplacementPolicy::PLRU:
             return new LRU(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
             return new SRRIP(set_idx, num_ways, level);

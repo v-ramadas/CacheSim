@@ -31,13 +31,13 @@ class DRRIP : public BasePolicy {
 
     uint64_t get_eviction_candidate();
 
+    uint64_t get_reserved_eviction_candidate();
+
     void evict(uint64_t way_idx);
 
     uint64_t get_counter_value(uint64_t way_idx);
 
     uint64_t count_distance(uint64_t threshold);
-
-    void print();
 
     void update_bip(uint64_t way_idx);
 
@@ -51,6 +51,9 @@ class DRRIP : public BasePolicy {
             PSEL--;
     }
 
+    void repartition_ways(uint64_t num_ways_to_reserve);
+
+    uint64_t get_reserved_ways() {return reserved_ways;}
 };
 
 #endif

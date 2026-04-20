@@ -20,11 +20,12 @@ class SRRIP : public BasePolicy {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, maxRRPV);
-        insertion_clock.resize(num_ways, UINT64_MAX);
+        insertion_clock.resize(num_ways, 0);
         denseRRPV = maxRRPV;
         sparseRRPV = maxRRPV;
         level = _level;
         global_clock = 0;
+        reserved_ways = 0;
     }
     
     void init_counter(PacketPtr packet);
@@ -35,14 +36,17 @@ class SRRIP : public BasePolicy {
 
     uint64_t get_eviction_candidate();
 
+    uint64_t get_reserved_eviction_candidate();
+
     void evict(uint64_t way_idx);
 
     uint64_t get_counter_value(uint64_t way_idx);
 
     uint64_t count_distance(uint64_t threshold);
 
-    void print();
+    void repartition_ways(uint64_t num_ways_to_reserve);
 
+    uint64_t get_reserved_ways() {return reserved_ways;}
 };
 
 #endif

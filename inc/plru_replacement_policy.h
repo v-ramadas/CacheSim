@@ -1,15 +1,16 @@
-#ifndef __LRU_REPLACEMENT_POLICY_H__
-#define __LRU_REPLACEMENT_POLICY_H__
+#ifndef __PLRU_REPLACEMENT_POLICY_H__
+#define __PLRU_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
 
-class LRU : public BasePolicy {
+class PLRU : public BasePolicy {
     uint64_t max_counter = UINT64_MAX;
     uint64_t mru_counter = 0;
     uint64_t lru_counter = 0;
+
     public:
-    LRU() {}
-    LRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    PLRU() {}
+    PLRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, UINT64_MAX);
@@ -32,8 +33,6 @@ class LRU : public BasePolicy {
     uint64_t get_counter_value(uint64_t way_idx);
 
     uint64_t count_distance(uint64_t threshold);
-
-    void repartition_ways(uint64_t ways_to_reserve);
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 };

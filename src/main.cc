@@ -14,7 +14,8 @@
 #include "tracereader.h"
 
 bool cachesim::DEBUG = false;
-uint64_t WARMUP_INSTS = 2500000;
+//TODO: Figure out a good value
+uint64_t WARMUP_INSTS = 0;
 
 enum TraceFormat {
     CHAMPSIM,
@@ -115,7 +116,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 predictor->insert(eviction_packet);
                 predictor->update(eviction_packet);
                 if (inst_count >= WARMUP_INSTS) {
-                    is_sparse = predictor->predict(access_packet);
+                    is_sparse = predictor->predict(eviction_packet);
                 }
                 fill_packet->is_sparse = is_sparse;
                 fill_packet->address = eviction_packet->address;
@@ -179,7 +180,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
         uint64_t address;
         char action[16];
         if (cachesim::DEBUG) {
-            if (inst_count > 250000) {
+            if (inst_count > 2500000) {
                 break;
             }
         }
@@ -226,6 +227,7 @@ int main(int argc, char** argv) {
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
+        {"plru", ReplacementPolicy::PLRU},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
     }));

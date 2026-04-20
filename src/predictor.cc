@@ -4,6 +4,7 @@
 bool SparsityPredictor::predict(PacketPtr packet) {
     if (!_enable) return false;
     bool is_sparse = false;
+    if (packet->pc < 10) return true;
 //    if (history.find(packet->pc) == history.end()) {
 //        return false; // default to dense
 //    }
