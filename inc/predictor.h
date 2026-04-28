@@ -16,18 +16,19 @@ class SparsityPredictor {
         std::map<uint64_t, uint64_t> pc_map;
 
     public:
-        SparsityPredictor(uint64_t threshold, uint64_t size,
+        SparsityPredictor(float threshold, uint64_t size,
                 float default_footprint, uint64_t warmup_accesses):
             threshold(threshold), size(size),
             default_footprint(default_footprint), warmup_accesses(warmup_accesses) {
-                assert(threshold > 0 && threshold <= 8);
+                assert(threshold > 0 && threshold <= 1);
                 assert(default_footprint > 0 && default_footprint <= 8);
                 disable();
             }
         
         bool predict(PacketPtr packet);
         uint64_t get_footprint(PacketPtr packet);
-        void insert(PacketPtr packet);
+        float get_reuse_probability(PacketPtr packet);
+        void print_reuse_probability();
         void update(PacketPtr packet);
         void clear() {
             history.clear();
