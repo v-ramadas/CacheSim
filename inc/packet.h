@@ -13,6 +13,8 @@ struct Packet {
     bool is_sparse;
     uint64_t footprint;
     bool serviced_from_llc;
+    float reuse_probability = 0.0;
+    uint64_t next_reuse=0;
 
     Packet() {
         clear_pc();
@@ -28,7 +30,10 @@ struct Packet {
         is_sparse = false;
         serviced_from_llc = false;
         footprint = 0;
+        reuse_probability = 0.0;
+        next_reuse = 0;
     }
+
 
     void clear_pc() {
         pc = 0;

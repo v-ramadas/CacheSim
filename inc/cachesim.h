@@ -12,8 +12,13 @@
 #include "mrc.h"
 #include "packet.h"
 #include "lru_replacement_policy.h"
+#include "mru_replacement_policy.h"
 #include "srrip_replacement_policy.h"
+#include "trrip_replacement_policy.h"
 #include "drrip_replacement_policy.h"
+#include "prrip_replacement_policy.h"
+#include "ship_replacement_policy.h"
+#include "belady_replacement_policy.h"
 #include <cassert>
 #include <cstdlib>
 #include <iostream>
@@ -91,6 +96,7 @@ class CacheSet {
     std::vector<bool> dirty;
     std::vector<bool> footprint;
     std::vector<uint64_t> pc;
+    std::vector<uint64_t> next_reuse;
     bool do_mrc = true;
 
     uint64_t block_size = 64;
@@ -126,6 +132,7 @@ class CacheSet {
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size/8, false);
+        next_reuse.resize(num_ways, 0);
     }
 
     ~CacheSet() {
@@ -149,6 +156,7 @@ class CacheSet {
     bool get_valid(uint64_t idx) const {return valid[idx];}
     bool get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
+    BasePolicy* get_replacement_policy() const { return repl_counter; }
 
     bool is_eviction_needed(uint64_t num_ways) const {
         return (get_num_invalid() < num_ways);
@@ -180,6 +188,7 @@ class SectoredCacheSet: public CacheSet {
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size, false);
+        next_reuse.resize(num_ways, 0);
     }
 
     ~SectoredCacheSet() {

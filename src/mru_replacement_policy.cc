@@ -1,8 +1,8 @@
-#include "lru_replacement_policy.h"
+#include "mru_replacement_policy.h"
 #include <fmt/core.h>
 
 
-void LRU::init_counter(PacketPtr packet) {
+void MRU::init_counter(PacketPtr packet) {
     mru_counter += num_ways;
     if (packet->is_sparse) {
         lru_counter++;
@@ -10,11 +10,11 @@ void LRU::init_counter(PacketPtr packet) {
     }
 }
 
-void LRU::hit_update(uint64_t way_idx) {
+void MRU::hit_update(uint64_t way_idx) {
     counter[way_idx] = mru_counter;
 }
 
-void LRU::fill_update(uint64_t way_idx, PacketPtr packet) {
+void MRU::fill_update(uint64_t way_idx, PacketPtr packet) {
     if (packet->is_sparse) {
         counter[way_idx] = lru_counter;
     } else {
@@ -22,29 +22,29 @@ void LRU::fill_update(uint64_t way_idx, PacketPtr packet) {
     }
 }
 
-uint64_t LRU::get_eviction_candidate(bool is_low_priority = false) {
-    auto way = std::min_element(counter.begin(), std::next(counter.begin(), num_ways));
+uint64_t MRU::get_eviction_candidate(bool is_low_priority = false) {
+    auto way = std::max_element(counter.begin(), std::next(counter.begin(), num_ways));
     uint64_t way_idx = std::distance(counter.begin(), way);
     return way_idx;
 }
 
-uint64_t LRU::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t MRU::get_reserved_eviction_candidate(bool is_low_priority = false) {
     assert(reserved_ways != 0);
-    auto way = std::min_element(std::next(counter.begin(), num_ways), counter.end());
+    auto way = std::max_element(std::next(counter.begin(), num_ways), counter.end());
     uint64_t way_idx = std::distance(counter.begin(), way);
     return way_idx;
 }
 
 
-void LRU::evict(uint64_t way_idx) {
-    counter[way_idx] = max_counter;
+void MRU::evict(uint64_t way_idx) {
+    counter[way_idx] = min_counter;
 }
 
-uint64_t LRU::get_counter_value(uint64_t way_idx) {
+uint64_t MRU::get_counter_value(uint64_t way_idx) {
     return counter[way_idx];
 }
 
-uint64_t LRU::count_distance(uint64_t threshold) {
+uint64_t MRU::count_distance(uint64_t threshold) {
     uint64_t distance = std::count_if(
         counter.begin(), counter.end(),
         [threshold](uint64_t n) {
@@ -53,7 +53,7 @@ uint64_t LRU::count_distance(uint64_t threshold) {
     return distance;
 }
 
-void LRU::repartition_ways(uint64_t num_ways_to_reserve) {
+void MRU::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
 }

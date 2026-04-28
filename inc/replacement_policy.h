@@ -6,12 +6,17 @@
 #include <cstdint>
 #include "packet.h"
 #include <cassert>
+#include <bit>
 
 enum class ReplacementPolicy {
     LRU,
-    PLRU,
+    MRU,
     SRRIP,
     DRRIP,
+    TRRIP,
+    PRRIP,
+    SHIP,
+    Belady,
 };
 
 class BasePolicy {
@@ -30,13 +35,14 @@ class BasePolicy {
     virtual void init_counter(PacketPtr packet) = 0;
     virtual void hit_update(uint64_t way_idx) = 0;
     virtual void fill_update(uint64_t way_idx, PacketPtr packet) = 0;
-    virtual uint64_t get_eviction_candidate() = 0;
-    virtual uint64_t get_reserved_eviction_candidate() = 0;
+    virtual uint64_t get_eviction_candidate(bool) = 0;
+    virtual uint64_t get_reserved_eviction_candidate(bool) = 0;
     virtual void evict(uint64_t way_idx) = 0;
     virtual uint64_t get_counter_value(uint64_t way_idx) = 0;
     virtual uint64_t count_distance(uint64_t threshold) = 0;
     virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;
     virtual uint64_t get_reserved_ways() = 0;
+    virtual bool can_insert(PacketPtr packet) = 0;
 };
 
 BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level);

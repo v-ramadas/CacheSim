@@ -1,19 +1,30 @@
-#ifndef __LRU_REPLACEMENT_POLICY_H__
-#define __LRU_REPLACEMENT_POLICY_H__
+#ifndef __SHIP_REPLACEMENT_POLICY_H__
+#define __SHIP_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
+#include <climits>
 
-class LRU : public BasePolicy {
-    uint64_t max_counter = UINT64_MAX;
-    uint64_t mru_counter = 0;
-    uint64_t lru_counter = 0;
+class SHIP : public BasePolicy {
+    const uint64_t maxRRPV;;
+    uint64_t denseRRPV;
+    uint64_t sparseRRPV;
+
+    uint64_t diff = UINT64_MAX;
+
     public:
-    LRU() {}
-    LRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    SHIP(): maxRRPV(3) {}
+
+    SHIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+//        maxRRPV(((1ul) << ((64) - (__builtin_clz(_num_ways)))-1)) {
+        maxRRPV(_num_ways-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, max_counter);
+        counter.resize(num_ways, maxRRPV);
+        insertion_clock.resize(num_ways, 0);
+        denseRRPV = maxRRPV;
+        sparseRRPV = maxRRPV;
         level = _level;
+        global_clock = 0;
         reserved_ways = 0;
     }
     
@@ -33,7 +44,7 @@ class LRU : public BasePolicy {
 
     uint64_t count_distance(uint64_t threshold);
 
-    void repartition_ways(uint64_t ways_to_reserve);
+    void repartition_ways(uint64_t num_ways_to_reserve);
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 

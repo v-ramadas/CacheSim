@@ -15,7 +15,7 @@
 
 bool cachesim::DEBUG = false;
 //TODO: Figure out a good value
-uint64_t WARMUP_INSTS = 0;
+uint64_t WARMUP_INSTS = 0;//2*16*2048;
 
 enum TraceFormat {
     CHAMPSIM,
@@ -25,7 +25,7 @@ enum TraceFormat {
 #ifdef MULTI_LEVEL
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count) {
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse) {
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -33,16 +33,18 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     access_packet->is_read = is_read;
     access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
     access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
-    fill_packet->address = access_packet->address;
-
     access_packet->pc = pc;
+    access_packet->next_reuse = next_reuse;
+
+    fill_packet->address = access_packet->address;
     fill_packet->pc = pc;
+
     eviction_packet->pc = pc;
 
     int num_levels = cache.size();
     int hit_at_level = num_levels;
     bool hit = false;
-    bool is_sparse = false;
+
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
 
@@ -60,11 +62,11 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             break;
         }
 
-        if (inst_count >= WARMUP_INSTS) {
-            is_sparse = predictor->predict(access_packet);
-        }
+//        if (inst_count >= WARMUP_INSTS) {
+//            is_sparse = predictor->predict(access_packet);
+//        }
         
-        access_packet->is_sparse = is_sparse;
+//        access_packet->is_sparse = is_sparse;
         if (!access_packet->is_sparse) {
             access_packet->size = CACHELINE_SIZE;
             access_packet->blocks.clear();
@@ -93,6 +95,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     }
 
     fill_packet->address = access_packet->address;
+    fill_packet->next_reuse = next_reuse;
 
     if (hit_at_level != 0) {
         if (needs_invalidate) {
@@ -111,10 +114,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 resize_packet(eviction_packet, curr_cache_block_size);       
             }
 
+
+            predictor->update(fill_packet);
             if (eviction_packet->blocks.size() > 0) {
                 bool is_sparse = false;
-                predictor->insert(eviction_packet);
-                predictor->update(eviction_packet);
                 if (inst_count >= WARMUP_INSTS) {
                     is_sparse = predictor->predict(eviction_packet);
                 }
@@ -125,6 +128,9 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 fill_packet->footprint = eviction_packet->footprint;
                 fill_packet->pc = eviction_packet->pc;
                 fill_packet->serviced_from_llc = eviction_packet->serviced_from_llc;
+                fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
+                fill_packet->next_reuse = eviction_packet->next_reuse;
+
                 cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
             } else {
                 break;
@@ -178,6 +184,8 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
     while (std::getline(file, line)) {
         uint64_t pc;
         uint64_t address;
+        uint64_t next_reuse = UINT64_MAX;
+        int parsed_count = 0;
         char action[16];
         if (cachesim::DEBUG) {
             if (inst_count > 2500000) {
@@ -185,14 +193,17 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
             }
         }
 
-        if (std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx", &pc, action, &address) == 3) {
+        parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu", &pc, action, &address, &next_reuse);
+        if (parsed_count >= 3) {
             try {
                 inst_count++;
+                if (next_reuse != UINT64_MAX) next_reuse += inst_count;
+                //std::cout << "address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << std::endl;
                 // Extract from the start of "0x" to the end of the line
                 bool is_read = (strcmp(action, "read") == 0) ? true : false;
 #ifdef MULTI_LEVEL
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-                    predictor, address, pc, is_read, inst_count);
+                    predictor, address, pc, is_read, inst_count, next_reuse);
 #else
                 access_single_level(cache, access_packet, eviction_packet, fill_packet, pc,address, is_read);
 #endif
@@ -227,9 +238,13 @@ int main(int argc, char** argv) {
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
-        {"plru", ReplacementPolicy::PLRU},
+        {"mru", ReplacementPolicy::MRU},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
+        {"trrip", ReplacementPolicy::TRRIP},
+        {"prrip", ReplacementPolicy::PRRIP},
+        {"ship", ReplacementPolicy::SHIP},
+        {"belady", ReplacementPolicy::Belady},
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -248,10 +263,10 @@ int main(int argc, char** argv) {
     cache[1] = new Cache<CacheSet>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
     cache[0]->set_do_mrc(false);
     cache[1]->set_do_mrc(false);
-    SparsityPredictor* predictor = new SparsityPredictor(4, 1024, 8, 81920);
-    if (block_size < CACHELINE_SIZE) predictor->enable();
-    else predictor->disable();
-
+    SparsityPredictor* predictor = new SparsityPredictor(0.2, 1024, 8, WARMUP_INSTS);
+    //if (block_size < CACHELINE_SIZE) predictor->enable();
+    //else predictor->disable();
+    predictor->enable();
 #else
     Cache<CacheSet>* cache = new Cache<CacheSet>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
     cache->set_do_mrc(false);
@@ -284,11 +299,13 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
             for (auto& smem:inst.source_memory) {
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-                    predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count);
+                    predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count,
+                    0);
             }
             for (auto& dmem:inst.destination_memory) {
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet,
-                    predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count);
+                    predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count,
+                    0);
             }
 #else
             for (auto& smem:inst.source_memory) {
@@ -306,6 +323,7 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     for (auto cache_inst: cache)
         cache_inst->print_stats(inst_count, tracename);
+    predictor->print_reuse_probability();
     cache.clear();
     delete predictor;
 #else

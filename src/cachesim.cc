@@ -152,6 +152,7 @@ bool CacheSet::try_hit(PacketPtr packet) {
             auto word_idx = (packet->address - packet->aligned_address) >> 3;
             set_footprint(way_idx, word_idx, true);
             repl_counter->hit_update(way_idx);
+            if (next_reuse[way_idx] != UINT64_MAX) next_reuse[way_idx] = packet->next_reuse;
         }
 
         hits++;
@@ -199,7 +200,10 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
             distance_counts[distance]++;
             reuse_dist += distance;
         }
+
         repl_counter->hit_update(way_idx);
+        if (next_reuse[way_idx] != UINT64_MAX) next_reuse[way_idx] = packet->next_reuse;
+
         for (auto sector_idx: sector_idx_list) {
             if (!packet->is_read) {
                 dirty[sector_idx] = true;
@@ -215,6 +219,13 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
 
 void CacheSet::handle_fill(PacketPtr packet) {
     auto way = valid.begin();
+    //auto end = valid.end();
+    //auto num_blocks = CACHELINE_SIZE/block_size;
+    //if (packet->is_sparse) {
+    //    way = std::prev(valid.end(), num_blocks);
+    //} else {
+    //    end = std::prev(valid.end(), num_blocks);
+    //}
     repl_counter->init_counter(packet);
     uint64_t block_idx = 0;
     for (const auto block_address: packet->blocks) {
@@ -226,6 +237,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
         }
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
+        next_reuse[way_idx] = packet->next_reuse;
         serviced_from_llc[way_idx] = packet->serviced_from_llc;
         auto is_critical_word = false;
         //TODO: Check this logic
@@ -255,6 +267,7 @@ void SectoredCacheSet::handle_fill(PacketPtr packet) {
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
     pc[way_idx] = packet->pc;
+    next_reuse[way_idx] = packet->next_reuse;
     serviced_from_llc[way_idx] = packet->serviced_from_llc;
 
     repl_counter->fill_update(way_idx, packet);
@@ -290,13 +303,29 @@ void CacheSet::handle_evict(PacketPtr packet) {
         return;
     }
 
+
     num_blocks_to_evict -= num_invalid_blocks;
     while (num_blocks_evicted < num_blocks_to_evict) {
-        auto way_idx = repl_counter->get_eviction_candidate();
+        uint64_t way_idx = num_ways;
+        way_idx = repl_counter->get_eviction_candidate(packet->is_sparse);
+        //if (packet->is_sparse) {
+        //    if (repl_counter->get_reserved_ways() == 0) {
+        //        repl_counter->repartition_ways(1*CACHELINE_SIZE/block_size);
+        //    }
+        //}
+        //if (packet->is_sparse && repl_counter->get_reserved_ways() != 0) {
+            //cachesim::DEBUG = true;
+        //    way_idx = repl_counter->get_reserved_eviction_candidate(packet->is_sparse); 
+        //    if (cachesim::DEBUG)
+        //        fmt::print("Level {} got a sparse request PC {} while the cache is full. Candidate way is {}\n", level, packet->pc, way_idx);
+        //} else {
+        //    way_idx = repl_counter->get_eviction_candidate(packet->is_sparse); 
+        //}
 
         if (dirty[way_idx]) {
             dirty[way_idx] = false;
         }
+
         if (valid[way_idx]) {
             packet->blocks.push_back(ways[way_idx]);
         }
@@ -317,6 +346,8 @@ void CacheSet::handle_evict(PacketPtr packet) {
         ways[way_idx] = UINT64_MAX;
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        packet->next_reuse = next_reuse[way_idx];
+        next_reuse[way_idx] = UINT64_MAX;
         packet->serviced_from_llc = serviced_from_llc[way_idx];
         serviced_from_llc[way_idx] = false;
         num_blocks_evicted++;
@@ -351,7 +382,7 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
         return;
     }
 
-    auto way_idx = repl_counter->get_eviction_candidate();
+    auto way_idx = repl_counter->get_eviction_candidate(false);
 
     if (dirty[way_idx]) {
         dirty[way_idx] = false;
@@ -383,6 +414,8 @@ void SectoredCacheSet::handle_evict(PacketPtr packet) {
     ways[way_idx] = UINT64_MAX;
     packet->pc = pc[way_idx];
     pc[way_idx] = UINT64_MAX;
+    packet->next_reuse = next_reuse[way_idx];
+    next_reuse[way_idx] = UINT64_MAX;
     packet->serviced_from_llc = serviced_from_llc[way_idx];
     serviced_from_llc[way_idx] = false;
     
@@ -412,6 +445,8 @@ uint64_t CacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         ways[way_idx] = UINT64_MAX;
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        packet->next_reuse = next_reuse[way_idx];
+        next_reuse[way_idx] = UINT64_MAX;
         serviced_from_llc[way_idx] = false;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -441,6 +476,8 @@ Sector SectoredCacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num)
         way_sectors[way_idx].invalidate();
         packet->pc = pc[way_idx];
         pc[way_idx] = UINT64_MAX;
+        packet->next_reuse = next_reuse[way_idx];
+        next_reuse[way_idx] = UINT64_MAX;
         serviced_from_llc[way_idx] = false;
         cache->update_data_var_utilization(packet->pc, 1,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -517,7 +554,13 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
 
     auto set_idx = get_set_idx(fill_packet->blocks[0]);
     auto block_size = sets[set_idx]->get_block_size();
-
+    eviction_packet->is_sparse = fill_packet->is_sparse;
+    if (fill_packet->is_sparse == true) {
+        if (sets[set_idx]->get_num_invalid() == 0) {
+            if (!sets[set_idx]->get_replacement_policy()->can_insert(fill_packet))
+                return;
+        }
+    }
     if (is_sectored)
         fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     else
@@ -638,6 +681,7 @@ void Cache<T>::print_reuse_distance() {
 template<typename T>
 void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
     if (fill_packet->blocks.size() != 0)  {
+        //auto is_sparse = fill_packet->is_sparse;
         int idx = 0;
         for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
             if (*it == UINT64_MAX) {
@@ -651,11 +695,13 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
             }
             auto set_idx = get_set_idx(fill_packet->address);
             auto ways = get_ways(set_idx);
+            //auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
             auto try_hit = std::find(ways.begin(), ways.end(), *it);
             if (try_hit != ways.end()) {
                 auto way_idx = std::distance(ways.begin(), try_hit);
                 if (cachesim::DEBUG && try_hit != ways.end())
                     fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
+                //assert(valid[way_idx] == true);
                 fill_packet->blocks.erase(it);
             } else {
                 ++it;
@@ -710,12 +756,20 @@ BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t n
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);
-        case ReplacementPolicy::PLRU:
-            return new LRU(set_idx, num_ways, level);
+        case ReplacementPolicy::MRU:
+            return new MRU(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
             return new SRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::DRRIP:
             return new DRRIP(set_idx, num_ways, level);
+        case ReplacementPolicy::TRRIP:
+            return new TRRIP(set_idx, num_ways, level);
+        case ReplacementPolicy::PRRIP:
+            return new PRRIP(set_idx, num_ways, level);
+        case ReplacementPolicy::SHIP:
+            return new SHIP(set_idx, num_ways, level);
+        case ReplacementPolicy::Belady:
+            return new Belady(set_idx, num_ways, level);
         default:
             return nullptr;
     }
