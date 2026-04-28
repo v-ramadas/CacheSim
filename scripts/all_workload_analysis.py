@@ -22,8 +22,8 @@ if graph_type == "pr_spmv":
     graph_type = "default"
 num_sets = args.num_sets
 expt_list = ["baseline", "blkSize_64", "blkSize_8"]
-expt_list_64 = ["baseline_64", "reserve_64", "no_store_64"]
-expt_list_8 = ["baseline_8", "reserve_8", "no_store_8"]
+expt_list_64 = ["baseline_64", "no_store_64"]
+expt_list_8 = ["baseline_8", "no_store_8"]
 
 graph_list = [
         "as-Skitter",
@@ -41,7 +41,7 @@ cache = {}
 for expt in expt_list_64 + expt_list_8:
     if expt not in cache.keys():
         llc_blk_size = 64
-        if expt == "blkSize_8" or expt == "baseline_8":
+        if expt == "no_store_8" or expt == "baseline_8":
             llc_blk_size = 8
         cache[expt] = {"L1D": CacheStats("L1D", 0, 64), "LLC": CacheStats("LLC", 0, llc_blk_size)}
     expt_dir = os.path.join(args.dir, expt)
@@ -90,17 +90,17 @@ for expt in expt_list_64 + expt_list_8:
 plot_dir = os.path.join(args.dir, "plots")
 label_map = {
     "baseline": "Baseline (64B, no ServicedFromLLC Bit)",
-    "blkSize_64": "64B Blocks With ServicedFromLLC Bit Used",
-    "blkSize_8": "8B Blocks With ServicedFromLLC Bit Used"
+    "no_store_64": "64B Blocks With ServicedFromLLC Bit Used",
+    "no_store_8": "8B Blocks With ServicedFromLLC Bit Used"
 }
 
 label_map_all = {
-    "baseline_64": "64: Baseline (Modified for Exclusive Caches)",
-    "reserve_64": "64: Reserve One Way for Streaming Data",
-    "no_store_64": "64: Only Store Streaming Data if Space Available",
-    "baseline_8": "8: Baseline (Modified for Exclusive Caches)",
-    "reserve_8": "8: Reserve One Way for Streaming Data",
-    "no_store_8": "8:Only Store Streaming Data if Space Available"
+    "baseline_64": "64B: Baseline (Modified for Exclusive Caches)",
+#    "reserve_64": "64B: Reserve One Way for Streaming Data",
+    "no_store_64": "64B: Only Store Streaming Data if Space Available",
+    "baseline_8": "8B: Baseline (Modified for Exclusive Caches)",
+#    "reserve_8": "8B: Reserve One Way for Streaming Data",
+    "no_store_8": "8B: Only Store Streaming Data if Space Available"
 }
 
 if not os.path.exists(plot_dir):
@@ -140,7 +140,7 @@ for graph in graph_list:
         base_y = np.array(cache['baseline_64'][cache_type].mpki_dict[graph])
         base_x = np.array(cache['baseline_64'][cache_type].size_dict[graph])
         
-        for other_expt in ['baseline_8', 'no_store_64', 'no_store_8', 'reserve_64', 'reserve_8']:
+        for other_expt in ['no_store_64', 'baseline_8', 'no_store_8']:
             if other_expt in cache and graph in cache[other_expt][cache_type].mpki_dict:
                 other_y = np.array(cache[other_expt][cache_type].mpki_dict[graph])
                 
@@ -177,7 +177,7 @@ for graph in graph_list:
         x_values = cache['baseline_64'][cache_type].size_dict[graph]
         
         # We only care about the comparison experiments
-        comp_expts = ['baseline_8', 'no_store_64', 'no_store_8', 'reserve_64', 'reserve_8']
+        comp_expts = ['baseline_8', 'no_store_64', 'no_store_8']
         
         # Width of a bar and positions
         n_groups = len(x_values)
@@ -193,16 +193,22 @@ for graph in graph_list:
             # Calculate % Change: (Base - New) / Base * 100 
             # Note: A positive value here means an improvement (reduction in MPKI)
             percent_change = (base_y - other_y) / base_y * 100
-         
+            
             # Offset each experiment's bars
-            plt.bar(index + (i * bar_width), percent_change, bar_width, 
+            bars = plt.bar(index + (i * bar_width), percent_change, bar_width, 
                     label=f"{label_map_all[expt]} % Reduction",
                     alpha=0.8)
 
+            ax.bar_label(bars, 
+                         padding=3, 
+                         fmt='%.1f%%', 
+                         fontsize=9, 
+                         rotation=90 if n_groups > 5 else 0)
+        
         for x in index[1:]:
             # Position the line slightly to the left of the next index
             plt.axvline(x - (bar_width / 2), color='gray', linestyle=':', alpha=0.3)
-
+        
         # 3. Formatting
         plt.title(f"% MPKI Reduction vs Baseline: {graph} ({cache_type})")
         plt.xlabel("Cache Size (MB)")

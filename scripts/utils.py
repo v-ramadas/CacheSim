@@ -35,6 +35,8 @@ class CacheStats:
                 return "PC Eviction"
             elif "Density" in line:
                 return "PC Density"
+            elif "Reuse" in line:
+                return "PC Reuse Probability"
         elif "Ways:" in line:
             return "INIT"
         elif "MPKI" in line:
