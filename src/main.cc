@@ -16,7 +16,7 @@
 bool cachesim::DEBUG = false;
 //TODO: Figure out a good value
 uint64_t WARMUP_INSTS = 0;//2*16*2048;
-
+bool cachesim::dropBlocks = false;
 enum TraceFormat {
     CHAMPSIM,
     ADDRESSES,
@@ -115,10 +115,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             }
 
 
-            predictor->update(fill_packet);
+            // Train on data movement from LLC -> L1D
+            predictor->update_access(fill_packet);
             if (eviction_packet->blocks.size() > 0) {
                 bool is_sparse = false;
                 if (inst_count >= WARMUP_INSTS) {
+                    // Predict for data movement from L1D -> LLC
                     is_sparse = predictor->predict(eviction_packet);
                 }
                 fill_packet->is_sparse = is_sparse;
@@ -129,9 +131,13 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 fill_packet->pc = eviction_packet->pc;
                 fill_packet->serviced_from_llc = eviction_packet->serviced_from_llc;
                 fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
+                fill_packet->reuse_distance = predictor->get_reuse_distance(eviction_packet);
                 fill_packet->next_reuse = eviction_packet->next_reuse;
-
+                eviction_packet->clear();
                 cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
+                if (eviction_packet->blocks.size() > 0) {
+                    predictor->update_eviction(eviction_packet);
+                }
             } else {
                 break;
             }
@@ -245,6 +251,7 @@ int main(int argc, char** argv) {
         {"prrip", ReplacementPolicy::PRRIP},
         {"ship", ReplacementPolicy::SHIP},
         {"belady", ReplacementPolicy::Belady},
+        {"fission", ReplacementPolicy::Fission}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -252,7 +259,14 @@ int main(int argc, char** argv) {
     app.add_flag("--debug", cachesim::DEBUG, "Enable debug mode");
     CLI11_PARSE(app, argc, argv);
 
-
+    switch(replacement_policy) {
+        case ReplacementPolicy::Fission:
+            cachesim::dropBlocks = true;
+            break;
+        default:
+            cachesim::dropBlocks = false;
+            break;
+    }
 #ifdef MULTI_LEVEL
     std::vector<BaseCache*> cache;
     cache.resize(2);
@@ -322,8 +336,9 @@ int main(int argc, char** argv) {
 
 #ifdef MULTI_LEVEL
     for (auto cache_inst: cache)
-        cache_inst->print_stats(inst_count, tracename);
-    predictor->print_reuse_probability();
+        if (cache_inst->get_name() == "LLC")
+            cache_inst->print_stats(inst_count, tracename);
+    predictor->print_stats();
     cache.clear();
     delete predictor;
 #else

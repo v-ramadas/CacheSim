@@ -18,6 +18,7 @@
 #include "drrip_replacement_policy.h"
 #include "prrip_replacement_policy.h"
 #include "ship_replacement_policy.h"
+#include "fission_replacement_policy.h"
 #include "belady_replacement_policy.h"
 #include <cassert>
 #include <cstdlib>
@@ -35,6 +36,7 @@ void resize_packet(PacketPtr packet, uint64_t block_size);
 const uint64_t CACHELINE_SIZE = 64;
 namespace cachesim {
     extern bool DEBUG;
+    extern bool dropBlocks;
 };
 
 enum class InsertionPolicy {
@@ -252,6 +254,7 @@ class BaseCache {
     virtual uint64_t get_write_misses() const = 0; 
     virtual uint64_t get_evictions() const = 0; 
     virtual uint64_t get_num_blocks_used() const = 0; 
+    virtual void incr_partial_misses(uint64_t num_misses) = 0;
     virtual std::vector<uint64_t> get_partial_misses() const = 0; 
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
 
@@ -334,7 +337,7 @@ class Cache: public BaseCache {
         for (uint64_t i = 0; i < num_sets; ++i) {
             sets[i] = new T(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
         }
-        partial_misses.resize(CACHELINE_SIZE/64, 0);
+        partial_misses.resize(CACHELINE_SIZE/64+1, 0);
     }
 
     Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, uint64_t level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy=InsertionPolicy::EXCLUSIVE):
@@ -355,7 +358,7 @@ class Cache: public BaseCache {
             sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
         }
     
-        partial_misses.resize(CACHELINE_SIZE/block_size, 0);
+        partial_misses.resize(CACHELINE_SIZE/block_size+1, 0);
     }
 
     std::string get_name() const {return NAME;}
@@ -390,6 +393,7 @@ class Cache: public BaseCache {
     uint64_t get_write_misses() const { return write_misses; }
     uint64_t get_evictions() const {return evictions; }
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
+    void incr_partial_misses(uint64_t num_misses) { partial_misses[num_misses]++; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}
     const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx)->get_ways();}
 

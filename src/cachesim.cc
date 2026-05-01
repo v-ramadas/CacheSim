@@ -60,7 +60,7 @@ void Cache<T>::print_stats(uint64_t inst_count, std::string tracename) {
     fmt::print("Partial Misses ");
     auto partial_misses = get_partial_misses();
     for (long unsigned idx = 0; idx < partial_misses.size(); idx++) {
-        fmt::print("{}:{} ", idx+1, partial_misses[idx]);
+        fmt::print("{}:{} ", idx, partial_misses[idx]);
     }
     fmt::print("\n");
 
@@ -111,7 +111,6 @@ void CacheSet::set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed)
 void SectoredCacheSet::set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed) {
     uint64_t idx = way_idx*(block_size) + word_idx;
     footprint[idx] = accessed;
-    return;
 }
 
 bool CacheSet::try_hit(PacketPtr packet) {
@@ -126,17 +125,17 @@ bool CacheSet::try_hit(PacketPtr packet) {
 
         if (cachesim::DEBUG)
             fmt::print("{} level {} hit {} address {:#x} set {} way {} size {}\n", __func__, level, (hit) ? "HIT" : "MISS", block, set_idx, way_idx, packet->blocks.size());
-        if (!hit) {
-            break;
+        if (hit) {
+            if (repl_counter->get_counter_value(way_idx) < hit_counter) hit_counter = repl_counter->get_counter_value(way_idx);
+            way_idx_list.push_back(way_idx);
+        } else {
+            //break;
         }
-
-        if (repl_counter->get_counter_value(way_idx) < hit_counter) hit_counter = repl_counter->get_counter_value(way_idx);
-
-
-        way_idx_list.push_back(way_idx);
     }
 
     accesses++;
+    cache->incr_partial_misses(packet->blocks.size() - way_idx_list.size());
+//    fmt::print("Level {} Inserted address {:#x} and {} blocks @ set {}\n", level, packet->address, packet->blocks.size() - way_idx_list.size(), set_idx);
 
     if (hit) {
         repl_counter->init_counter(packet);
@@ -180,17 +179,19 @@ bool SectoredCacheSet::try_hit(PacketPtr packet) {
     
             if (cachesim::DEBUG)
                 fmt::print("{} level {} hit {} address {:#x} set {} way {} sector {} size {}\n", __func__, level, (hit) ? "HIT" : "MISS", block, set_idx, way_idx, sector_idx, packet->blocks.size());
-            if (!hit) {
-                break;
+            if (hit) {
+                sector_idx_list.push_back(sector_idx);
+            } else {
+                //break;
             }
     
-            sector_idx_list.push_back(sector_idx);
         }
     } else {
         if (cachesim::DEBUG)
             fmt::print("{} level {} hit MISS address {:#x} sector_address {:#x} set {} way {} no sectors available size {}\n", __func__, level, packet->aligned_address, packet->address, set_idx, way_idx, packet->size);
     }
 
+    cache->incr_partial_misses(packet->blocks.size() - sector_idx_list.size());
     accesses++;
 
     if (hit) {
@@ -253,6 +254,7 @@ void CacheSet::handle_fill(PacketPtr packet) {
             set_footprint(way_idx, block_idx, true);
         }
         block_idx++;
+        packet->footprint >>= 1;
         if (cachesim::DEBUG)
             fmt::print("Level {} Inserting address {:#x} @ set {} way {} valid {} repl_counter {} pc {:#x}\n", level, ways[way_idx], set_idx, way_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx]);
     }
@@ -555,12 +557,12 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     auto set_idx = get_set_idx(fill_packet->blocks[0]);
     auto block_size = sets[set_idx]->get_block_size();
     eviction_packet->is_sparse = fill_packet->is_sparse;
-    if (fill_packet->is_sparse == true) {
-        if (sets[set_idx]->get_num_invalid() == 0) {
-            if (!sets[set_idx]->get_replacement_policy()->can_insert(fill_packet))
-                return;
-        }
-    }
+//    if (fill_packet->is_sparse == true) {
+//        if (sets[set_idx]->get_num_invalid() == 0) {
+//            if ((fill_packet->footprint == 0xff) && (fill_packet->pc != 0xa))
+//                return;
+//        }
+//    }
     if (is_sectored)
         fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     else
@@ -616,7 +618,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     }
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     sets[set_idx]->handle_fill(fill_packet);
-    partial_misses[fill_packet->blocks.size()-1]++;
+    //partial_misses[fill_packet->blocks.size()-1]++;
     fill_packet->blocks.clear();
     if (cachesim::DEBUG)
         fmt::print("Level {} Inserted address {:#x} @ set {}\n", level, fill_packet->address, set_idx);
@@ -695,13 +697,22 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
             }
             auto set_idx = get_set_idx(fill_packet->address);
             auto ways = get_ways(set_idx);
-            //auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
+            auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
             auto try_hit = std::find(ways.begin(), ways.end(), *it);
+            auto block_size = sets[set_idx]->get_block_size();
+            auto dropBlock = false;
+            if (cachesim::dropBlocks && !is_sectored && (block_size < CACHELINE_SIZE)
+                    && fill_packet->serviced_from_llc && !was_accessed) {
+//                    && fill_packet->is_sparse) {
+                dropBlock = true;
+            }
             if (try_hit != ways.end()) {
                 auto way_idx = std::distance(ways.begin(), try_hit);
                 if (cachesim::DEBUG && try_hit != ways.end())
                     fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
                 //assert(valid[way_idx] == true);
+                fill_packet->blocks.erase(it);
+            } else if (dropBlock){
                 fill_packet->blocks.erase(it);
             } else {
                 ++it;
@@ -770,6 +781,8 @@ BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t n
             return new SHIP(set_idx, num_ways, level);
         case ReplacementPolicy::Belady:
             return new Belady(set_idx, num_ways, level);
+        case ReplacementPolicy::Fission:
+            return new Fission(set_idx, num_ways, level);
         default:
             return nullptr;
     }

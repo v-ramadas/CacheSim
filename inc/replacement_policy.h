@@ -17,6 +17,7 @@ enum class ReplacementPolicy {
     PRRIP,
     SHIP,
     Belady,
+    Fission,
 };
 
 class BasePolicy {
