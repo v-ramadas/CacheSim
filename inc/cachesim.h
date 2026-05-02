@@ -107,6 +107,9 @@ class CacheSet {
     uint64_t num_lines;
     uint64_t level = 0;
 
+    uint64_t bits_per_block;
+    uint64_t bitmask;
+
     uint64_t lru_counter = 0;
     uint64_t mru_counter = 0;
 
@@ -125,6 +128,8 @@ class CacheSet {
         level = _level;
         num_blocks = CACHELINE_SIZE/block_size;
         num_lines = num_ways/num_blocks;
+        bits_per_block = block_size/8;
+        bitmask = (1ULL << bits_per_block) - 1;
         ways.resize(num_ways, UINT64_MAX);
         repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
@@ -178,6 +183,8 @@ class SectoredCacheSet: public CacheSet {
         block_size = blk_size;
         set_idx = _set_idx;
         level = _level;
+        bits_per_block = block_size/8;
+        bitmask = (1ULL << bits_per_block) - 1;
         num_blocks = CACHELINE_SIZE/block_size;
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);

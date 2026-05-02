@@ -78,6 +78,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     bool needs_invalidate = false;
     if (hit) {
         fill_packet->serviced_from_llc = true;
+        eviction_packet->footprint = 0;
         if (access_packet->is_sparse && !cache[0]->get_is_sectored()) {
             fill_packet->size = access_packet->size;
             eviction_packet->size = access_packet->size;
@@ -143,6 +144,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             }
             eviction_packet->clear();
             eviction_packet->clear_pc();
+            fill_packet->clear();
+            fill_packet->clear_pc();
             prev_cache_block_size = curr_cache_block_size;
         }
     }

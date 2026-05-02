@@ -18,20 +18,25 @@ void PRRIP::hit_update(uint64_t way_idx) {
 //    counter[way_idx] = 0;
 }
 
-void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet) {
+void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     if (packet->serviced_from_llc == true) {
-        counter[way_idx] = 0;
+        if (packet->footprint & 0x1 == 0) {
+            fmt::print("Here\n");
+            counter[way_idx] = maxRRPV;
+        } else {
+            counter[way_idx] = 0;
+        }
     } else {
         counter[way_idx] = maxRRPV - 1;
     }
 
-    if (packet->is_sparse) {
-        low_priority[way_idx] = true;
-    } else {
-        low_priority[way_idx] = false;
-    }
-
-    reuse_probability[way_idx] = packet->reuse_probability;
+//    if (packet->is_sparse) {
+//        low_priority[way_idx] = true;
+//    } else {
+//        low_priority[way_idx] = false;
+//    }
+//
+//    reuse_probability[way_idx] = packet->reuse_probability;
 }
 
 uint64_t PRRIP::get_eviction_candidate(bool is_low_priority=false) {
@@ -41,7 +46,7 @@ uint64_t PRRIP::get_eviction_candidate(bool is_low_priority=false) {
         if (counter[current_idx] > maxRRPV) return false;
         if (counter[current_idx] > counter[best_idx]) return true;
         if (compare_reuse && (counter[current_idx] == counter[best_idx])) {
-            return reuse_probability[current_idx] <= reuse_probability[best_idx];
+            return reuse_probability[current_idx] < reuse_probability[best_idx];
         }
         return false;
     };

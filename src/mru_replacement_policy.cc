@@ -14,7 +14,7 @@ void MRU::hit_update(uint64_t way_idx) {
     counter[way_idx] = mru_counter;
 }
 
-void MRU::fill_update(uint64_t way_idx, PacketPtr packet) {
+void MRU::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     if (packet->is_sparse) {
         counter[way_idx] = lru_counter;
     } else {

@@ -31,7 +31,7 @@ class TRRIP : public BasePolicy {
 
     void hit_update(uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, PacketPtr packet);
+    void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed);
 
     uint64_t get_eviction_candidate(bool is_low_priority);
 

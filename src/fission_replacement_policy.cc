@@ -19,7 +19,7 @@ void Fission::hit_update(uint64_t way_idx) {
 //    counter[way_idx] = 0;
 }
 
-void Fission::fill_update(uint64_t way_idx, PacketPtr packet) {
+void Fission::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {

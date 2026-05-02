@@ -35,7 +35,7 @@ class BasePolicy {
     virtual ~BasePolicy() = default;
     virtual void init_counter(PacketPtr packet) = 0;
     virtual void hit_update(uint64_t way_idx) = 0;
-    virtual void fill_update(uint64_t way_idx, PacketPtr packet) = 0;
+    virtual void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed = true) = 0;
     virtual uint64_t get_eviction_candidate(bool) = 0;
     virtual uint64_t get_reserved_eviction_candidate(bool) = 0;
     virtual void evict(uint64_t way_idx) = 0;
