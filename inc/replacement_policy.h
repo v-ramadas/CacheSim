@@ -10,7 +10,7 @@
 
 enum class ReplacementPolicy {
     LRU,
-    MRU,
+    LFU,
     SRRIP,
     DRRIP,
     TRRIP,

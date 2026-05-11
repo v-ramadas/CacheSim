@@ -12,7 +12,7 @@
 #include "mrc.h"
 #include "utils.h"
 #include "lru_replacement_policy.h"
-#include "mru_replacement_policy.h"
+#include "lfu_replacement_policy.h"
 #include "srrip_replacement_policy.h"
 #include "trrip_replacement_policy.h"
 #include "drrip_replacement_policy.h"
@@ -113,9 +113,6 @@ class CacheSet {
 
     uint64_t bits_per_block;
     uint64_t bitmask;
-
-    uint64_t lru_counter = 0;
-    uint64_t mru_counter = 0;
 
     public:
     uint64_t reuse_dist = 0;

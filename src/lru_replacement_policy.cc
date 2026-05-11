@@ -3,23 +3,15 @@
 
 
 void LRU::init_counter(PacketPtr packet) {
-    mru_counter += num_ways;
-    if (packet->is_low_reuse) {
-        lru_counter++;
-        mru_counter++;
-    }
+    lru_counter++;
 }
 
 void LRU::hit_update(uint64_t way_idx) {
-    counter[way_idx] = mru_counter;
+    counter[way_idx] = ++lru_counter;
 }
 
 void LRU::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->is_low_reuse) {
-        counter[way_idx] = lru_counter;
-    } else {
-        counter[way_idx] = mru_counter;
-    }
+    counter[way_idx] = lru_counter;
 }
 
 uint64_t LRU::get_eviction_candidate(bool is_low_priority = false) {

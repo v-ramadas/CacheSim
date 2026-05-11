@@ -274,7 +274,7 @@ int main(int argc, char** argv) {
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
-        {"mru", ReplacementPolicy::MRU},
+        {"lfu", ReplacementPolicy::LFU},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
         {"trrip", ReplacementPolicy::TRRIP},

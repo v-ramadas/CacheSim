@@ -839,8 +839,8 @@ BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t n
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);
-        case ReplacementPolicy::MRU:
-            return new MRU(set_idx, num_ways, level);
+        case ReplacementPolicy::LFU:
+            return new LFU(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
             return new SRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::DRRIP:
