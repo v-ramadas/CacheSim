@@ -15,14 +15,18 @@ void SHIP::init_counter(PacketPtr packet) {
 }
 
 void SHIP::hit_update(uint64_t way_idx) {
-//    counter[way_idx] = 0;
+    counter[way_idx] = 0;
 }
 
 void SHIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {
-        counter[way_idx] = denseRRPV - 1;
+        if (packet->shct_value > 0) {
+            counter[way_idx] = denseRRPV - 2;
+        } else {
+            counter[way_idx] = denseRRPV-1;
+        }
     }
     insertion_clock[way_idx] = global_clock;
 }

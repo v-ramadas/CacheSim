@@ -19,7 +19,7 @@ void SRRIP::hit_update(uint64_t way_idx) {
 }
 
 void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->serviced_from_llc == true) {
+    if (packet->serviced_from_llc > 0) {
         counter[way_idx] = 0;
     } else {
         counter[way_idx] = denseRRPV - 1;

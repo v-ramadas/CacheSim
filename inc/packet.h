@@ -10,16 +10,21 @@ struct Packet {
     uint64_t size;
     std::vector<uint64_t> blocks;
     bool is_read;
-    bool is_sparse;
+    bool is_low_reuse;
+    bool is_hub_node;
     uint64_t footprint;
-    bool serviced_from_llc;
+    //std::vector<uint64_t> block_accesses;
+    uint64_t serviced_from_llc;
+    uint64_t l1_hits = 0;
     float reuse_probability = 0.0;
     uint64_t reuse_distance = 0;
     uint64_t next_reuse=0;
+    uint64_t shct_value=0;
 
     Packet() {
         clear_pc();
         clear();
+        //block_accesses.resize(8, 0);
     }
     void clear() {
         //pc = 0;
@@ -28,12 +33,15 @@ struct Packet {
         size = 0;
         blocks.clear();
         is_read = false;
-        is_sparse = false;
-        serviced_from_llc = false;
+        is_low_reuse = false;
+        is_hub_node = true;
+        serviced_from_llc = 0;
         footprint = 0;
         reuse_probability = 0.0;
         reuse_distance = 0;
         next_reuse = 0;
+        l1_hits = 0;
+        //block_accesses.clear();
     }
 
 
@@ -50,7 +58,8 @@ struct Packet {
 
     void clear_metadata() {
         is_read = false;
-        is_sparse = false;
+        is_low_reuse = false;
+        is_hub_node = true;
         footprint = 0;
     }
 };

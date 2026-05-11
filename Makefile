@@ -26,7 +26,7 @@ INC_FLAGS      := -I$(CHAMPSIM_DIR) -I$(CHAMPSIM_DIR)/inc \
                   -I$(CHAMPSIM_DIR)/vcpkg_installed/x64-linux/include -I$(INC_DIR)
 LDFLAGS        := -L$(CHAMPSIM_DIR)/vcpkg_installed/x64-linux/lib \
                   -L$(CHAMPSIM_DIR)/vcpkg_installed/x64-linux/lib/manual-link
-LDLIBS         := -llzma -lfmt -lbz2 -lz -lCLI11 -lstdc++
+LDLIBS         := -llzma -lfmt -lbz2 -lz -lCLI11 -lstdc++ -lm
 
 # --- Targets ---
 all: cachesim cachesim_multi

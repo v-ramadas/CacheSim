@@ -37,6 +37,8 @@ const uint64_t CACHELINE_SIZE = 64;
 namespace cachesim {
     extern bool DEBUG;
     extern bool dropBlocks;
+    extern bool useVictimBuffer;
+    extern bool useMemSignature;
 };
 
 enum class InsertionPolicy {
@@ -93,12 +95,14 @@ class CacheSet {
     std::vector<uint64_t> ways;
     BasePolicy* repl_counter;
     std::vector<bool> valid;
-    std::vector<bool> serviced_from_llc;
+    std::vector<uint64_t> serviced_from_llc;
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
     std::vector<bool> footprint;
+    std::vector<uint64_t> block_accesses;
     std::vector<uint64_t> pc;
     std::vector<uint64_t> next_reuse;
+    std::vector<uint64_t> way_hits;
     bool do_mrc = true;
 
     uint64_t block_size = 64;
@@ -134,12 +138,14 @@ class CacheSet {
         repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
-        serviced_from_llc.resize(num_ways, false);
+        serviced_from_llc.resize(num_ways, 0);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size/8, false);
+        block_accesses.resize(num_ways*block_size/8, 0);
         next_reuse.resize(num_ways, 0);
+        way_hits.resize(num_ways, 0);
     }
 
     ~CacheSet() {
@@ -158,10 +164,12 @@ class CacheSet {
 
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
     void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
+    uint64_t get_block_accesses(uint64_t way_idx, uint64_t word_idx);
+    void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
-    bool get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
+    uint64_t get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
     BasePolicy* get_replacement_policy() const { return repl_counter; }
 
@@ -192,12 +200,14 @@ class SectoredCacheSet: public CacheSet {
         repl_counter = create_policy(policy, set_idx, num_ways, level);
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
-        serviced_from_llc.resize(num_ways, false);
+        serviced_from_llc.resize(num_ways, 0);
         dirty.resize(num_ways, false);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size, false);
+        block_accesses.resize(num_ways*block_size, 0);
         next_reuse.resize(num_ways, 0);
+        way_hits.resize(num_ways, 0);
     }
 
     ~SectoredCacheSet() {
@@ -207,14 +217,16 @@ class SectoredCacheSet: public CacheSet {
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
-    Sector handle_invalidate(PacketPtr packet, uint64_t block_num);
+    uint64_t handle_invalidate(PacketPtr packet, uint64_t block_num);
     uint64_t get_block_size() const { return block_size; }
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
     void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
+    uint64_t get_block_accesses(uint64_t way_idx, uint64_t word_idx);
+    void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
     bool get_valid(uint64_t idx) const {return valid[idx];}
-    bool get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
+    uint64_t get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
 
     bool is_eviction_needed(uint64_t num_ways) const {
@@ -239,6 +251,7 @@ class BaseCache {
 
     virtual void update_data_var_utilization(uint64_t pc, uint64_t evictions, uint64_t footprint) = 0;
     virtual void update_data_var_footprint(uint64_t pc, uint64_t footprint) = 0;
+    virtual void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> footprint) = 0;
 
     virtual void update_data_var_hits(uint64_t pc) = 0;
 
@@ -296,6 +309,7 @@ class Cache: public BaseCache {
     std::unordered_map<uint64_t, uint64_t> data_var_misses;
     std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> data_var_utilization;
     std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_footprint;
+    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_block_accesses;
     std::map<uint64_t, uint64_t> data_var_hits;
     void update_data_var_utilization(uint64_t pc, uint64_t _evictions, uint64_t _footprint) {
         if (data_var_utilization.find(pc) == data_var_utilization.end()) {
@@ -308,7 +322,7 @@ class Cache: public BaseCache {
     }
 
     void update_data_var_footprint(uint64_t pc, uint64_t _footprint) {
-        if (data_var_utilization.find(pc) == data_var_utilization.end()) {
+        if (data_var_footprint.find(pc) == data_var_footprint.end()) {
             std::map<uint64_t, uint64_t> footprint_hist;
             footprint_hist[0]=0;
             footprint_hist[1]=0;
@@ -322,6 +336,19 @@ class Cache: public BaseCache {
             data_var_footprint[pc] = footprint_hist;
         }
         data_var_footprint[pc][_footprint] += 1;
+    }
+
+    void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> _footprint) {
+        if (data_var_block_accesses.find(pc) == data_var_block_accesses.end()) {
+            std::map<uint64_t, uint64_t> footprint_hist;
+            for (int i = 0; i < 8; i++)
+                footprint_hist[i] = _footprint[i];
+
+            data_var_block_accesses[pc] = footprint_hist;
+        } else {
+            for (int i = 0; i < 8; i++)
+                data_var_block_accesses[pc][i] += _footprint[i];
+        }
     }
 
     void update_data_var_hits(uint64_t pc) {

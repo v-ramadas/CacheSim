@@ -8,7 +8,8 @@ class TRRIP : public BasePolicy {
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;
-
+    std::vector<bool> low_priority;
+    std::vector<float> reuse_probability;
     uint64_t diff = UINT64_MAX;
 
     public:
@@ -16,10 +17,13 @@ class TRRIP : public BasePolicy {
 
     TRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
         maxRRPV(std::bit_floor(_num_ways)-1) {
+//        maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, maxRRPV);
+        counter.resize(num_ways, UINT_MAX);
         insertion_clock.resize(num_ways, 0);
+        low_priority.resize(num_ways, false);
+        reuse_probability.resize(num_ways, 0.0);
         denseRRPV = maxRRPV;
         sparseRRPV = maxRRPV;
         level = _level;
@@ -47,7 +51,7 @@ class TRRIP : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet) { return true;}
+    bool can_insert(PacketPtr packet);
 
 };
 

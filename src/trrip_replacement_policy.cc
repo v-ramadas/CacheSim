@@ -15,40 +15,68 @@ void TRRIP::init_counter(PacketPtr packet) {
 }
 
 void TRRIP::hit_update(uint64_t way_idx) {
-//    counter[way_idx] = 0;
+    counter[way_idx] = 0;
 }
 
 void TRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->serviced_from_llc == true) {
-        counter[way_idx] = 0;
+    auto packet_reuse_probability = packet->reuse_probability;
+    //fmt::print("set {} way {} address {:#x} l1_hits {} footprint {:#x}\n",
+    //        set_idx, way_idx, packet->address, packet->l1_hits, packet->footprint);
+    if (packet->serviced_from_llc > 0) {
+        if (packet->is_low_reuse) {
+            counter[way_idx] = maxRRPV-1;
+        } else if (was_accessed) { 
+            counter[way_idx] = 0;
+        } else if (!packet->is_hub_node) {
+            counter[way_idx] = maxRRPV;
+        } else {
+            counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
+        }
     } else {
-        counter[way_idx] = denseRRPV - 1;
+        if (!packet->is_hub_node) {
+            counter[way_idx] = maxRRPV-1;
+        } else {
+            counter[way_idx] = maxRRPV-2;
+        }
     }
-    insertion_clock[way_idx] = global_clock;
+
 }
 
-uint64_t TRRIP::get_eviction_candidate(bool is_low_priority = false) {
-    auto candidate_idx = 0;
-    auto candidate = counter[candidate_idx];
-    for (uint64_t idx = 0; idx < num_ways; idx++) {
-        candidate = counter[candidate_idx];
-        auto way = counter[idx];
+uint64_t TRRIP::get_eviction_candidate(bool is_low_priority=false) {
+    
+    // Lambda to encapsulate the comparison logic for reuse
+    auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {
+        if (counter[current_idx] > maxRRPV) return false;
+        if (counter[current_idx] > counter[best_idx]) return true;
+        if (compare_reuse && (counter[current_idx] == counter[best_idx])) {
+            return reuse_probability[current_idx] < reuse_probability[best_idx];
+        }
+        return false;
+    };
 
-        if (way > maxRRPV) continue;
-        if (candidate > maxRRPV) {
+
+    uint64_t candidate_idx = 0; 
+    for (uint64_t idx = 0; idx < num_ways; idx++) {
+        if (counter[idx] > maxRRPV) continue;
+
+        // Handle initial candidate validity
+        if (counter[candidate_idx] > maxRRPV) {
             candidate_idx = idx;
             continue;
         }
 
-        if (way > candidate) candidate_idx = idx;
-        else if (way == candidate) {
-            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
-                candidate_idx = idx;
-            }
+        if (is_better_candidate(idx, candidate_idx, true)) {
+            candidate_idx = idx;
         }
     }
 
-    diff = std::min(diff, maxRRPV - candidate);
+    assert(candidate_idx < num_ways);
+
+    // Update diff based on the final candidate found
+    if (counter[candidate_idx] < maxRRPV) {
+        diff = std::min(diff, maxRRPV - counter[candidate_idx]);
+    }
+
     return candidate_idx;
 }
 
@@ -67,11 +95,6 @@ uint64_t TRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
         }
 
         if (way > candidate) candidate_idx = idx;
-        else if (way == candidate) {
-            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
-                candidate_idx = idx;
-            }
-        }
     }
 
     diff = std::min(diff, maxRRPV - candidate);
@@ -80,7 +103,6 @@ uint64_t TRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
 
 void TRRIP::evict(uint64_t way_idx) {
     counter[way_idx] = UINT_MAX;
-    insertion_clock[way_idx] = UINT_MAX;
 }
 
 uint64_t TRRIP::get_counter_value(uint64_t way_idx) {
@@ -99,4 +121,37 @@ uint64_t TRRIP::count_distance(uint64_t threshold) {
 void TRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
+}
+
+bool TRRIP::can_insert(PacketPtr packet) {
+    return true;
+    if (!packet->is_low_reuse) return true;
+
+    // Lambda to encapsulate the comparison logic for reuse
+    auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {
+        if (counter[current_idx] > maxRRPV) return false;
+        if (counter[current_idx] > counter[best_idx]) return true;
+        if (compare_reuse && (counter[current_idx] == counter[best_idx])) {
+            return reuse_probability[current_idx] <= reuse_probability[best_idx];
+        }
+        return false;
+    };
+    
+    // Step 1: If requested, try searching ONLY low_priority entries
+    uint64_t candidate_idx = num_ways; // Initialize with invalid index
+    for (uint64_t idx = 0; idx < num_ways; idx++) {
+        if (low_priority[idx] && counter[idx] <= maxRRPV) {
+            if (is_better_candidate(idx, candidate_idx, false)) {
+                candidate_idx = idx;
+                break;
+            }
+        }
+    }
+
+    if (candidate_idx < num_ways) {
+        return true;
+    } else {
+        return false;
+    }
+
 }

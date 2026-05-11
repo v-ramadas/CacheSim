@@ -9,13 +9,11 @@ void Belady::hit_update(uint64_t way_idx) {
 
 void Belady::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     counter[way_idx] = packet->next_reuse;
-    //fmt::print("Insertion: set {} way {} counter {}\n", set_idx, way_idx, counter[way_idx]);
 }
 
 uint64_t Belady::get_eviction_candidate(bool is_low_priority=false) {
     auto way = std::max_element(counter.begin(), std::next(counter.begin(), num_ways));
     uint64_t way_idx = std::distance(counter.begin(), way);
-    //fmt::print("Eviction: set {} way {} counter {}\n", set_idx, way_idx, counter[way_idx]);
     return way_idx;
 
 }

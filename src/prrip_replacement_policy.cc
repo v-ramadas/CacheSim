@@ -15,22 +15,28 @@ void PRRIP::init_counter(PacketPtr packet) {
 }
 
 void PRRIP::hit_update(uint64_t way_idx) {
-//    counter[way_idx] = 0;
+    counter[way_idx] = 0;
 }
 
 void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->serviced_from_llc == true) {
-        if (packet->footprint & 0x1 == 0) {
-            fmt::print("Here\n");
+    auto packet_reuse_probability = packet->reuse_probability;
+    if (packet->serviced_from_llc > 0) {
+        if (packet->is_low_reuse) {
             counter[way_idx] = maxRRPV;
-        } else {
+        } else if (!packet->is_low_reuse && was_accessed) { 
             counter[way_idx] = 0;
+        } else {
+            counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
         }
     } else {
-        counter[way_idx] = maxRRPV - 1;
+        if (packet->shct_value > 0) {
+            counter[way_idx] = maxRRPV - 2;
+        } else {
+            counter[way_idx] = maxRRPV - 1;
+        }
     }
 
-//    if (packet->is_sparse) {
+//    if (packet->shct_value == 0) {
 //        low_priority[way_idx] = true;
 //    } else {
 //        low_priority[way_idx] = false;
@@ -135,7 +141,7 @@ void PRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
 
 bool PRRIP::can_insert(PacketPtr packet) {
     return true;
-    if (!packet->is_sparse) return true;
+    if (!packet->is_low_reuse) return true;
 
     // Lambda to encapsulate the comparison logic for reuse
     auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {

@@ -17,9 +17,10 @@ class PRRIP : public BasePolicy {
 
     PRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
         maxRRPV(std::bit_floor(_num_ways)-1) {
+//        maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, maxRRPV);
+        counter.resize(num_ways, UINT_MAX);
         insertion_clock.resize(num_ways, 0);
         low_priority.resize(num_ways, false);
         reuse_probability.resize(num_ways, 0.0);

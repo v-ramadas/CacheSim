@@ -4,7 +4,7 @@
 
 void MRU::init_counter(PacketPtr packet) {
     mru_counter += num_ways;
-    if (packet->is_sparse) {
+    if (packet->is_low_reuse) {
         lru_counter++;
         mru_counter++;
     }
@@ -15,7 +15,7 @@ void MRU::hit_update(uint64_t way_idx) {
 }
 
 void MRU::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->is_sparse) {
+    if (packet->is_low_reuse) {
         counter[way_idx] = lru_counter;
     } else {
         counter[way_idx] = mru_counter;

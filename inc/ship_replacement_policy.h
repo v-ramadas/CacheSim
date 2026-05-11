@@ -8,15 +8,14 @@ class SHIP : public BasePolicy {
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;
-
     uint64_t diff = UINT64_MAX;
 
     public:
     SHIP(): maxRRPV(3) {}
 
     SHIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
-//        maxRRPV(((1ul) << ((64) - (__builtin_clz(_num_ways)))-1)) {
         maxRRPV(_num_ways-1) {
+//        maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, maxRRPV);
