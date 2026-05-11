@@ -1,0 +1,13 @@
+executable = cachesim_baseline.sh
+arguments = $(num_sets) $(blk_size) $(trace_file) $(replacement_policy)
+
+transfer_input_files = $(trace_file),bin/cachesim_baseline
+log = $(out_dir)/$Fn(trace_file).runlog
+error = $(out_dir)/$Fn(trace_file).stderr
+output = $(out_dir)/$Fn(trace_file).sweep
+
+request_cpus=1
+request_memory=1GB
+request_disk=256MB
+
+queue trace_file matching files $(trace_dir)/*
