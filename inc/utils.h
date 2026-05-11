@@ -26,6 +26,7 @@ struct Packet {
         clear();
         //block_accesses.resize(8, 0);
     }
+
     void clear() {
         //pc = 0;
         address = 0;
@@ -44,7 +45,6 @@ struct Packet {
         //block_accesses.clear();
     }
 
-
     void clear_pc() {
         pc = 0;
     }
@@ -61,6 +61,25 @@ struct Packet {
         is_low_reuse = false;
         is_hub_node = true;
         footprint = 0;
+    }
+
+    Packet& operator=(const Packet &packet) {
+        pc = packet.pc;
+        address = packet.address;
+        aligned_address = packet.aligned_address;
+        size = packet.size;
+        blocks = packet.blocks;
+        is_read = packet.is_read;
+        is_low_reuse = packet.is_low_reuse;
+        is_hub_node = packet.is_hub_node;
+        serviced_from_llc = packet.serviced_from_llc;
+        footprint = packet.footprint;
+        reuse_probability = packet.reuse_probability;
+        next_reuse = packet.next_reuse;
+        l1_hits = packet.l1_hits;
+        shct_value = packet.shct_value;
+
+        return *this;
     }
 };
 

@@ -39,14 +39,17 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     access_packet->pc = pc;
     access_packet->next_reuse = next_reuse;
 
-    fill_packet->address = access_packet->address;
+//    fill_packet->address = access_packet->address;
+//    fill_packet->pc = pc;
+    *fill_packet = *access_packet;
     fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
-    fill_packet->pc = pc;
+    *eviction_packet = *fill_packet;
+    *invalidation_packet = *fill_packet;
 
-    eviction_packet->pc = pc;
+//    eviction_packet->pc = pc;
 
-    invalidation_packet->address = fill_packet->address;
-    invalidation_packet->aligned_address = fill_packet->aligned_address;
+//    invalidation_packet->address = fill_packet->address;
+//    invalidation_packet->aligned_address = fill_packet->aligned_address;
 
     int num_levels = cache.size();
     int hit_at_level = num_levels;
@@ -55,12 +58,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
 
-        if (access_packet->is_low_reuse) {
-            access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
-            access_packet->blocks.clear();
-            access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
-            access_packet->blocks.push_back(access_packet->aligned_address);
-        }
+//        if (access_packet->is_low_reuse) {
+//            access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
+//            access_packet->blocks.clear();
+//            access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
+//            access_packet->blocks.push_back(access_packet->aligned_address);
+//        }
 
         hit = cache[i]->try_hit(access_packet);
 
@@ -86,10 +89,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         //    invalidation_packet->size = access_packet->size;
         //    needs_invalidate = true;
         //} else {
-            fill_packet->size = CACHELINE_SIZE;
-            eviction_packet->size = CACHELINE_SIZE;
-            invalidation_packet->size = CACHELINE_SIZE;
-            needs_invalidate = true;
+        fill_packet->size = CACHELINE_SIZE;
+        eviction_packet->size = CACHELINE_SIZE;
+        invalidation_packet->size = CACHELINE_SIZE;
+        needs_invalidate = true;
         //}
     } else {
         fill_packet->serviced_from_llc = 0;
@@ -99,10 +102,9 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         needs_invalidate = false;
     }
 
-    fill_packet->address = access_packet->address;
-    fill_packet->aligned_address = access_packet->aligned_address;
-    fill_packet->next_reuse = next_reuse;
-
+    //fill_packet->address = access_packet->address;
+    //fill_packet->aligned_address = access_packet->aligned_address;
+    //fill_packet->next_reuse = next_reuse;
     if (hit_at_level != 0) {
         if (hit) {
             fill_packet->blocks = cache[hit_at_level]->handle_invalidate(fill_packet);
@@ -138,16 +140,19 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                     is_low_reuse = predictor->predict(eviction_packet);
                     is_hub_node = predictor->is_hub_node(eviction_packet);
                 }
-                fill_packet->is_low_reuse = is_low_reuse;
-                fill_packet->is_hub_node = is_hub_node;
-                fill_packet->address = eviction_packet->address;
-                fill_packet->aligned_address = eviction_packet->aligned_address;
-                fill_packet->blocks = eviction_packet->blocks;
-                fill_packet->footprint = eviction_packet->footprint;
-                //fill_packet->block_accesses = eviction_packet->block_accesses;
-                fill_packet->l1_hits = eviction_packet->l1_hits;
-                fill_packet->pc = eviction_packet->pc;
-                fill_packet->serviced_from_llc = eviction_packet->serviced_from_llc;
+                //fill_packet->is_low_reuse = is_low_reuse;
+                //fill_packet->is_hub_node = is_hub_node;
+                //fill_packet->address = eviction_packet->address;
+                //fill_packet->aligned_address = eviction_packet->aligned_address;
+                //fill_packet->blocks = eviction_packet->blocks;
+                //fill_packet->footprint = eviction_packet->footprint;
+                ////fill_packet->block_accesses = eviction_packet->block_accesses;
+                //fill_packet->l1_hits = eviction_packet->l1_hits;
+                //fill_packet->pc = eviction_packet->pc;
+                //fill_packet->serviced_from_llc = eviction_packet->serviced_from_llc;
+                //fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
+                //fill_packet->shct_value = predictor->get_shct_value(fill_packet);
+                *fill_packet = *eviction_packet;
                 fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
                 fill_packet->shct_value = predictor->get_shct_value(fill_packet);
 

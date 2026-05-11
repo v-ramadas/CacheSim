@@ -503,7 +503,6 @@ uint64_t CacheSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
         cache->update_data_var_footprint(packet->pc,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
-
         if (cachesim::DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
