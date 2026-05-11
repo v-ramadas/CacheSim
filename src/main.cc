@@ -1,6 +1,6 @@
 #include "cachesim.h"
 #include "predictor.h"
-#include "packet.h"
+#include "utils.h"
 #include "victim_buffer.h"
 
 #include <algorithm>

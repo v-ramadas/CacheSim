@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 #include <vector>
-#include "packet.h"
+#include "utils.h"
 
 struct VictimBufferEntry {
     bool valid = false;

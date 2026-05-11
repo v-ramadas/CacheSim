@@ -10,7 +10,7 @@
 #include <fmt/core.h>
 #include <list>
 #include "mrc.h"
-#include "packet.h"
+#include "utils.h"
 #include "lru_replacement_policy.h"
 #include "mru_replacement_policy.h"
 #include "srrip_replacement_policy.h"

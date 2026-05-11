@@ -1,7 +1,7 @@
 #ifndef __PREDICTOR_H__
 #define __PREDICTOR_H__
 
-#include "packet.h"
+#include "utils.h"
 #include <stdint.h>
 #include <cassert>
 #include <map>
