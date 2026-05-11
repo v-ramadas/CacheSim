@@ -31,12 +31,15 @@ class CacheStats:
                 return "PC Miss"
             elif "Hits" in line:
                 return "PC Hit"
+            elif "Predictor Stats" in line:
+                return "PC Predictor Stats"
             elif "Evictions" in line:
                 return "PC Eviction"
             elif "Density" in line:
                 return "PC Density"
             elif "Reuse" in line:
                 return "PC Reuse Probability"
+
         elif "Ways:" in line:
             return "INIT"
         elif "MPKI" in line:
@@ -47,6 +50,8 @@ class CacheStats:
             return "Partial Misses"
         elif "Trace File" in line:
             return "Level"
+        elif "Predictor Stats" in line:
+            return "Predictor Stats"
         else:
             return "Ignore"
 
@@ -108,7 +113,7 @@ class LineStats:
         return word_idx
 
     def set_footprint(self, address):
-        self.footprint[self.get_word_idx(address)] = 1
+        self.footprint[self.get_word_idx(address)] += 1
 
     def clear_footprint(self, address):
         self.footprint[self.get_word_idx(address)] = 0

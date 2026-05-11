@@ -30,8 +30,6 @@ graph_list = [
         "cit-Patents",
         "com-LiveJournal",
         "com-Youtube",
-        "roadNet-CA",
-        "soc-LiveJournal1",
         "sx-stackoverflow",
         "web-BerkStan",
         "web-Google",
