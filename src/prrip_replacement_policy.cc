@@ -19,21 +19,22 @@ void PRRIP::hit_update(uint64_t way_idx) {
 }
 
 void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    auto packet_reuse_probability = packet->reuse_probability;
+    //auto packet_reuse_probability = packet->reuse_probability;
+    double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
         if (packet->is_low_reuse) {
-            counter[way_idx] = maxRRPV;
+            counter[way_idx] = maxRRPV-1;
         } else if (!packet->is_low_reuse && was_accessed) { 
             counter[way_idx] = 0;
         } else {
             counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
         }
     } else {
-        if (packet->shct_value > 0) {
-            counter[way_idx] = maxRRPV - 2;
-        } else {
+//        if (packet->shct_value > 0) {
+//            counter[way_idx] = maxRRPV - 2;
+//        } else {
             counter[way_idx] = maxRRPV - 1;
-        }
+//        }
     }
 
 //    if (packet->shct_value == 0) {

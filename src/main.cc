@@ -112,7 +112,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
-            predictor->register_promotion(fill_packet);
         } else {
             cache[1]->handle_invalidate(invalidation_packet);
             cache[0]->handle_invalidate(invalidation_packet);
@@ -131,6 +130,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
 
             // Train on data movement from LLC -> L1D
+            //predictor->update_footprint(eviction_packet);
             predictor->update_access(fill_packet);
             if (eviction_packet->blocks.size() > 0) {
                 bool is_low_reuse = false;
@@ -140,20 +140,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                     is_low_reuse = predictor->predict(eviction_packet);
                     is_hub_node = predictor->is_hub_node(eviction_packet);
                 }
-                //fill_packet->is_low_reuse = is_low_reuse;
-                //fill_packet->is_hub_node = is_hub_node;
-                //fill_packet->address = eviction_packet->address;
-                //fill_packet->aligned_address = eviction_packet->aligned_address;
-                //fill_packet->blocks = eviction_packet->blocks;
-                //fill_packet->footprint = eviction_packet->footprint;
-                ////fill_packet->block_accesses = eviction_packet->block_accesses;
-                //fill_packet->l1_hits = eviction_packet->l1_hits;
-                //fill_packet->pc = eviction_packet->pc;
-                //fill_packet->serviced_from_llc = eviction_packet->serviced_from_llc;
-                //fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
-                //fill_packet->shct_value = predictor->get_shct_value(fill_packet);
+
                 *fill_packet = *eviction_packet;
                 fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
+
                 fill_packet->shct_value = predictor->get_shct_value(fill_packet);
 
                 if (predictor->get_reuse_distance(eviction_packet) <= 1) {
@@ -386,7 +376,7 @@ int main(int argc, char** argv) {
     for (auto cache_inst: cache)
         cache_inst->print_stats(inst_count, tracename);
 //    if (!cachesim::useMemSignature)
-//        predictor->print_stats();
+        predictor->print_stats();
     cache.clear();
     delete predictor;
 #else
