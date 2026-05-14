@@ -130,7 +130,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
 
             // Train on data movement from LLC -> L1D
-            //predictor->update_footprint(eviction_packet);
+            predictor->update_footprint(eviction_packet);
             predictor->update_access(fill_packet);
             if (eviction_packet->blocks.size() > 0) {
                 bool is_low_reuse = false;
@@ -294,6 +294,9 @@ int main(int argc, char** argv) {
             break;
         case ReplacementPolicy::SHIP:
             cachesim::useMemSignature = true;
+            break;
+        case ReplacementPolicy::TRRIP:
+            cachesim::dropBlocks = true;
             break;
         default:
             cachesim::dropBlocks = false;

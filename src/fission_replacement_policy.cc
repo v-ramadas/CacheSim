@@ -55,7 +55,3 @@ void Fission::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
 }
-
-bool Fission::can_insert(PacketPtr packet) {
-    return true;
-}

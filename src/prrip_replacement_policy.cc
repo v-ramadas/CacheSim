@@ -30,20 +30,8 @@ void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
             counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
         }
     } else {
-//        if (packet->shct_value > 0) {
-//            counter[way_idx] = maxRRPV - 2;
-//        } else {
-            counter[way_idx] = maxRRPV - 1;
-//        }
+        counter[way_idx] = maxRRPV - 1;
     }
-
-//    if (packet->shct_value == 0) {
-//        low_priority[way_idx] = true;
-//    } else {
-//        low_priority[way_idx] = false;
-//    }
-//
-//    reuse_probability[way_idx] = packet->reuse_probability;
 }
 
 uint64_t PRRIP::get_eviction_candidate(bool is_low_priority=false) {
@@ -138,37 +126,4 @@ uint64_t PRRIP::count_distance(uint64_t threshold) {
 void PRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
-}
-
-bool PRRIP::can_insert(PacketPtr packet) {
-    return true;
-    if (!packet->is_low_reuse) return true;
-
-    // Lambda to encapsulate the comparison logic for reuse
-    auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {
-        if (counter[current_idx] > maxRRPV) return false;
-        if (counter[current_idx] > counter[best_idx]) return true;
-        if (compare_reuse && (counter[current_idx] == counter[best_idx])) {
-            return reuse_probability[current_idx] <= reuse_probability[best_idx];
-        }
-        return false;
-    };
-    
-    // Step 1: If requested, try searching ONLY low_priority entries
-    uint64_t candidate_idx = num_ways; // Initialize with invalid index
-    for (uint64_t idx = 0; idx < num_ways; idx++) {
-        if (low_priority[idx] && counter[idx] <= maxRRPV) {
-            if (is_better_candidate(idx, candidate_idx, false)) {
-                candidate_idx = idx;
-                break;
-            }
-        }
-    }
-
-    if (candidate_idx < num_ways) {
-        return true;
-    } else {
-        return false;
-    }
-
 }

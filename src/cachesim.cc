@@ -772,9 +772,7 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
             auto try_hit = std::find(ways.begin(), ways.end(), *it);
             auto block_size = sets[set_idx]->get_block_size();
             auto dropBlock = false;
-            if (cachesim::dropBlocks && !is_sectored && (block_size < CACHELINE_SIZE)
-                    && fill_packet->serviced_from_llc && !was_accessed) {
-//                    && fill_packet->is_low_reuse) {
+            if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
                 dropBlock = true;
             }
             if (try_hit != ways.end()) {

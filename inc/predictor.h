@@ -17,6 +17,12 @@ struct PredictorMetadata {
     uint64_t last_accessed = 0;
     uint64_t serviced_from_llc = 0;
     std::map<uint64_t, uint64_t> region_stats;
+    std::vector<uint64_t> footprint_stats = std::vector<uint64_t>(8, 0);
+
+    ~PredictorMetadata() {
+        region_stats.clear();
+        footprint_stats.clear();
+    }
 
     double get_reuse_probability() {
         if (accesses == 0)
@@ -36,6 +42,13 @@ struct PredictorMetadata {
         }
     }
 
+    void print_footprint() {
+         for (auto idx = 0; idx < footprint_stats.size(); idx++)
+            fmt::print("PC {:#x} num blocks touched {:#x} count {}\n",
+                    pc, idx+1, footprint_stats[idx]);
+    }
+
+
     PredictorMetadata(uint64_t _pc):
         pc(_pc) {}
 };
@@ -51,7 +64,6 @@ class SparsityPredictor {
         uint64_t accesses=0;
         std::map<uint64_t, PredictorMetadata*> history;
         std::map<uint64_t, uint64_t> SHCT;
-        std::map<uint64_t, uint64_t> footprint;
     public:
         SparsityPredictor(double threshold, uint64_t size,
                 uint64_t warmup_accesses):
@@ -63,11 +75,16 @@ class SparsityPredictor {
 
         ~SparsityPredictor() {
             for (auto it = history.begin(); it != history.end(); it++) {
+                it->second->region_stats.clear();
+                it->second->footprint_stats.clear();
                 delete it->second;
             }
         }
         
         bool predict(PacketPtr packet);
+        bool predict_footprint_basic(PacketPtr packet, uint64_t signature);
+        bool predict_reuse_probability(PacketPtr packet, uint64_t signature);
+        bool predict_footprint_dist(PacketPtr packet, uint64_t signature);
         bool is_hub_node(PacketPtr packet);
         uint64_t get_footprint(PacketPtr packet);
         double get_reuse_probability(PacketPtr packet);
@@ -75,11 +92,11 @@ class SparsityPredictor {
         uint64_t get_shct_value(PacketPtr packet);
         void print_stats();
         void update_access(PacketPtr packet);
+        void update_footprint(PacketPtr packet);
         void update_eviction(PacketPtr packet);
         void clear() {
             history.clear();
         }
-        void register_promotion(PacketPtr packet);
         void enable() {_enable = true;}
         void disable() {_enable = false;}
         void set_pc_signature() { mem_signature = false; }

@@ -43,7 +43,7 @@ class BasePolicy {
     virtual uint64_t count_distance(uint64_t threshold) = 0;
     virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;
     virtual uint64_t get_reserved_ways() = 0;
-    virtual bool can_insert(PacketPtr packet) = 0;
+    virtual bool can_insert(PacketPtr packet, uint64_t idx) = 0;
 };
 
 BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level);

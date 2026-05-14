@@ -4,7 +4,6 @@
 
 bool SparsityPredictor::predict(PacketPtr packet) {
     if (!_enable) return false;
-    bool is_low_reuse = false;
     uint64_t signature;
     if (mem_signature) {
         signature = align_address(packet->address, mem_region_size);
@@ -19,6 +18,17 @@ bool SparsityPredictor::predict(PacketPtr packet) {
         return false; // default to dense during warmup
     }
     
+    return predict_footprint_basic(packet, signature);
+    //return predict_reuse_probability(packet, signature);
+    //return predict_footprint_dist(packet, signature);
+}
+
+bool SparsityPredictor::predict_footprint_basic(PacketPtr packet, uint64_t signature) {
+    if (packet->footprint == 0xff) return true;
+    else return false;
+}
+
+bool SparsityPredictor::predict_reuse_probability(PacketPtr packet, uint64_t signature) {
     double reuse_ratio = history[signature]->get_reuse_probability();
 
     double logSum = 0.0;
@@ -32,23 +42,43 @@ bool SparsityPredictor::predict(PacketPtr packet) {
     }
     double geomean = std::exp(logSum/ count);
 
-    is_low_reuse = (reuse_ratio < geomean);
+    bool is_low_reuse = (reuse_ratio < geomean);
     return is_low_reuse;
+}
+
+bool SparsityPredictor::predict_footprint_dist(PacketPtr packet, uint64_t signature) {
+    auto footprint = packet->footprint;
+    if (packet->serviced_from_llc <= 1 && footprint == 0xff) { 
+        return true;
+    } else {
+        return false;
+    }
+    //double p_less = 0.0d, p_equal = 0.0d, p_greater = 0.0d;
+    //for (auto idx = 0; idx < history[signature]->footprint_stats.size(); idx++) {
+    //    auto footprint_count = history[signature]->footprint_stats[idx];
+    //    if (idx < footprint-1) {
+    //        p_less += footprint_count; 
+    //    } else if (idx == footprint-1) {
+    //        p_equal = footprint_count;
+    //    } else {
+    //        p_greater += footprint_count;
+    //    }
+    //}
+    //p_less /= history[signature]->accesses;
+    //p_equal /= history[signature]->accesses;
+    //p_greater /= history[signature]->accesses;
+
+    //if (p_greater == 0.0) return true;
+    //else if (p_less >= p_equal + p_greater) return true;
+    //else if (p_equal >= p_greater) return false;
+    //else return false;
 }
 
 bool SparsityPredictor::is_hub_node(PacketPtr packet) {
     if (!_enable) return true;
-//    if (packet->l1_hits == 0) return false;
-//    if(__builtin_popcountll(packet->footprint) == 8) return false;
+    if (packet->l1_hits == 0) return false;
+    if(__builtin_popcountll(packet->footprint) == 8) return false;
 
-    auto signature = align_address(packet->address, CACHELINE_SIZE);
-    if (footprint.find(signature) == footprint.end()) return true;
-    
-    auto old_footprint = footprint[signature];
-    footprint.erase(signature);
-    if (old_footprint == packet->footprint && __builtin_popcountll(packet->footprint) <=4) return false;
-    else
-        return true;
 
 //    auto is_hub_node = true;
 //    uint64_t signature;
@@ -105,7 +135,7 @@ void SparsityPredictor::update_access(PacketPtr packet) {
     auto signature_accesses = history[signature]->accesses;
     auto old_footprint = history[signature]->footprint;
     auto delta_access = double(accesses - history[signature]->last_accessed);
-    auto mem_region = align_address(packet->address, mem_region_size);
+    auto mem_region = align_address(packet->address, CACHELINE_SIZE);
     if (history[signature]->last_accessed == 0) {
         history[signature]->reuse_distance = delta_access/16.0;
     } else if (history[signature]->reuse_distance <= delta_access) {
@@ -117,9 +147,9 @@ void SparsityPredictor::update_access(PacketPtr packet) {
 
     if (serviced_from_llc) {
         if (history[signature]->region_stats.find(mem_region) == history[signature]->region_stats.end()) {
-            history[signature]->region_stats[mem_region] = 1;
+            history[signature]->region_stats[mem_region] = __builtin_popcountll(packet->footprint);
         } else {
-            history[signature]->region_stats[mem_region]++;
+            history[signature]->region_stats[mem_region] = __builtin_popcountll(packet->footprint);
         }
 
         history[signature]->reuses++;
@@ -127,6 +157,31 @@ void SparsityPredictor::update_access(PacketPtr packet) {
     }
     history[signature]->accesses++; // update access count
     accesses++;
+
+}
+
+void SparsityPredictor::update_footprint(PacketPtr packet) {
+    uint64_t signature;
+    if (mem_signature) {
+        signature = align_address(packet->address, mem_region_size);
+    } else {
+        signature = packet->pc;
+    }
+
+    if (history.find(signature) == history.end()) {
+        history[signature] = new PredictorMetadata(signature);
+    }
+
+    auto footprint = __builtin_popcountll(packet->footprint);
+
+    //fmt::print("Footprint {} size {}\n", footprint - 1, history[signature]->footprint_stats.size());
+    if (footprint == 0) {
+        // No eviction
+        return;
+    }
+    history[signature]->footprint_stats.at(footprint-1)++;
+//    if (signature == 6)
+//    fmt::print("PC {} addr {:#x} footprint {:#x} density {} count {}\n", signature, packet->address, packet->footprint, footprint, history[signature]->footprint_stats[footprint-1]);
 
 }
 
@@ -192,7 +247,43 @@ double SparsityPredictor::get_reuse_probability(PacketPtr packet) {
         return 0;
     }
 
-    return history[signature]->get_reuse_probability();
+//    return history[signature]->get_reuse_probability();
+
+    auto footprint = __builtin_popcountll(packet->footprint);
+    if (footprint == 0 || footprint == 8) {
+        // No eviction
+        return 0.0d;
+    }
+
+    if (packet->serviced_from_llc <= 1) {
+        return 1.0d;
+    } else {
+        return (double)(footprint)/8.0d;
+    }
+
+
+    double p_less = 0.0d, p_equal = 0.0d, p_greater = 0.0d;
+    for (auto idx = 0; idx < history[signature]->footprint_stats.size(); idx++) {
+        auto footprint_count = history[signature]->footprint_stats[idx];
+        if (idx < footprint-1) {
+            p_less += footprint_count; 
+        } else if (idx == footprint-1) {
+            p_equal = footprint_count;
+        } else {
+            p_greater += footprint_count;
+        }
+    }
+    p_less /= history[signature]->accesses;
+    p_equal /= history[signature]->accesses;
+    p_greater /= history[signature]->accesses;
+
+    if (p_equal == 1.0d) return 0.0d;
+    else if (p_greater == 0.0d) return 0.0d;
+    else if (p_less == 0.0d) return 1.0d;
+    else if (p_equal >= p_less + p_greater) return p_equal + p_greater;
+    else if (p_less >= p_equal + p_greater) return p_less + p_equal;//0.0d;
+    else return p_equal+p_greater;//1.0d;
+
 
 }
 
@@ -236,14 +327,10 @@ void SparsityPredictor::print_stats() {
     for (auto it = history.begin(); it != history.end(); it++) {
         fmt::print("Signature {:#x} Predictor Stats ", it->first);
         it->second->print();
-        fmt::print(" SHCT value {}\n", SHCT[it->first]);
-        it->second->print_shct();
+        fmt::print("\n");
+        it->second->print_footprint();
+//        fmt::print(" SHCT value {}\n", SHCT[it->first]);
+//        it->second->print_shct();
     }
                 
-}
-
-void SparsityPredictor::register_promotion(PacketPtr packet) {
-    uint64_t signature = align_address(packet->address, CACHELINE_SIZE);
-    assert(footprint.find(signature) == footprint.end());
-    footprint[signature] = packet->footprint;
 }

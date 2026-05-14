@@ -46,7 +46,3 @@ void Belady::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
 }
-
-bool Belady::can_insert(PacketPtr packet) {
-    return true;
-}

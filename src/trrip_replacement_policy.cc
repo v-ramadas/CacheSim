@@ -122,36 +122,3 @@ void TRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
 }
-
-bool TRRIP::can_insert(PacketPtr packet) {
-    return true;
-    if (!packet->is_low_reuse) return true;
-
-    // Lambda to encapsulate the comparison logic for reuse
-    auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {
-        if (counter[current_idx] > maxRRPV) return false;
-        if (counter[current_idx] > counter[best_idx]) return true;
-        if (compare_reuse && (counter[current_idx] == counter[best_idx])) {
-            return reuse_probability[current_idx] <= reuse_probability[best_idx];
-        }
-        return false;
-    };
-    
-    // Step 1: If requested, try searching ONLY low_priority entries
-    uint64_t candidate_idx = num_ways; // Initialize with invalid index
-    for (uint64_t idx = 0; idx < num_ways; idx++) {
-        if (low_priority[idx] && counter[idx] <= maxRRPV) {
-            if (is_better_candidate(idx, candidate_idx, false)) {
-                candidate_idx = idx;
-                break;
-            }
-        }
-    }
-
-    if (candidate_idx < num_ways) {
-        return true;
-    } else {
-        return false;
-    }
-
-}
