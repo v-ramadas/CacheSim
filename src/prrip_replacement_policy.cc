@@ -19,7 +19,6 @@ void PRRIP::hit_update(uint64_t way_idx) {
 }
 
 void PRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
         if (packet->is_low_reuse) {

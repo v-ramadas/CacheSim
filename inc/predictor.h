@@ -16,11 +16,9 @@ struct PredictorMetadata {
     double reuse_distance = 0;
     uint64_t last_accessed = 0;
     uint64_t serviced_from_llc = 0;
-    std::map<uint64_t, uint64_t> region_stats;
     std::vector<uint64_t> footprint_stats = std::vector<uint64_t>(8, 0);
 
     ~PredictorMetadata() {
-        region_stats.clear();
         footprint_stats.clear();
     }
 
@@ -33,13 +31,6 @@ struct PredictorMetadata {
     void print() {
         fmt::print("Accesses {} Reuses {} Reuse Probability {:4f} Evictions {} Footprint {} Reuse Distance {} Num LLC Promotions Per Eviction {:4f}",
                 accesses, reuses, get_reuse_probability(), evictions, footprint, reuse_distance, (float)(serviced_from_llc)/(float)(evictions));
-    }
-
-    void print_shct() {
-        for (auto it = region_stats.begin(); it != region_stats.end(); ++it) {
-            fmt::print("PC {} region {:#x} counts {}\n",
-                    pc, it->first, it->second);
-        }
     }
 
     void print_footprint() {
@@ -57,13 +48,16 @@ class SparsityPredictor {
     private:
         bool _enable;
         bool mem_signature = false;
-        uint64_t mem_region_size = 16*1024;
+        uint64_t mem_region_size = 1*64;
         double threshold;
         uint64_t size;
         uint64_t warmup_accesses;
         uint64_t accesses=0;
         std::map<uint64_t, PredictorMetadata*> history;
         std::map<uint64_t, uint64_t> SHCT;
+        std::map<uint64_t, std::map<uint64_t, uint64_t>> Fission;
+        std::map<uint64_t, uint64_t> fission_count;
+
     public:
         SparsityPredictor(double threshold, uint64_t size,
                 uint64_t warmup_accesses):
@@ -75,7 +69,6 @@ class SparsityPredictor {
 
         ~SparsityPredictor() {
             for (auto it = history.begin(); it != history.end(); it++) {
-                it->second->region_stats.clear();
                 it->second->footprint_stats.clear();
                 delete it->second;
             }
@@ -84,7 +77,6 @@ class SparsityPredictor {
         bool predict(PacketPtr packet);
         bool predict_footprint_basic(PacketPtr packet, uint64_t signature);
         bool predict_reuse_probability(PacketPtr packet, uint64_t signature);
-        bool predict_footprint_dist(PacketPtr packet, uint64_t signature);
         bool is_hub_node(PacketPtr packet);
         uint64_t get_footprint(PacketPtr packet);
         double get_reuse_probability(PacketPtr packet);

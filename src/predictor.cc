@@ -18,9 +18,8 @@ bool SparsityPredictor::predict(PacketPtr packet) {
         return false; // default to dense during warmup
     }
     
-    return predict_footprint_basic(packet, signature);
-    //return predict_reuse_probability(packet, signature);
-    //return predict_footprint_dist(packet, signature);
+    //return predict_footprint_basic(packet, signature);
+    return predict_reuse_probability(packet, signature);
 }
 
 bool SparsityPredictor::predict_footprint_basic(PacketPtr packet, uint64_t signature) {
@@ -43,69 +42,34 @@ bool SparsityPredictor::predict_reuse_probability(PacketPtr packet, uint64_t sig
     double geomean = std::exp(logSum/ count);
 
     bool is_low_reuse = (reuse_ratio < geomean);
+//    if (geomean < 0.2)
+//    fmt::print("PC {:#x} reuse_ratio {:4f} geomean {:4f}\n", packet->pc, reuse_ratio, geomean);
     return is_low_reuse;
-}
-
-bool SparsityPredictor::predict_footprint_dist(PacketPtr packet, uint64_t signature) {
-    auto footprint = packet->footprint;
-    if (packet->serviced_from_llc <= 1 && footprint == 0xff) { 
-        return true;
-    } else {
-        return false;
-    }
-    //double p_less = 0.0d, p_equal = 0.0d, p_greater = 0.0d;
-    //for (auto idx = 0; idx < history[signature]->footprint_stats.size(); idx++) {
-    //    auto footprint_count = history[signature]->footprint_stats[idx];
-    //    if (idx < footprint-1) {
-    //        p_less += footprint_count; 
-    //    } else if (idx == footprint-1) {
-    //        p_equal = footprint_count;
-    //    } else {
-    //        p_greater += footprint_count;
-    //    }
-    //}
-    //p_less /= history[signature]->accesses;
-    //p_equal /= history[signature]->accesses;
-    //p_greater /= history[signature]->accesses;
-
-    //if (p_greater == 0.0) return true;
-    //else if (p_less >= p_equal + p_greater) return true;
-    //else if (p_equal >= p_greater) return false;
-    //else return false;
 }
 
 bool SparsityPredictor::is_hub_node(PacketPtr packet) {
     if (!_enable) return true;
-    if (packet->l1_hits == 0) return false;
-    if(__builtin_popcountll(packet->footprint) == 8) return false;
+    uint64_t signature;
+    if (mem_signature) {
+        signature = align_address(packet->address, mem_region_size);
+    } else {
+        signature = packet->pc;
+    }
+    auto addr_region_signature = align_address(packet->address, mem_region_size);
+    if (Fission[signature].find(addr_region_signature) == Fission[signature].end()) {
+        return false;
+    }
 
-
-//    auto is_hub_node = true;
-//    uint64_t signature;
-//    uint64_t mem_region = align_address(packet->address, mem_region_size);
-//    if (mem_signature) {
-//        signature = align_address(packet->address, mem_region_size);
-//    } else {
-//        signature = packet->pc;
-//    }
-//
-//    if (history[signature]->region_stats.size() == 0) {
-//        return false;
-//    }
-//
-//    double sum = std::accumulate(history[signature]->region_stats.begin(), history[signature]->region_stats.end(), 0.0,
-//        [](double current_sum, const auto& pair) {
-//            return current_sum + pair.second;
-//        });
-//    double mean = sum/history[signature]->region_stats.size();
-//
-//    if ((int)(mean) < history[signature]->region_stats[mem_region]) {
-//        is_hub_node = false;
-//    } else if (history[signature]->region_stats[mem_region] <= 10) {
-//        is_hub_node = false;
-//    }
-//
-//    return is_hub_node;
+    float avg_fission_count = (float)(fission_count[signature])/Fission[signature].size();
+    if (Fission[signature][addr_region_signature] > avg_fission_count) {
+        if (packet->l1_hits > 5*__builtin_popcountll(packet->footprint)) {
+//        fmt::print("Is a Hub Node! PC {:#x} addr {:#x}. Accesses {} avg accesses {} signature {:#x} l1_hits {} footprint {}\n", signature, packet->address, Fission[signature][addr_region_signature], avg_fission_count, addr_region_signature, packet->l1_hits, __builtin_popcountll(packet->footprint));
+            return true;}
+        else return false;
+    } else {
+//        fmt::print("Not a Hub Node! PC {:#x} addr {:#x}. Accesses {} avg accesses {} signature {:#x}\n", signature, packet->address, Fission[signature][addr_region_signature], avg_fission_count, addr_region_signature);
+        return false;
+    }
 }
 
 
@@ -121,9 +85,21 @@ void SparsityPredictor::update_access(PacketPtr packet) {
     if (SHCT.find(signature) == SHCT.end()) {
         SHCT[signature] = 0;
     }
+
     if (serviced_from_llc) {
         SHCT[signature]++;
     }
+
+    auto addr_region_signature = align_address(packet->aligned_address, mem_region_size);
+    if (Fission.find(signature) == Fission.end()) {
+        Fission[signature] = std::map<uint64_t, uint64_t>();
+        fission_count[signature] = 0;
+    }
+    if (Fission[signature].find(addr_region_signature) == Fission[signature].end()) {
+        Fission[signature][addr_region_signature] = 0;
+    }
+    Fission[signature][addr_region_signature]+=packet->l1_hits;
+    fission_count[signature]+=packet->l1_hits;
 
     if (!_enable) return;
 
@@ -146,12 +122,6 @@ void SparsityPredictor::update_access(PacketPtr packet) {
     history[signature]->last_accessed = accesses;
 
     if (serviced_from_llc) {
-        if (history[signature]->region_stats.find(mem_region) == history[signature]->region_stats.end()) {
-            history[signature]->region_stats[mem_region] = __builtin_popcountll(packet->footprint);
-        } else {
-            history[signature]->region_stats[mem_region] = __builtin_popcountll(packet->footprint);
-        }
-
         history[signature]->reuses++;
         history[signature]->footprint = (old_footprint*signature_accesses + footprint)/(signature_accesses+1); // update footprint
     }

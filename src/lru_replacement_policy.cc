@@ -4,14 +4,18 @@
 
 void LRU::init_counter(PacketPtr packet) {
     lru_counter++;
+    mru_counter+=num_ways;
 }
 
 void LRU::hit_update(uint64_t way_idx) {
-    counter[way_idx] = ++lru_counter;
+    counter[way_idx]++;
 }
 
 void LRU::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    counter[way_idx] = lru_counter;
+    if (packet->is_hub_node)
+        counter[way_idx] = mru_counter;
+    else
+        counter[way_idx] = lru_counter;
 }
 
 uint64_t LRU::get_eviction_candidate(bool is_low_priority = false) {

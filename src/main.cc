@@ -28,7 +28,7 @@ enum TraceFormat {
 #ifdef MULTI_LEVEL
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse) {
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t num_reuses, double degree) {
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -39,8 +39,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     access_packet->pc = pc;
     access_packet->next_reuse = next_reuse;
 
-//    fill_packet->address = access_packet->address;
-//    fill_packet->pc = pc;
+    if (num_reuses > 3*degree) {
+        access_packet->is_hub_node = true;
+    } else {
+        access_packet->is_hub_node = false;
+    }
+
     *fill_packet = *access_packet;
     fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     *eviction_packet = *fill_packet;
@@ -105,6 +109,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     //fill_packet->address = access_packet->address;
     //fill_packet->aligned_address = access_packet->aligned_address;
     //fill_packet->next_reuse = next_reuse;
+    //fill_packet->is_hub_node = predictor->is_hub_node(fill_packet);
+
     if (hit_at_level != 0) {
         if (hit) {
             fill_packet->blocks = cache[hit_at_level]->handle_invalidate(fill_packet);
@@ -129,19 +135,22 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             }
 
 
-            // Train on data movement from LLC -> L1D
-            predictor->update_footprint(eviction_packet);
+            fill_packet->l1_hits = eviction_packet->l1_hits;
+            if (fill_packet->l1_hits == 0) fill_packet->l1_hits = 1;
             predictor->update_access(fill_packet);
+            // Train on data movement from LLC -> L1D
             if (eviction_packet->blocks.size() > 0) {
+                predictor->update_footprint(eviction_packet);
                 bool is_low_reuse = false;
-                bool is_hub_node = true;
+                //bool is_hub_node = true;
                 if (inst_count >= WARMUP_INSTS) {
                     // Predict for data movement from L1D -> LLC
                     is_low_reuse = predictor->predict(eviction_packet);
-                    is_hub_node = predictor->is_hub_node(eviction_packet);
+                    //is_hub_node = predictor->is_hub_node(eviction_packet);
                 }
 
                 *fill_packet = *eviction_packet;
+                //fill_packet->is_hub_node = is_hub_node;
                 fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
 
                 fill_packet->shct_value = predictor->get_shct_value(fill_packet);
@@ -213,6 +222,8 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
             uint64_t pc;
             uint64_t address;
             uint64_t next_reuse = UINT64_MAX;
+            uint64_t num_reuses = 0;
+            double degree = 0.0d;
             int parsed_count = 0;
             char action[16];
             if (cachesim::DEBUG) {
@@ -221,7 +232,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                 }
             }
 
-            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu", &pc, action, &address, &next_reuse);
+            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %lf", &pc, action, &address, &next_reuse, &num_reuses, &degree);
             if (parsed_count >= 3) {
                 try {
                     inst_count++;
@@ -231,7 +242,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                     bool is_read = (strcmp(action, "read") == 0) ? true : false;
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        predictor, address, pc, is_read, inst_count, next_reuse);
+                        predictor, address, pc, is_read, inst_count, next_reuse, num_reuses, degree);
 #else
                     access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet, pc,address, is_read);
 #endif
@@ -276,7 +287,9 @@ int main(int argc, char** argv) {
         {"prrip", ReplacementPolicy::PRRIP},
         {"ship", ReplacementPolicy::SHIP},
         {"belady", ReplacementPolicy::Belady},
-        {"fission", ReplacementPolicy::Fission}
+        {"hub", ReplacementPolicy::Hub},
+        {"fission", ReplacementPolicy::Fission},
+        {"distillation", ReplacementPolicy::Distillation}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -289,6 +302,10 @@ int main(int argc, char** argv) {
 
     switch(replacement_policy) {
         case ReplacementPolicy::Fission:
+            cachesim::dropBlocks = true;
+            cachesim::useVictimBuffer = true;
+            break;
+        case ReplacementPolicy::Distillation:
             cachesim::dropBlocks = false;
             cachesim::useVictimBuffer = true;
             break;
@@ -296,6 +313,9 @@ int main(int argc, char** argv) {
             cachesim::useMemSignature = true;
             break;
         case ReplacementPolicy::TRRIP:
+            cachesim::dropBlocks = true;
+            break;
+        case ReplacementPolicy::Hub:
             cachesim::dropBlocks = true;
             break;
         default:
@@ -306,12 +326,10 @@ int main(int argc, char** argv) {
     std::vector<BaseCache*> cache;
     cache.resize(2);
     if (block_size == CACHELINE_SIZE)
-        cache[0] = new Cache<CacheSet>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
+        cache[0] = new Cache<Set>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
     else
-        cache[0] = new Cache<SectoredCacheSet>("L1D", 128, 16, block_size, 0, true, ReplacementPolicy::LRU, insertion_policy);
-    cache[1] = new Cache<CacheSet>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
-    cache[0]->set_do_mrc(false);
-    cache[1]->set_do_mrc(false);
+        cache[0] = new Cache<SectoredSet>("L1D", 128, 16, block_size, 0, true, ReplacementPolicy::LRU, insertion_policy);
+    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, WARMUP_INSTS);
     //if (block_size < CACHELINE_SIZE) predictor->enable();
     //else predictor->disable();
@@ -321,8 +339,7 @@ int main(int argc, char** argv) {
     else
         predictor->set_pc_signature();
 #else
-    Cache<CacheSet>* cache = new Cache<CacheSet>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
-    cache->set_do_mrc(false);
+    Cache<Set>* cache = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
 #endif
     uint64_t inst_count = 0;
 
@@ -355,12 +372,12 @@ int main(int argc, char** argv) {
             for (auto& smem:inst.source_memory) {
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                     predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true, inst_count,
-                    0);
+                    0, 0, 0.0);
             }
             for (auto& dmem:inst.destination_memory) {
                 access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                     predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false, inst_count,
-                    0);
+                    0, 0, 0.0);
             }
 #else
             for (auto& smem:inst.source_memory) {

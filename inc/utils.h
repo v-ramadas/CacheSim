@@ -35,7 +35,7 @@ struct Packet {
         blocks.clear();
         is_read = false;
         is_low_reuse = false;
-        is_hub_node = true;
+        is_hub_node = false;
         serviced_from_llc = 0;
         footprint = 0;
         reuse_probability = 0.0;
@@ -59,7 +59,7 @@ struct Packet {
     void clear_metadata() {
         is_read = false;
         is_low_reuse = false;
-        is_hub_node = true;
+        is_hub_node = false;
         footprint = 0;
     }
 

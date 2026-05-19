@@ -51,7 +51,7 @@ class TRRIP : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet, uint64_t idx) { return true;}
+    bool can_insert(PacketPtr packet, uint64_t idx);
 
 };
 

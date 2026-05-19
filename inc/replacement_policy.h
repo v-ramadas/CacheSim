@@ -8,18 +8,6 @@
 #include <cassert>
 #include <bit>
 
-enum class ReplacementPolicy {
-    LRU,
-    LFU,
-    SRRIP,
-    DRRIP,
-    TRRIP,
-    PRRIP,
-    SHIP,
-    Belady,
-    Fission,
-};
-
 class BasePolicy {
     protected:
     std::vector<uint64_t> counter;
@@ -46,5 +34,4 @@ class BasePolicy {
     virtual bool can_insert(PacketPtr packet, uint64_t idx) = 0;
 };
 
-BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level);
 #endif

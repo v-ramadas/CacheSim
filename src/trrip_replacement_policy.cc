@@ -19,27 +19,19 @@ void TRRIP::hit_update(uint64_t way_idx) {
 }
 
 void TRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
-    auto packet_reuse_probability = packet->reuse_probability;
-    //fmt::print("set {} way {} address {:#x} l1_hits {} footprint {:#x}\n",
-    //        set_idx, way_idx, packet->address, packet->l1_hits, packet->footprint);
+    //auto packet_reuse_probability = packet->reuse_probability;
+    double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
-        if (packet->is_low_reuse) {
+        if (packet->l1_hits == __builtin_popcountll(packet->footprint)) {
             counter[way_idx] = maxRRPV-1;
         } else if (was_accessed) { 
             counter[way_idx] = 0;
-        } else if (!packet->is_hub_node) {
-            counter[way_idx] = maxRRPV;
         } else {
             counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
         }
     } else {
-        if (!packet->is_hub_node) {
-            counter[way_idx] = maxRRPV-1;
-        } else {
-            counter[way_idx] = maxRRPV-2;
-        }
+        counter[way_idx] = maxRRPV - 1;
     }
-
 }
 
 uint64_t TRRIP::get_eviction_candidate(bool is_low_priority=false) {
@@ -121,4 +113,16 @@ uint64_t TRRIP::count_distance(uint64_t threshold) {
 void TRRIP::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
+}
+
+bool TRRIP::can_insert(PacketPtr packet, uint64_t idx) {
+    if (packet->pc != 0xa) return false;
+    else return true;
+    bool was_accessed = (packet->footprint >> idx) & 0x1;
+    auto density = __builtin_popcountll(packet->footprint);
+    if (packet->serviced_from_llc < 1) return true;
+    else if (was_accessed) return true;
+    else if (packet->is_low_reuse) return false;
+    else if (packet->l1_hits > density) return false;
+    else return true;
 }
