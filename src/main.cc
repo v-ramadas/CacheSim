@@ -28,7 +28,7 @@ enum TraceFormat {
 #ifdef MULTI_LEVEL
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t num_reuses, double degree) {
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t degree, float avg_degree) {
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -38,12 +38,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
     access_packet->pc = pc;
     access_packet->next_reuse = next_reuse;
-
-    if (num_reuses > 3*degree) {
-        access_packet->is_hub_node = true;
-    } else {
-        access_packet->is_hub_node = false;
-    }
+    access_packet->degree = degree;
+    access_packet->avg_degree = avg_degree;
 
     *fill_packet = *access_packet;
     fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
@@ -219,11 +215,11 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
         std::string line;
         std::string delimiter = "0x";
         while (std::getline(file, line)) {
-            uint64_t pc;
-            uint64_t address;
+            uint64_t pc = 0;
+            uint64_t address = 0;
             uint64_t next_reuse = UINT64_MAX;
-            uint64_t num_reuses = 0;
-            double degree = 0.0d;
+            uint64_t degree = 0;
+            float avg_degree = 0.0f;
             int parsed_count = 0;
             char action[16];
             if (cachesim::DEBUG) {
@@ -232,17 +228,17 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                 }
             }
 
-            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %lf", &pc, action, &address, &next_reuse, &num_reuses, &degree);
+            parsed_count = std::sscanf(line.c_str(), "PC:%llu %15[^:]:0x%llx %llu %llu %f", &pc, action, &address, &next_reuse, &degree, &avg_degree);
             if (parsed_count >= 3) {
                 try {
                     inst_count++;
                     if (next_reuse != UINT64_MAX) next_reuse += inst_count;
-                    //std::cout << "address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << std::endl;
+                    //std::cout << "pc 0x" << pc << " address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << std::endl;
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "read") == 0) ? true : false;
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        predictor, address, pc, is_read, inst_count, next_reuse, num_reuses, degree);
+                        predictor, address, pc, is_read, inst_count, next_reuse, degree, avg_degree);
 #else
                     access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet, pc,address, is_read);
 #endif
@@ -316,7 +312,7 @@ int main(int argc, char** argv) {
             cachesim::dropBlocks = true;
             break;
         case ReplacementPolicy::Hub:
-            cachesim::dropBlocks = true;
+            cachesim::dropBlocks = false;
             break;
         default:
             cachesim::dropBlocks = false;

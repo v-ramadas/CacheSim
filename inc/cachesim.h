@@ -20,6 +20,8 @@ class Set {
     std::vector<uint64_t> pc;
     std::vector<uint64_t> next_reuse;
     std::vector<uint64_t> way_hits;
+    std::vector<uint64_t> degree;
+    std::vector<float> avg_degree;
 
     uint64_t block_size = 64;
     uint64_t set_idx = 1;
@@ -59,6 +61,8 @@ class Set {
         footprint.resize(num_ways*block_size/8, false);
         next_reuse.resize(num_ways, 0);
         way_hits.resize(num_ways, 0);
+        degree.resize(num_ways, 0);
+        avg_degree.resize(num_ways, 0.0f);
     }
 
     ~Set() {
@@ -98,6 +102,8 @@ struct Sector {
     std::vector<uint64_t> sectors;
     std::vector<bool> valid;
     std::vector<bool> dirty;
+    std::vector<uint64_t> degree;
+    std::vector<float> avg_degree;
     uint64_t num_blocks;
 
     Sector(uint64_t num_blocks):
@@ -106,12 +112,16 @@ struct Sector {
         sectors.resize(num_blocks, UINT64_MAX);
         valid.resize(num_blocks, false);
         dirty.resize(num_blocks, false);
+        degree.resize(num_blocks, 0);
+        avg_degree.resize(num_blocks, 0.0f);
     }
 
     Sector(const Sector& other) noexcept : 
         sectors(other.sectors),
         valid(other.valid),
         dirty(other.dirty),
+        degree(other.degree),
+        avg_degree(other.avg_degree),
         num_blocks(other.num_blocks)
     {
     }
@@ -131,6 +141,8 @@ struct Sector {
         std::fill(sectors.begin(), sectors.end(), UINT64_MAX);
         std::fill(valid.begin(), valid.end(), false);
         std::fill(dirty.begin(), dirty.end(), false);
+        std::fill(degree.begin(), degree.end(), 0);
+        std::fill(avg_degree.begin(), avg_degree.end(), 0.0f);
     }
 };
 
@@ -164,6 +176,9 @@ class SectoredSet: public Set {
         footprint.resize(num_ways*block_size, false);
         next_reuse.resize(num_ways, 0);
         way_hits.resize(num_ways, 0);
+        degree.resize(num_ways, 0);
+        avg_degree.resize(num_ways, 0.0f);
+
     }
 
     ~SectoredSet() {
