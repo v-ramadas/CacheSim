@@ -15,6 +15,9 @@
 #include "tracereader.h"
 
 bool cachesim::DEBUG = false;
+bool cachesim::L1_DEBUG = false;
+bool cachesim::LLC_DEBUG = false;
+bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
 //TODO: Figure out a good value
 uint64_t WARMUP_INSTS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
@@ -291,6 +294,9 @@ int main(int argc, char** argv) {
         {"exclusive", InsertionPolicy::EXCLUSIVE},
     }));
     app.add_flag("--debug", cachesim::DEBUG, "Enable debug mode");
+    app.add_flag("--debug-llc", cachesim::LLC_DEBUG, "Enable debug mode");
+    app.add_flag("--debug-l1", cachesim::L1_DEBUG, "Enable debug mode");
+    app.add_flag("--debug-replacement-policy", cachesim::REPLACEMENT_POLICY_DEBUG, "Enable debug mode");
     app.add_option("--iters", num_iters, "Number of iterations");
     app.add_option("--warmup-instructions", WARMUP_INSTS, "Warmup instruction count");
 
@@ -312,7 +318,7 @@ int main(int argc, char** argv) {
             cachesim::dropBlocks = true;
             break;
         case ReplacementPolicy::Hub:
-            cachesim::dropBlocks = false;
+            cachesim::dropBlocks = true;
             break;
         default:
             cachesim::dropBlocks = false;

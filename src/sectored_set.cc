@@ -84,8 +84,8 @@ bool SectoredSet::try_hit(PacketPtr packet) {
             if (!packet->is_read) {
                 dirty[sector_idx] = true;
             }
-            if (degree[sector_idx] < packet->degree)
-                degree[sector_idx] = packet->degree;
+            if (degree[sector_idx] + way_hits[sector_idx] < packet->degree)
+                degree[sector_idx] = packet->degree - way_hits[sector_idx];
         }
         auto word_idx = (packet->address - packet->aligned_address) >> 3;
         set_footprint(way_idx, word_idx, true);
@@ -121,7 +121,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
         if (block_address != UINT64_MAX) {
             way_sector->sectors[sector_idx] = block_address;
             way_sector->valid[sector_idx] = true;
-            way_sector->degree[sector_idx] = packet->degree;
+            way_sector->degree[sector_idx] = packet->block_degrees[sector_idx];
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
         }
         auto was_accessed = ((packet->footprint >> sector_idx*bits_per_block)&bitmask == bitmask);
@@ -131,7 +131,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
                 set_footprint(way_idx, word_idx, true);
             }
         }
-        if (cachesim::DEBUG)
+        if (cachesim::DEBUG || cachesim::L1_DEBUG)
             fmt::print("Level {} Inserting address {:#x} @ set {} way {} sector {} valid {} repl_counter {} pc {:#x} was_accessed {} set_footprint {} serviced_from_llc {} degree {} avg_degree {:4f}\n",
                     level, way_sectors[way_idx].sectors[sector_idx], set_idx, way_idx, sector_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], was_accessed, get_footprint(way_idx, sector_idx), serviced_from_llc[way_idx], degree[way_idx], avg_degree[way_idx]);
 
@@ -148,12 +148,12 @@ void SectoredSet::handle_evict(PacketPtr packet) {
     packet->footprint = 0;
     if (!eviction_needed) {
         if (hit) {
-            if (cachesim::DEBUG)
+            if (cachesim::DEBUG || cachesim::L1_DEBUG)
                 fmt::print("Level {} No eviction needed for set {} because some sectors of address {:#x} aligned address {:#x} are already present at way {}\n",
                         level, set_idx, packet->address,  packet->aligned_address, std::distance(ways.begin(), try_hit));
 
         } else {
-            if (cachesim::DEBUG)
+            if (cachesim::DEBUG || cachesim::L1_DEBUG)
                 fmt::print("Level {} No eviction needed for set {} because there are {} invalid ways\n", level, set_idx, get_num_invalid());
         }
         return;
@@ -168,6 +168,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
     for (uint64_t sector_idx = 0; sector_idx < num_blocks; sector_idx++) {
         //if (way_sectors[way_idx].valid[sector_idx]) {
             packet->blocks.push_back(way_sectors[way_idx].sectors[sector_idx]);
+            packet->block_degrees.push_back(way_sectors[way_idx].degree[sector_idx]);
             way_sectors[way_idx].sectors[sector_idx] = UINT64_MAX;
             way_sectors[way_idx].valid[sector_idx] = false;
             way_sectors[way_idx].dirty[sector_idx] = false;
@@ -182,7 +183,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 
     }
 
-    if (cachesim::DEBUG)//&& valid[way_idx])
+    if (cachesim::DEBUG || cachesim::L1_DEBUG)
         fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} degree {} avg_degree {:4f}\n",
             level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
             pc[way_idx], degree[way_idx], avg_degree[way_idx]);
@@ -202,7 +203,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
             count_footprint(packet->footprint));
     cache->update_data_var_footprint(packet->pc, count_footprint(packet->footprint));
 
-    if (cachesim::DEBUG)
+    if (cachesim::DEBUG || cachesim::L1_DEBUG)
         fmt::print("Level {} Num invalid blocks {} evicted line footprint {:#x} serviced_from_llc {}\n",
             level, num_invalid_blocks, packet->footprint, packet->serviced_from_llc);
 
@@ -237,7 +238,7 @@ uint64_t SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         //cache->update_data_var_footprint(packet->pc,
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
-        if (cachesim::DEBUG) {
+        if (cachesim::DEBUG || cachesim::L1_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
     }

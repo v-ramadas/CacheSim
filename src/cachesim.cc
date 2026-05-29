@@ -234,6 +234,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     populate_fill_packet(fill_packet);
     eviction_packet->size = fill_packet->size;
     eviction_packet->blocks.clear();
+    eviction_packet->block_degrees.clear();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
     sets[set_idx]->handle_evict(eviction_packet);
@@ -279,6 +280,7 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
     auto num_blocks = packet->size/block_size;
     if constexpr (std::is_same_v<T, SectoredSet>) {
         invalidate_packet.blocks.resize(num_blocks);
+        invalidate_packet.block_degrees.resize(num_blocks);
         invalidate_packet.address = packet->address;
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
@@ -286,6 +288,7 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
         //inv_address = address.sectors;
     } else {
         invalidate_packet.blocks.resize(1);
+        invalidate_packet.block_degrees.resize(1);
         inv_address.resize(num_blocks);
         for (uint64_t block = 0; block < num_blocks; block ++) {
             invalidate_packet.address = aligned_address + block*block_size;
@@ -348,9 +351,13 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
                 if (cachesim::DEBUG && try_hit != ways.end())
                     fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
                 //assert(valid[way_idx] == true);
+                auto index = std::distance(fill_packet->blocks.begin(), it);
                 fill_packet->blocks.erase(it);
+                fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
             } else if (dropBlock){
+                auto index = std::distance(fill_packet->blocks.begin(), it);
                 fill_packet->blocks.erase(it);
+                fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
             } else {
                 ++it;
             }
@@ -371,6 +378,10 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
                 continue;
             }
             fill_packet->blocks.push_back(address);
+            if (address == fill_packet->address)
+                fill_packet->block_degrees.push_back(fill_packet->degree);
+            else
+                fill_packet->block_degrees.push_back(0);
        }
     }
     return;

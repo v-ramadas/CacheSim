@@ -15,7 +15,7 @@ void SRRIP::init_counter(PacketPtr packet) {
 }
 
 void SRRIP::hit_update(uint64_t way_idx) {
-//    counter[way_idx] = 0;
+    counter[way_idx] = 0;
 }
 
 void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {

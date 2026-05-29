@@ -21,31 +21,23 @@ void Hub::hit_update(uint64_t way_idx) {
 void Hub::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
     //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
+    auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
     if (packet->serviced_from_llc > 0) {
-        if (packet->is_hub_node) {
+        if (was_accessed || is_hub_node)
             counter[way_idx] = 0;
-        } else {
-            counter[way_idx] = std::max(0, (int)(maxRRPV - packet->serviced_from_llc));
-        }
+        else 
+            counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
     } else {
-        if (packet->is_hub_node)
-            counter[way_idx] = 0;
+        if (is_hub_node)
+            counter[way_idx] = (int)((float)(packet->avg_degree/packet->degree)*maxRRPV);
         else {
-            if (packet->is_low_reuse)
-                counter[way_idx] = maxRRPV-1;
-            else counter[way_idx] = maxRRPV-2;
+            counter[way_idx] = maxRRPV-1;
         }
     }
 
-    if (packet->is_hub_node) {
+    if (is_hub_node) {
         //if (packet->blocks.size() < 8)
         //fmt::print("Hub Node. PC {:#x} address {:#x} way {} size {} density {} footprint {:#x} l1_hits {}\n", packet->pc, packet->address, way_idx, packet->blocks.size(), __builtin_popcountll(packet->footprint), packet->footprint, packet->l1_hits); 
-    }
-
-    if (!packet->is_low_reuse && packet->is_hub_node) {
-        low_priority[way_idx] = false;
-    } else {
-        low_priority[way_idx] = true;
     }
 }
 
@@ -146,9 +138,11 @@ void Hub::repartition_ways(uint64_t num_ways_to_reserve) {
 }
 
 bool Hub::can_insert(PacketPtr packet, uint64_t idx) {
-    return true;
-    //auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
-    //if (packet->is_hub_node && !was_accessed) return false;
-    //else return true;
+    if (packet->pc !=0xa) return true;
+    auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
+    auto is_hub_node = (packet->degree > int(packet->avg_degree)+1);
+    if (is_hub_node && !was_accessed) return false;
+    else if (packet->is_low_reuse) return false;
+    else return false;
 }
 

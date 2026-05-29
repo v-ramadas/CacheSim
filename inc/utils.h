@@ -20,6 +20,7 @@ struct Packet {
     uint64_t next_reuse=0;
     uint64_t shct_value=0;
     uint64_t degree=0;
+    std::vector<uint64_t> block_degrees;
     float avg_degree=0.0f;
 
     Packet() {
@@ -42,6 +43,7 @@ struct Packet {
         next_reuse = 0;
         l1_hits = 0;
         degree = 0;
+        block_degrees.clear();
         avg_degree = 0.0f;
     }
 
@@ -79,6 +81,7 @@ struct Packet {
         l1_hits = packet.l1_hits;
         shct_value = packet.shct_value;
         degree = packet.degree;
+        block_degrees = packet.block_degrees;
         avg_degree = packet.avg_degree;
 
         return *this;
