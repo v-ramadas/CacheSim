@@ -62,11 +62,11 @@ bool SectoredSet::try_hit(PacketPtr packet) {
             }
     
         }
-        if (cachesim::DEBUG)
+        if (cachesim::DEBUG || cachesim::L1_DEBUG)
             fmt::print("{} level {} hit {} pc {:#x} address {:#x} set {} way {} size {} degree {} avg_degree {:4f}\n",
                     __func__, level, (hit) ? "HIT" : "MISS", packet->pc, packet->address, set_idx, way_idx, packet->blocks.size(), packet->degree, packet->avg_degree);
     } else {
-        if (cachesim::DEBUG)
+        if (cachesim::DEBUG || cachesim::L1_DEBUG)
             fmt::print("{} level {} hit MISS pc {:#x} address {:#x} sector_address {:#x} set {} way {} no sectors available size {} degree {} avg_degree {:4f}\n",
                     __func__, level, packet->pc, packet->aligned_address, packet->address, set_idx, way_idx, packet->size, packet->degree, packet->avg_degree);
     }
@@ -77,15 +77,16 @@ bool SectoredSet::try_hit(PacketPtr packet) {
     if (hit) {
         repl_counter->init_counter(packet);
 
-        repl_counter->hit_update(way_idx);
+        repl_counter->hit_update(packet, way_idx);
         if (next_reuse[way_idx] != UINT64_MAX) next_reuse[way_idx] = packet->next_reuse;
 
         for (auto sector_idx: sector_idx_list) {
             if (!packet->is_read) {
                 dirty[sector_idx] = true;
             }
-            if (degree[sector_idx] + way_hits[sector_idx] < packet->degree)
-                degree[sector_idx] = packet->degree - way_hits[sector_idx];
+            if (degree[sector_idx] < packet->degree)
+                degree[sector_idx] = packet->degree;
+
         }
         auto word_idx = (packet->address - packet->aligned_address) >> 3;
         set_footprint(way_idx, word_idx, true);
@@ -101,28 +102,51 @@ bool SectoredSet::try_hit(PacketPtr packet) {
 void SectoredSet::handle_fill(PacketPtr packet) {
     auto way = std::find(valid.begin(), valid.end(), false);
     auto way_idx = std::distance(valid.begin(), way);
-    assert(way_idx < num_ways);
+    auto hit = false;
+    if (way_idx == num_ways) {
+        hit = (std::find(ways.begin(), ways.end(), packet->aligned_address) != ways.end());
+    }
+    assert(hit || (way_idx < num_ways));
     repl_counter->init_counter(packet);
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
+    //TODO: Is this required?
     pc[way_idx] = packet->pc;
     next_reuse[way_idx] = packet->next_reuse;
     serviced_from_llc[way_idx] += packet->serviced_from_llc;
-    is_hub_node[way_idx] = packet->is_hub_node;
+    if (!is_hub_node[way_idx])
+        is_hub_node[way_idx] = packet->is_hub_node;
     if (degree[way_idx] < packet->degree)
         degree[way_idx] = packet->degree;
     avg_degree[way_idx] = packet->avg_degree;
 
-    repl_counter->fill_update(way_idx, packet, true);
+    repl_counter->fill_update(way_idx, 0, packet, true);
     auto way_sector = &way_sectors[way_idx];
 
     uint64_t sector_idx = 0;
     for (const auto block_address: packet->blocks) {
+        assert(sector_idx >=0 && sector_idx < 8);
+        if (way_sector->valid.size() != 8) {
+            fmt::print("{}, {}\n", sector_idx, way_sector->valid.size());
+        }
+        assert(way_sector->valid.size() == 8);
+        if (way_sector->valid[sector_idx]) {
+            assert(way_sector->sectors[sector_idx] == block_address);
+            sector_idx++;
+            continue;
+        }
         if (block_address != UINT64_MAX) {
             way_sector->sectors[sector_idx] = block_address;
             way_sector->valid[sector_idx] = true;
-            way_sector->degree[sector_idx] = packet->block_degrees[sector_idx];
+            if (packet->block_degrees.size() == 0) {
+                way_sector->degree[sector_idx] = packet->degree;
+            } else {
+                way_sector->degree[sector_idx] = packet->block_degrees[sector_idx];
+                way_sector->llc_counter_values[sector_idx] = packet->llc_counter_values[sector_idx];
+            }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
+            //fmt::print("Level 0 Inserting address {:#x} sector {} counter {} serviced_from_llc {} vector size {} val {}\n",
+             //       way_sectors[way_idx].sectors[sector_idx], sector_idx, way_sectors[way_idx].llc_counter_values[sector_idx], serviced_from_llc[way_idx], packet->llc_counter_values.size(), packet->llc_counter_values[sector_idx]);
         }
         auto was_accessed = ((packet->footprint >> sector_idx*bits_per_block)&bitmask == bitmask);
         was_accessed |= (align_address(packet->address, block_size) == block_address);
@@ -131,10 +155,6 @@ void SectoredSet::handle_fill(PacketPtr packet) {
                 set_footprint(way_idx, word_idx, true);
             }
         }
-        if (cachesim::DEBUG || cachesim::L1_DEBUG)
-            fmt::print("Level {} Inserting address {:#x} @ set {} way {} sector {} valid {} repl_counter {} pc {:#x} was_accessed {} set_footprint {} serviced_from_llc {} degree {} avg_degree {:4f}\n",
-                    level, way_sectors[way_idx].sectors[sector_idx], set_idx, way_idx, sector_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], was_accessed, get_footprint(way_idx, sector_idx), serviced_from_llc[way_idx], degree[way_idx], avg_degree[way_idx]);
-
         sector_idx++;
     }
     return;
@@ -146,6 +166,8 @@ void SectoredSet::handle_evict(PacketPtr packet) {
     bool hit = (try_hit != ways.end());
     bool eviction_needed = (num_invalid_blocks == 0) && (hit != true);
     packet->footprint = 0;
+    packet->degree = 0;
+    packet->avg_degree = 0.0f;
     if (!eviction_needed) {
         if (hit) {
             if (cachesim::DEBUG || cachesim::L1_DEBUG)
@@ -169,6 +191,11 @@ void SectoredSet::handle_evict(PacketPtr packet) {
         //if (way_sectors[way_idx].valid[sector_idx]) {
             packet->blocks.push_back(way_sectors[way_idx].sectors[sector_idx]);
             packet->block_degrees.push_back(way_sectors[way_idx].degree[sector_idx]);
+            packet->llc_counter_values.push_back(way_sectors[way_idx].llc_counter_values[sector_idx]);
+            //fmt::print("Level 0 Evicting address {:#x} sector {} counter {} serviced_from_llc {} vector size {} val {}\n",
+//                    way_sectors[way_idx].sectors[sector_idx], sector_idx, way_sectors[way_idx].llc_counter_values[sector_idx], serviced_from_llc[way_idx], packet->llc_counter_values.size(), packet->llc_counter_values[sector_idx]);
+
+
             way_sectors[way_idx].sectors[sector_idx] = UINT64_MAX;
             way_sectors[way_idx].valid[sector_idx] = false;
             way_sectors[way_idx].dirty[sector_idx] = false;
@@ -191,12 +218,12 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 
     packet->pc = pc[way_idx];
     packet->next_reuse = next_reuse[way_idx];
-    packet->serviced_from_llc = serviced_from_llc[way_idx];
+    packet->serviced_from_llc = std::max(packet->serviced_from_llc, serviced_from_llc[way_idx]);
     packet->is_hub_node = is_hub_node[way_idx];
     packet->l1_hits = way_hits[way_idx];
-    packet->degree = degree[way_idx];
-    packet->avg_degree = avg_degree[way_idx];
-    
+    packet->degree = std::max(packet->degree, degree[way_idx]);
+    packet->avg_degree = std::max(packet->avg_degree, avg_degree[way_idx]);
+
     invalidate_way(way_idx);
 
     cache->update_data_var_utilization(packet->pc, packet->blocks.size(),
@@ -239,7 +266,7 @@ uint64_t SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
         if (cachesim::DEBUG || cachesim::L1_DEBUG) {
-            fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
+            fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} serviced_from_llc {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint, packet->serviced_from_llc);
         }
     }
     return inv_address;

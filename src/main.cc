@@ -18,6 +18,7 @@ bool cachesim::DEBUG = false;
 bool cachesim::L1_DEBUG = false;
 bool cachesim::LLC_DEBUG = false;
 bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
+uint64_t g_block_size = CACHELINE_SIZE;
 //TODO: Figure out a good value
 uint64_t WARMUP_INSTS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
@@ -32,6 +33,7 @@ enum TraceFormat {
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t degree, float avg_degree) {
+   
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -76,7 +78,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         }
 
         if (!access_packet->is_low_reuse) {
-            access_packet->blocks.clear();
+            access_packet->clear_blocks();
             access_packet->aligned_address = align_address(access_packet->address, CACHELINE_SIZE);
         }
 
@@ -84,7 +86,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     bool needs_invalidate = false;
     if (hit) {
-        fill_packet->serviced_from_llc = 1;
+        //fill_packet->serviced_from_llc = 1;
         eviction_packet->footprint = 0;
         //if (access_packet->is_low_reuse && !cache[0]->get_is_sectored()) {
         //    fill_packet->size = access_packet->size;
@@ -98,7 +100,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         needs_invalidate = true;
         //}
     } else {
-        fill_packet->serviced_from_llc = 0;
+        //fill_packet->serviced_from_llc = 0;
         fill_packet->size = CACHELINE_SIZE;
         eviction_packet->size = CACHELINE_SIZE;
         invalidation_packet->size = CACHELINE_SIZE;
@@ -113,7 +115,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     if (hit_at_level != 0) {
         if (hit) {
             fill_packet->blocks = cache[hit_at_level]->handle_invalidate(fill_packet);
-            cache[0]->handle_invalidate(invalidation_packet);
+
+            //cache[0]->handle_invalidate(invalidation_packet);
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
@@ -180,19 +183,26 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 template <typename T>
 void access_single_level(Cache<T> *cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read) {
-    access_packet->clear_address();
-    eviction_packet->clear_address();
-    fill_packet->clear_address();
+            uint64_t pc, uint64_t address, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t degree, float avg_degree) {
+    //if (pc != 0xa) return;
+    access_packet->clear();
+    eviction_packet->clear();
+    fill_packet->clear();
     access_packet->address = address;
     access_packet->is_read = is_read;
     access_packet->size = cache->get_block_size(cache->get_set_idx(access_packet->address));
+    access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
     access_packet->pc = pc;
-    fill_packet->address = access_packet->address;
+    access_packet->next_reuse = next_reuse;
+    access_packet->degree = degree;
+    access_packet->avg_degree = avg_degree;
+
+    *fill_packet = *access_packet;
+    fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
     fill_packet->size = CACHELINE_SIZE;
-    fill_packet->is_low_reuse = true;
-    fill_packet->pc = pc;
-    eviction_packet->size = CACHELINE_SIZE;
+    *eviction_packet = *fill_packet;
+    *invalidation_packet = *fill_packet;
+
     bool hit = cache->try_hit(access_packet);
     if (!hit) {
         cache->handle_fill_line(fill_packet, eviction_packet, 0);
@@ -225,7 +235,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
             float avg_degree = 0.0f;
             int parsed_count = 0;
             char action[16];
-            if (cachesim::DEBUG) {
+            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
                 if (inst_count > 2500000) {
                     break;
                 }
@@ -239,11 +249,13 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                     //std::cout << "pc 0x" << pc << " address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << std::endl;
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "read") == 0) ? true : false;
+                    if (pc != 0xa) continue;
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                         predictor, address, pc, is_read, inst_count, next_reuse, degree, avg_degree);
 #else
-                    access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet, pc,address, is_read);
+                    access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
+                        pc, address, is_read, inst_count, next_reuse, degree, avg_degree);
 #endif
 
                 } catch (const std::exception& e) {
@@ -279,14 +291,14 @@ int main(int argc, char** argv) {
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
-        {"lfu", ReplacementPolicy::LFU},
+        {"hru", ReplacementPolicy::HRU},
+        {"hrupp", ReplacementPolicy::HRUpp},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
-        {"trrip", ReplacementPolicy::TRRIP},
         {"prrip", ReplacementPolicy::PRRIP},
         {"ship", ReplacementPolicy::SHIP},
         {"belady", ReplacementPolicy::Belady},
-        {"hub", ReplacementPolicy::Hub},
+        {"hrrip", ReplacementPolicy::HRRIP},
         {"fission", ReplacementPolicy::Fission},
         {"distillation", ReplacementPolicy::Distillation}
     }));
@@ -301,6 +313,7 @@ int main(int argc, char** argv) {
     app.add_option("--warmup-instructions", WARMUP_INSTS, "Warmup instruction count");
 
     CLI11_PARSE(app, argc, argv);
+    g_block_size = block_size;
 
     switch(replacement_policy) {
         case ReplacementPolicy::Fission:
@@ -314,10 +327,10 @@ int main(int argc, char** argv) {
         case ReplacementPolicy::SHIP:
             cachesim::useMemSignature = true;
             break;
-        case ReplacementPolicy::TRRIP:
+        case ReplacementPolicy::HRRIP:
             cachesim::dropBlocks = true;
             break;
-        case ReplacementPolicy::Hub:
+        case ReplacementPolicy::HRU:
             cachesim::dropBlocks = true;
             break;
         default:
@@ -359,8 +372,8 @@ int main(int argc, char** argv) {
     } else {
         champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
         while (!trace.eof()) {
-            if (cachesim::DEBUG) {
-                if (inst_count > 2500000) {
+            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
+                if (inst_count > 5000000) {
                     break;
                 }
             }
@@ -384,11 +397,11 @@ int main(int argc, char** argv) {
 #else
             for (auto& smem:inst.source_memory) {
                 access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), smem.to<uint64_t>(), true);
+                        inst.ip.to<uint64_t>(), smem.to<uint64_t>(), true, inst_count, 0, 0, 0.0);
             }
             for (auto& dmem:inst.destination_memory) {
                 access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), dmem.to<uint64_t>(), false);
+                        inst.ip.to<uint64_t>(), dmem.to<uint64_t>(), false, inst_count, 0, 0, 0.0);
             }
 #endif
         }

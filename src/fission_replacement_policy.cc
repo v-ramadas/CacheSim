@@ -14,11 +14,11 @@ void Fission::init_counter(PacketPtr packet) {
 
 }
 
-void Fission::hit_update(uint64_t way_idx) {
+void Fission::hit_update(PacketPtr packet, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void Fission::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void Fission::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {

@@ -4,10 +4,10 @@
 void Belady::init_counter(PacketPtr packet) {
 }
 
-void Belady::hit_update(uint64_t way_idx) {
+void Belady::hit_update(PacketPtr packet, uint64_t way_idx) {
 }
 
-void Belady::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void Belady::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     counter[way_idx] = packet->next_reuse;
 }
 

@@ -1,20 +1,20 @@
-#ifndef __LRU_REPLACEMENT_POLICY_H__
-#define __LRU_REPLACEMENT_POLICY_H__
+#ifndef __HRU_REPLACEMENT_POLICY_H__
+#define __HRU_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
 
-class LRU : public BasePolicy {
+class HRU : public BasePolicy {
     uint64_t max_counter = UINT64_MAX;
     uint64_t mru_counter = 0;
     uint64_t lru_counter = 0;
     std::vector<bool> low_priority;
     public:
-    LRU() {}
-    LRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    HRU() {}
+    HRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, max_counter);
-        low_priority.resize(num_ways, false);
+        low_priority.resize(num_ways, true);
         level = _level;
         reserved_ways = 0;
     }
@@ -39,7 +39,7 @@ class LRU : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet, uint64_t idx) { return true;}
+    bool can_insert(PacketPtr packet, uint64_t idx);
 
 };
 

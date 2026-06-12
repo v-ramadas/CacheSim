@@ -14,16 +14,26 @@ void SRRIP::init_counter(PacketPtr packet) {
 
 }
 
-void SRRIP::hit_update(uint64_t way_idx) {
+void SRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
+    if (cachesim::REPLACEMENT_POLICY_DEBUG)
+        fmt::print("Hit Update. PC {:#x} address {:#x} way {} hub {} degree {} l1_hits {} repl_policy_old {} repl_policy_new {}\n", packet->pc, packet->address, way_idx,
+        (packet->degree > uint64_t(packet->avg_degree)),
+        packet->degree, packet->l1_hits, counter[way_idx], 0);
     counter[way_idx] = 0;
+    
 }
 
-void SRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void SRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+    
     if (packet->serviced_from_llc > 0) {
         counter[way_idx] = 0;
     } else {
         counter[way_idx] = denseRRPV - 1;
     }
+    if (cachesim::REPLACEMENT_POLICY_DEBUG)
+        fmt::print("Fill Update. PC {:#x} address {:#x} way {} hub {} degree {} l1_hits {} repl_policy_new {}\n", packet->pc, packet->address, way_idx, (packet->degree > uint64_t(packet->avg_degree)),
+        packet->degree, packet->l1_hits, counter[way_idx]);
+
 }
 
 uint64_t SRRIP::get_eviction_candidate(bool is_low_priority = false) {
@@ -68,6 +78,9 @@ uint64_t SRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
 }
 
 void SRRIP::evict(uint64_t way_idx) {
+    if (cachesim::REPLACEMENT_POLICY_DEBUG)
+        fmt::print("Evicting way {} counter value {}\n",
+        way_idx, counter[way_idx]);
     counter[way_idx] = UINT_MAX;
 }
 

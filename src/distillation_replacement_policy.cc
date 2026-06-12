@@ -1,7 +1,7 @@
-#include "hub_replacement_policy.h"
+#include "distillation_replacement_policy.h"
 #include <fmt/core.h>
 
-void Hub::init_counter(PacketPtr packet) {
+void Distillation::init_counter(PacketPtr packet) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
                 uint64_t val = x + _diff;
@@ -14,34 +14,41 @@ void Hub::init_counter(PacketPtr packet) {
 
 }
 
-void Hub::hit_update(uint64_t way_idx) {
+void Distillation::hit_update(PacketPtr packet, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void Hub::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
-    auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
     if (packet->serviced_from_llc > 0) {
-        if (was_accessed || is_hub_node)
-            counter[way_idx] = 0;
-        else 
-            counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);
-    } else {
-        if (is_hub_node)
-            counter[way_idx] = (int)((float)(packet->avg_degree/packet->degree)*maxRRPV);
-        else {
+        if (packet->is_low_reuse) {
             counter[way_idx] = maxRRPV-1;
+        } else if (was_accessed) { 
+            counter[way_idx] = 0;
+        } else {
+            counter[way_idx] = (int)((1.0d - packet_reuse_probability)*(maxRRPV-1));
         }
+    } else {
+        if ((!packet->is_low_reuse && packet->is_hub_node))
+            counter[way_idx] = 0;//maxRRPV - 2;
+        else
+            counter[way_idx] = maxRRPV-1;
     }
 
-    if (is_hub_node) {
+    if (packet->is_hub_node) {
         //if (packet->blocks.size() < 8)
         //fmt::print("Hub Node. PC {:#x} address {:#x} way {} size {} density {} footprint {:#x} l1_hits {}\n", packet->pc, packet->address, way_idx, packet->blocks.size(), __builtin_popcountll(packet->footprint), packet->footprint, packet->l1_hits); 
     }
+
+    if (!packet->is_low_reuse && packet->is_hub_node) {
+        low_priority[way_idx] = false;
+    } else {
+        low_priority[way_idx] = true;
+    }
 }
 
-uint64_t Hub::get_eviction_candidate(bool is_low_priority=false) {
+uint64_t Distillation::get_eviction_candidate(bool is_low_priority=false) {
     
     // Lambda to encapsulate the comparison logic for reuse
     auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_priority=false) {
@@ -94,9 +101,9 @@ uint64_t Hub::get_eviction_candidate(bool is_low_priority=false) {
     return candidate_idx;
 }
 
-uint64_t Hub::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t Distillation::get_reserved_eviction_candidate(bool is_low_priority = false) {
     assert(reserved_ways != 0);
-    auto candidate_idx = 0;
+    auto candidate_idx = num_ways;
     auto candidate = counter[candidate_idx];
     for (uint64_t idx = num_ways; idx < num_ways+reserved_ways; idx++) {
         candidate = counter[candidate_idx];
@@ -115,15 +122,15 @@ uint64_t Hub::get_reserved_eviction_candidate(bool is_low_priority = false) {
     return candidate_idx;
 }
 
-void Hub::evict(uint64_t way_idx) {
+void Distillation::evict(uint64_t way_idx) {
     counter[way_idx] = UINT_MAX;
 }
 
-uint64_t Hub::get_counter_value(uint64_t way_idx) {
+uint64_t Distillation::get_counter_value(uint64_t way_idx) {
     return counter[way_idx];
 }
 
-uint64_t Hub::count_distance(uint64_t threshold) {
+uint64_t Distillation::count_distance(uint64_t threshold) {
     uint64_t distance = std::count_if(
         counter.begin(), counter.end(),
         [threshold](uint64_t n) {
@@ -132,17 +139,16 @@ uint64_t Hub::count_distance(uint64_t threshold) {
     return distance;
 }
 
-void Hub::repartition_ways(uint64_t num_ways_to_reserve) {
+void Distillation::repartition_ways(uint64_t num_ways_to_reserve) {
     num_ways -= num_ways_to_reserve;
     reserved_ways = num_ways_to_reserve;
 }
 
-bool Hub::can_insert(PacketPtr packet, uint64_t idx) {
-    if (packet->pc !=0xa) return true;
+bool Distillation::can_insert(PacketPtr packet, uint64_t idx) {
+//    return true;
     auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
-    auto is_hub_node = (packet->degree > int(packet->avg_degree)+1);
-    if (is_hub_node && !was_accessed) return false;
-    else if (packet->is_low_reuse) return false;
-    else return false;
+    if (packet->is_low_reuse) { fmt::print("Skip\n");return false; }
+    if (packet->is_hub_node && !was_accessed) return false;
+    else return true;
 }
 

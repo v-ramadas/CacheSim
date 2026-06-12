@@ -13,7 +13,7 @@ void DRRIP::init_counter(PacketPtr packet) {
     global_clock++;
 }
 
-void DRRIP::hit_update(uint64_t way_idx) {
+void DRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
 //    counter[way_idx] = 0;
 }
 
@@ -38,7 +38,7 @@ void DRRIP::update_srrip(uint64_t way_idx, PacketPtr packet) {
     }
 }
 
-void DRRIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void DRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     auto begin = 0;
     auto end = NUM_POLICY*SDM_SIZE;
     if (set_idx > end) { // follower sets

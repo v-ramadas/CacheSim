@@ -1,27 +1,29 @@
-#ifndef __LFU_REPLACEMENT_POLICY_H__
-#define __LFU_REPLACEMENT_POLICY_H__
+#ifndef __HRUPP_REPLACEMENT_POLICY_H__
+#define __HRUPP_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
 
-class LFU : public BasePolicy {
-    uint64_t min_counter = 0;
+class HRUpp : public BasePolicy {
+    uint64_t max_counter = UINT64_MAX;
+    uint64_t mru_counter = 0;
+    uint64_t lru_counter = 0;
+    std::vector<bool> low_priority;
     public:
-
-    LFU() {}
-
-    LFU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    HRUpp() {}
+    HRUpp(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, min_counter);
+        counter.resize(num_ways, max_counter);
+        low_priority.resize(num_ways, true);
         level = _level;
         reserved_ways = 0;
     }
     
     void init_counter(PacketPtr packet);
 
-    void hit_update(uint64_t way_idx);
+    void hit_update(PacketPtr packet, uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed);
+    void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
 
     uint64_t get_eviction_candidate(bool is_low_priority);
 

@@ -179,8 +179,6 @@ void SparsityPredictor::update_eviction(PacketPtr packet) {
 
     history[signature]->evictions++; // update access count
     history[signature]->serviced_from_llc += packet->serviced_from_llc;
-    if (packet->serviced_from_llc > 2)
-        fmt::print("PC {} Reuse {}\n", packet->pc, packet->serviced_from_llc);
 }
 
 uint64_t SparsityPredictor::get_footprint(PacketPtr packet) {

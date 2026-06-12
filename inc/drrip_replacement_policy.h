@@ -36,9 +36,9 @@ class DRRIP : public BasePolicy {
     
     void init_counter(PacketPtr packet);
 
-    void hit_update(uint64_t way_idx);
+    void hit_update(PacketPtr packet, uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed);
+    void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
 
     uint64_t get_eviction_candidate(bool is_low_priority);
 

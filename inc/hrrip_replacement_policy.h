@@ -1,10 +1,10 @@
-#ifndef __TRRIP_REPLACEMENT_POLICY_H__
-#define __TRRIP_REPLACEMENT_POLICY_H__
+#ifndef __HRRIP_REPLACEMENT_POLICY_H__
+#define __HRRIP_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
 #include <climits>
 
-class TRRIP : public BasePolicy {
+class HRRIP : public BasePolicy {
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;
@@ -13,11 +13,10 @@ class TRRIP : public BasePolicy {
     uint64_t diff = UINT64_MAX;
 
     public:
-    TRRIP(): maxRRPV(3) {}
+    HRRIP(): maxRRPV(3) {}
 
-    TRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    HRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
         maxRRPV(std::bit_floor(_num_ways)-1) {
-//        maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, UINT_MAX);
@@ -33,9 +32,9 @@ class TRRIP : public BasePolicy {
     
     void init_counter(PacketPtr packet);
 
-    void hit_update(uint64_t way_idx);
+    void hit_update(PacketPtr packet, uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed);
+    void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
 
     uint64_t get_eviction_candidate(bool is_low_priority);
 

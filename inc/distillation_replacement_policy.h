@@ -1,10 +1,10 @@
-#ifndef __HUB_REPLACEMENT_POLICY_H__
-#define __HUB_REPLACEMENT_POLICY_H__
+#ifndef __DISTILLATION_REPLACEMENT_POLICY_H__
+#define __DISTILLATION_REPLACEMENT_POLICY_H__
 
 #include "replacement_policy.h"
 #include <climits>
 
-class Hub : public BasePolicy {
+class Distillation : public BasePolicy {
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;
@@ -13,9 +13,9 @@ class Hub : public BasePolicy {
     uint64_t diff = UINT64_MAX;
 
     public:
-    Hub(): maxRRPV(3) {}
+    Distillation(): maxRRPV(3) {}
 
-    Hub(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    Distillation(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
         maxRRPV(std::bit_floor(_num_ways)-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;
@@ -27,14 +27,16 @@ class Hub : public BasePolicy {
         sparseRRPV = maxRRPV;
         level = _level;
         global_clock = 0;
-        reserved_ways = 0;
+
+        uint64_t blocks_to_reserve = 1*8;
+        repartition_ways(blocks_to_reserve);
     }
     
     void init_counter(PacketPtr packet);
 
-    void hit_update(uint64_t way_idx);
+    void hit_update(PacketPtr packet, uint64_t way_idx);
 
-    void fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed);
+    void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
 
     uint64_t get_eviction_candidate(bool is_low_priority);
 

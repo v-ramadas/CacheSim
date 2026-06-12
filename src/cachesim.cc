@@ -140,8 +140,10 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         packet->aligned_address = align_address(packet->address, block_size);
     assert(num_blocks > 0);
     if (packet->blocks.size() != num_blocks) {
-        packet->blocks.clear();
+        packet->clear_blocks();
         packet->blocks.resize(num_blocks);
+        packet->block_degrees.resize(num_blocks);
+        packet->llc_counter_values.resize(num_blocks);
         packet->blocks[0] = packet->aligned_address;
         // Populate the vector
         for (uint64_t i = 0; i < num_blocks; i++) {
@@ -181,9 +183,8 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
             fmt::print("Level {} No blocks to fill since block list is empty\n", level);
         return;
     }
-    Packet fill_block_packet;
-    uint64_t idx = 0;
 
+    uint64_t idx = 0;
     auto set_idx = get_set_idx(fill_packet->address);
     auto block_size = sets[set_idx]->get_block_size();
     eviction_packet->is_low_reuse = fill_packet->is_low_reuse;
@@ -200,7 +201,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
 
     eviction_packet->aligned_address = fill_packet->aligned_address;
     eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
-    eviction_packet->blocks.clear();
+    eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     sets[set_idx]->handle_evict(eviction_packet);
     if (eviction_packet->blocks.size() == 0) {
@@ -219,7 +220,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     if (cachesim::DEBUG)
         fmt::print("Level {} Inserted address {:#x} @ set {} Footprint {:#x}\n", level, fill_packet->address, set_idx, fill_packet->footprint);
 
-    fill_packet->blocks.clear();
+    fill_packet->clear_blocks();
     return;
 }
 
@@ -232,9 +233,8 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
     // Populate the vector
     populate_fill_packet(fill_packet);
-    eviction_packet->size = fill_packet->size;
-    eviction_packet->blocks.clear();
-    eviction_packet->block_degrees.clear();
+    eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+    eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
     sets[set_idx]->handle_evict(eviction_packet);
@@ -251,7 +251,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     sets[set_idx]->handle_fill(fill_packet);
     //partial_misses[fill_packet->blocks.size()-1]++;
-    fill_packet->blocks.clear();
+    fill_packet->clear_blocks();
     if (cachesim::DEBUG)
         fmt::print("Level {} Inserted address {:#x} @ set {} Footprint {:#x}\n", level, fill_packet->address, set_idx, fill_packet->footprint);
     return;
@@ -281,6 +281,7 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
     if constexpr (std::is_same_v<T, SectoredSet>) {
         invalidate_packet.blocks.resize(num_blocks);
         invalidate_packet.block_degrees.resize(num_blocks);
+        invalidate_packet.llc_counter_values.resize(num_blocks);
         invalidate_packet.address = packet->address;
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
@@ -288,7 +289,6 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
         //inv_address = address.sectors;
     } else {
         invalidate_packet.blocks.resize(1);
-        invalidate_packet.block_degrees.resize(1);
         inv_address.resize(num_blocks);
         for (uint64_t block = 0; block < num_blocks; block ++) {
             invalidate_packet.address = aligned_address + block*block_size;
@@ -296,12 +296,18 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
             invalidate_packet.aligned_address = align_address(invalidate_packet.address, block_size);
             auto address = sets[set_idx]->handle_invalidate(&invalidate_packet, block);
             inv_address[block] = address;
+            //fmt::print("Invalidated address {:#x} block {}, serviced_from_llc {}\n", address, block, invalidate_packet.serviced_from_llc);
         }
     }
 
 
     packet->footprint = invalidate_packet.footprint;
     packet->l1_hits = invalidate_packet.l1_hits;
+    packet->block_degrees = invalidate_packet.block_degrees;
+    packet->llc_counter_values = invalidate_packet.llc_counter_values;
+    packet->degree = invalidate_packet.degree;
+    packet->avg_degree = invalidate_packet.avg_degree;
+    packet->serviced_from_llc = invalidate_packet.serviced_from_llc;
     //std::copy(invalidate_packet.block_accesses.begin(), invalidate_packet.block_accesses.end(), packet->block_accesses.begin());
 
     num_blocks_used += count_footprint(invalidate_packet.footprint);
@@ -332,7 +338,11 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
                 if (is_sectored) {
                     ++it;
                 } else {
+                    auto index = std::distance(fill_packet->blocks.begin(), it);
+
                     fill_packet->blocks.erase(it);
+                    fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+                    fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
                 }
                 idx++;
                 continue;
@@ -346,6 +356,9 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
             if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
                 dropBlock = true;
             }
+            if (*it == 0x55627b7bb2a8)
+                fmt::print("Does address {:#x} exist already in cache? {}. Packet lru counter {} serviced_from_llc {}\n",
+                        *it, (try_hit != ways.end()) ? "HIT" : "MISS", fill_packet->llc_counter_values[std::distance(fill_packet->blocks.begin(), it)], fill_packet->serviced_from_llc);
             if (try_hit != ways.end()) {
                 auto way_idx = std::distance(ways.begin(), try_hit);
                 if (cachesim::DEBUG && try_hit != ways.end())
@@ -354,10 +367,12 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
                 auto index = std::distance(fill_packet->blocks.begin(), it);
                 fill_packet->blocks.erase(it);
                 fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
             } else if (dropBlock){
                 auto index = std::distance(fill_packet->blocks.begin(), it);
                 fill_packet->blocks.erase(it);
                 fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
             } else {
                 ++it;
             }
@@ -378,10 +393,12 @@ void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
                 continue;
             }
             fill_packet->blocks.push_back(address);
-            if (address == fill_packet->address)
+            if (address == align_address(fill_packet->address, block_size))
                 fill_packet->block_degrees.push_back(fill_packet->degree);
             else
+                //TODO: Fix
                 fill_packet->block_degrees.push_back(0);
+            fill_packet->llc_counter_values.push_back(0);
        }
     }
     return;

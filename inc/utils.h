@@ -3,6 +3,26 @@
 
 #include <stdint.h>
 #include <vector>
+#include <fmt/chrono.h>
+#include <fmt/core.h>
+
+const uint64_t CACHELINE_SIZE = 64;
+extern uint64_t g_block_size;
+namespace cachesim {
+    extern bool DEBUG;
+    extern bool L1_DEBUG;
+    extern bool REPLACEMENT_POLICY_DEBUG;
+    extern bool LLC_DEBUG;
+    extern bool dropBlocks;
+    extern bool useVictimBuffer;
+    extern bool useMemSignature;
+};
+
+enum class InsertionPolicy {
+    EXCLUSIVE,
+    INCLUSIVE,
+};
+
 struct Packet {
     uint64_t pc;
     uint64_t address;
@@ -22,6 +42,7 @@ struct Packet {
     uint64_t degree=0;
     std::vector<uint64_t> block_degrees;
     float avg_degree=0.0f;
+    std::vector<uint64_t> llc_counter_values;
 
     Packet() {
         clear_pc();
@@ -45,6 +66,7 @@ struct Packet {
         degree = 0;
         block_degrees.clear();
         avg_degree = 0.0f;
+        llc_counter_values.clear();
     }
 
     void clear_pc() {
@@ -56,6 +78,13 @@ struct Packet {
         aligned_address = 0;
         size = 0;
         blocks.clear();
+        llc_counter_values.clear();
+    }
+    
+    void clear_blocks() {
+        blocks.clear();
+        block_degrees.clear();
+        llc_counter_values.clear();
     }
 
     void clear_metadata() {
@@ -63,6 +92,11 @@ struct Packet {
         is_low_reuse = false;
         is_hub_node = false;
         footprint = 0;
+    }
+
+    void print() {
+        fmt::print("Packet pc {:#x} address {:#x} aligned_address {:#x} size {} is_read {} is_low_reuse {} is_hub_node {} footprint {:#x} serviced_from_llc {} reuse_probability {} reuse_distance {} next_reuse {} l1_hits {} degree {} avg_degree {:4f}\n",
+            pc, address, aligned_address, size, is_read, is_low_reuse, is_hub_node, footprint, serviced_from_llc, reuse_probability, reuse_distance, next_reuse, l1_hits, degree, avg_degree);
     }
 
     Packet& operator=(const Packet &packet) {
@@ -83,6 +117,7 @@ struct Packet {
         degree = packet.degree;
         block_degrees = packet.block_degrees;
         avg_degree = packet.avg_degree;
+        llc_counter_values = packet.llc_counter_values;
 
         return *this;
     }

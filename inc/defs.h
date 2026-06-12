@@ -16,59 +16,44 @@
 #include "replacement_policy.h"
 
 #include "lru_replacement_policy.h"
-#include "lfu_replacement_policy.h"
+#include "hru_replacement_policy.h"
+#include "hrupp_replacement_policy.h"
 #include "srrip_replacement_policy.h"
-#include "trrip_replacement_policy.h"
 #include "drrip_replacement_policy.h"
 #include "prrip_replacement_policy.h"
 #include "ship_replacement_policy.h"
 #include "fission_replacement_policy.h"
 #include "distillation_replacement_policy.h"
 #include "belady_replacement_policy.h"
-#include "hub_replacement_policy.h"
+#include "hrrip_replacement_policy.h"
 
-const uint64_t CACHELINE_SIZE = 64;
-namespace cachesim {
-    extern bool DEBUG;
-    extern bool L1_DEBUG;
-    extern bool REPLACEMENT_POLICY_DEBUG;
-    extern bool LLC_DEBUG;
-    extern bool dropBlocks;
-    extern bool useVictimBuffer;
-    extern bool useMemSignature;
-};
-
-enum class InsertionPolicy {
-    EXCLUSIVE,
-    INCLUSIVE,
-};
 
 enum class ReplacementPolicy {
     LRU,
-    LFU,
+    HRU,
+    HRUpp,
     SRRIP,
     DRRIP,
-    TRRIP,
     PRRIP,
     SHIP,
     Belady,
     Distillation,
     Fission,
-    Hub,
+    HRRIP,
 };
 
 inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level) {
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);
-        case ReplacementPolicy::LFU:
-            return new LFU(set_idx, num_ways, level);
+        case ReplacementPolicy::HRU:
+            return new HRU(set_idx, num_ways, level);
+        case ReplacementPolicy::HRUpp:
+            return new HRUpp(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
             return new SRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::DRRIP:
             return new DRRIP(set_idx, num_ways, level);
-        case ReplacementPolicy::TRRIP:
-            return new TRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::PRRIP:
             return new PRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::SHIP:
@@ -79,8 +64,8 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new Distillation(set_idx, num_ways, level);
         case ReplacementPolicy::Belady:
             return new Belady(set_idx, num_ways, level);
-        case ReplacementPolicy::Hub:
-            return new Hub(set_idx, num_ways, level);
+        case ReplacementPolicy::HRRIP:
+            return new HRRIP(set_idx, num_ways, level);
 
         default:
             return nullptr;

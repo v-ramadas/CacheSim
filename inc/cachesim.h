@@ -104,6 +104,7 @@ struct Sector {
     std::vector<bool> dirty;
     std::vector<uint64_t> degree;
     std::vector<float> avg_degree;
+    std::vector<uint64_t> llc_counter_values;
     uint64_t num_blocks;
 
     Sector(uint64_t num_blocks):
@@ -114,6 +115,7 @@ struct Sector {
         dirty.resize(num_blocks, false);
         degree.resize(num_blocks, 0);
         avg_degree.resize(num_blocks, 0.0f);
+        llc_counter_values.resize(num_blocks, 0);
     }
 
     Sector(const Sector& other) noexcept : 
@@ -122,6 +124,7 @@ struct Sector {
         dirty(other.dirty),
         degree(other.degree),
         avg_degree(other.avg_degree),
+        llc_counter_values(other.llc_counter_values),
         num_blocks(other.num_blocks)
     {
     }
@@ -143,6 +146,7 @@ struct Sector {
         std::fill(dirty.begin(), dirty.end(), false);
         std::fill(degree.begin(), degree.end(), 0);
         std::fill(avg_degree.begin(), avg_degree.end(), 0.0f);
+        std::fill(llc_counter_values.begin(), llc_counter_values.end(), 0);
     }
 };
 

@@ -14,11 +14,11 @@ void SHIP::init_counter(PacketPtr packet) {
 
 }
 
-void SHIP::hit_update(uint64_t way_idx) {
+void SHIP::hit_update(PacketPtr packet, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void SHIP::fill_update(uint64_t way_idx, PacketPtr packet, bool was_accessed) {
+void SHIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {
