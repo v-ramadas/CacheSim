@@ -17,21 +17,33 @@ void SectoredSet::fill_way(PacketPtr packet, uint64_t way_idx) {
 }
 
 void SectoredSet::fill_packet(PacketPtr packet, uint64_t way_idx) {
+        packet->pc = pc[way_idx];
+        packet->next_reuse = next_reuse[way_idx];
+        packet->serviced_from_llc = serviced_from_llc[way_idx];
+        packet->is_hub_node = is_hub_node[way_idx];
+        packet->l1_hits = way_hits[way_idx];
+        packet->aligned_address = align_address(packet->address, CACHELINE_SIZE);
+        packet->is_hub_node = is_hub_node[way_idx];
+        packet->degree = degree[way_idx];
+        packet->avg_degree = avg_degree[way_idx];
+
+        packet->blocks = way_sectors[way_idx].sectors;
+        packet->block_degrees = way_sectors[way_idx].degree;
+        packet->llc_counter_values = way_sectors[way_idx].llc_counter_values;
 }
 
 void SectoredSet::invalidate_way(uint64_t way_idx) {
     ways[way_idx] = UINT64_MAX;
     valid[way_idx] = false;
-
     serviced_from_llc[way_idx] = 0;
     is_hub_node[way_idx] = false;
     dirty[way_idx] = false;
     pc[way_idx] = UINT64_MAX;
     next_reuse[way_idx] = UINT64_MAX;
     way_hits[way_idx] = 0;
-    way_sectors[way_idx].invalidate();
     degree[way_idx] = 0;
     avg_degree[way_idx] = 0.0f;
+    way_sectors[way_idx].invalidate();
     repl_counter->evict(way_idx);
 }
 
@@ -125,6 +137,12 @@ void SectoredSet::handle_fill(PacketPtr packet) {
 
     uint64_t sector_idx = 0;
     for (const auto block_address: packet->blocks) {
+        if (packet->blocks.size() > 8) {
+            packet->print();
+            fmt::print("block {:#x}\n",block_address);
+        }
+        if (sector_idx <0 || sector_idx >= 8)
+            fmt::print("sector {} length {}\n", sector_idx, packet->blocks.size());
         assert(sector_idx >=0 && sector_idx < 8);
         if (way_sector->valid.size() != 8) {
             fmt::print("{}, {}\n", sector_idx, way_sector->valid.size());
@@ -237,7 +255,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
     return;
 }
 
-uint64_t SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
+void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     auto try_hit = std::find(ways.begin(), ways.end(), packet->aligned_address);
     bool hit = (try_hit != ways.end());
     //Sector inv_sector(num_blocks);
@@ -249,16 +267,8 @@ uint64_t SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
             packet->footprint |= (bitmask*get_footprint(way_idx, sector_idx)) << (block_num*bits_per_block);
             set_footprint(way_idx, sector_idx, false);
         }
-        repl_counter->evict(way_idx);
-        inv_address = ways[way_idx];
-        //inv_sector = way_sectors[way_idx];
+        fill_packet(packet, way_idx);
         way_sectors[way_idx].invalidate();
-        //packet->pc = pc[way_idx];
-        //packet->next_reuse = next_reuse[way_idx];
-        packet->serviced_from_llc = serviced_from_llc[way_idx];
-        packet->is_hub_node = is_hub_node[way_idx];
-        packet->l1_hits = way_hits[way_idx];
-
         invalidate_way(way_idx);
         //cache->update_data_var_utilization(packet->pc, 1,
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -268,8 +278,9 @@ uint64_t SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         if (cachesim::DEBUG || cachesim::L1_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} serviced_from_llc {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint, packet->serviced_from_llc);
         }
+    } else {
+        packet->clear();
     }
-    return inv_address;
 }
 
 

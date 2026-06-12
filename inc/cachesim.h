@@ -76,7 +76,7 @@ class Set {
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
-    uint64_t handle_invalidate(PacketPtr packet, uint64_t block_num);
+    void handle_invalidate(PacketPtr packet, uint64_t block_num);
 
     uint64_t get_block_size() const { return block_size; }
     uint64_t get_distance_count(uint64_t way) const { return distance_counts[way]; }
@@ -196,7 +196,7 @@ class SectoredSet: public Set {
     bool try_hit(PacketPtr packet);
     void handle_fill(PacketPtr packet);
     void handle_evict(PacketPtr eviction_packet);
-    uint64_t handle_invalidate(PacketPtr packet, uint64_t block_num);
+    void handle_invalidate(PacketPtr packet, uint64_t block_num);
     uint64_t get_block_size() const { return block_size; }
     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
     void set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed);
@@ -223,8 +223,9 @@ class BaseCache {
     virtual void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
     virtual void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
     virtual void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) = 0;
-    virtual std::vector<uint64_t> handle_invalidate(PacketPtr packet) = 0;
-    virtual void populate_fill_packet(PacketPtr packet) = 0;
+    virtual void handle_invalidate(PacketPtr packet) = 0;
+    virtual void populate_line(PacketPtr packet) = 0;
+    virtual void populate_blocks(PacketPtr packet) = 0;
 
     virtual bool can_insert_at_level(int level) = 0;
 
@@ -346,8 +347,9 @@ class Cache: public BaseCache {
     void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
     void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
     void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet);
-    std::vector<uint64_t> handle_invalidate(PacketPtr packet);
-    void populate_fill_packet(PacketPtr packet);
+    void handle_invalidate(PacketPtr packet);
+    void populate_line(PacketPtr packet);
+    void populate_blocks(PacketPtr packet);
 
     bool is_eviction_needed(PacketPtr packet) const;
     bool can_insert_at_level(int level);

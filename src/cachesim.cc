@@ -194,7 +194,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     else
         fill_packet->aligned_address = align_address(fill_packet->address, block_size);
 
-    populate_fill_packet(fill_packet);
+    populate_blocks(fill_packet);
     if (fill_packet->blocks.size() == 0) {
         return;
     }
@@ -232,7 +232,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     auto set_idx = get_set_idx(fill_packet->address);
     fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
     // Populate the vector
-    populate_fill_packet(fill_packet);
+    populate_line(fill_packet);
     eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
@@ -267,7 +267,7 @@ void Cache<T>::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) 
 }
 
 template<typename T>
-std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
+void Cache<T>::handle_invalidate(PacketPtr packet) {
 //    if (packet->block_accesses.size() == 0) {
 //        packet->block_accesses.resize(8, 0);
 //    }
@@ -276,45 +276,31 @@ std::vector<uint64_t> Cache<T>::handle_invalidate(PacketPtr packet) {
     auto set_idx = get_set_idx(packet->address);
     auto block_size = sets[set_idx]->get_block_size();
     auto aligned_address = align_address(packet->address, packet->size);
-    std::vector<uint64_t> inv_address;
     auto num_blocks = packet->size/block_size;
     if constexpr (std::is_same_v<T, SectoredSet>) {
-        invalidate_packet.blocks.resize(num_blocks);
-        invalidate_packet.block_degrees.resize(num_blocks);
-        invalidate_packet.llc_counter_values.resize(num_blocks);
+        //invalidate_packet.blocks.resize(num_blocks);
+        //invalidate_packet.block_degrees.resize(num_blocks);
+        //invalidate_packet.llc_counter_values.resize(num_blocks);
         invalidate_packet.address = packet->address;
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
-         auto address = sets[set_idx]->handle_invalidate(&invalidate_packet, 0);
-        //inv_address = address.sectors;
+        sets[set_idx]->handle_invalidate(&invalidate_packet, 0);
     } else {
-        invalidate_packet.blocks.resize(1);
-        inv_address.resize(num_blocks);
+        //invalidate_packet.blocks.resize(1);
         for (uint64_t block = 0; block < num_blocks; block ++) {
             invalidate_packet.address = aligned_address + block*block_size;
             invalidate_packet.size = block_size;
-            invalidate_packet.aligned_address = align_address(invalidate_packet.address, block_size);
-            auto address = sets[set_idx]->handle_invalidate(&invalidate_packet, block);
-            inv_address[block] = address;
+            sets[set_idx]->handle_invalidate(&invalidate_packet, block);
             //fmt::print("Invalidated address {:#x} block {}, serviced_from_llc {}\n", address, block, invalidate_packet.serviced_from_llc);
         }
+        invalidate_packet.address = packet->address;
+        invalidate_packet.size = packet->size;
     }
 
-
-    packet->footprint = invalidate_packet.footprint;
-    packet->l1_hits = invalidate_packet.l1_hits;
-    packet->block_degrees = invalidate_packet.block_degrees;
-    packet->llc_counter_values = invalidate_packet.llc_counter_values;
-    packet->degree = invalidate_packet.degree;
-    packet->avg_degree = invalidate_packet.avg_degree;
-    packet->serviced_from_llc = invalidate_packet.serviced_from_llc;
-    //std::copy(invalidate_packet.block_accesses.begin(), invalidate_packet.block_accesses.end(), packet->block_accesses.begin());
-
+    *packet = invalidate_packet;
     num_blocks_used += count_footprint(invalidate_packet.footprint);
-    evictions+=std::count_if(inv_address.begin(), inv_address.end(),
+    evictions+=std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
-
-    return inv_address;
 }
 
 template<typename T>
@@ -329,77 +315,84 @@ void Cache<T>::print_reuse_distance() {
 }
 
 template<typename T>
-void Cache<T>::populate_fill_packet(PacketPtr fill_packet) {
-    if (fill_packet->blocks.size() != 0)  {
-        //auto is_low_reuse = fill_packet->is_low_reuse;
-        int idx = 0;
-        for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
-            if (*it == UINT64_MAX) {
-                if (is_sectored) {
-                    ++it;
-                } else {
-                    auto index = std::distance(fill_packet->blocks.begin(), it);
+void Cache<T>::populate_line(PacketPtr fill_packet) {
+    auto set_idx = get_set_idx(fill_packet->address);
+    uint64_t num_blocks = fill_packet->size/sets.at(set_idx)->get_block_size();
+    if (fill_packet->blocks.size() == 0) {
+        fill_packet->blocks.resize(num_blocks, UINT64_MAX);
+        fill_packet->block_degrees.resize(num_blocks, 0);
+        fill_packet->llc_counter_values.resize(num_blocks, 0);
+    }
+    assert(fill_packet->blocks.size() == num_blocks);
+    auto ways = get_ways(set_idx);
+    auto block_size = sets[set_idx]->get_block_size();
+    for (uint64_t block_idx = 0; block_idx < fill_packet->size/sets.at(set_idx)->get_block_size(); block_idx++) {
+        auto address = fill_packet->aligned_address + (block_idx*block_size);
+        if (fill_packet->blocks[block_idx] != UINT64_MAX) {
 
-                    fill_packet->blocks.erase(it);
-                    fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-                    fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
-                }
-                idx++;
-                continue;
-            }
-            auto set_idx = get_set_idx(fill_packet->address);
-            auto ways = get_ways(set_idx);
-            auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
-            auto try_hit = std::find(ways.begin(), ways.end(), *it);
-            auto block_size = sets[set_idx]->get_block_size();
-            auto dropBlock = false;
-            if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
-                dropBlock = true;
-            }
-            if (*it == 0x55627b7bb2a8)
-                fmt::print("Does address {:#x} exist already in cache? {}. Packet lru counter {} serviced_from_llc {}\n",
-                        *it, (try_hit != ways.end()) ? "HIT" : "MISS", fill_packet->llc_counter_values[std::distance(fill_packet->blocks.begin(), it)], fill_packet->serviced_from_llc);
-            if (try_hit != ways.end()) {
-                auto way_idx = std::distance(ways.begin(), try_hit);
-                if (cachesim::DEBUG && try_hit != ways.end())
-                    fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
-                //assert(valid[way_idx] == true);
-                auto index = std::distance(fill_packet->blocks.begin(), it);
-                fill_packet->blocks.erase(it);
-                fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
-            } else if (dropBlock){
-                auto index = std::distance(fill_packet->blocks.begin(), it);
-                fill_packet->blocks.erase(it);
-                fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
-            } else {
+            if (cachesim::DEBUG)
+                fmt::print("Block address {:#x} already present in set {}. Not adding to fill packet\n", address, set_idx);
+            continue;
+        } else {
+            fill_packet->blocks[block_idx] = address;
+            if (address == align_address(fill_packet->address, block_size))
+                fill_packet->block_degrees[block_idx] = fill_packet->degree;
+            else
+            //TODO: Fix
+                fill_packet->block_degrees[block_idx] = 0;
+            fill_packet->llc_counter_values[block_idx] = 0;
+        }
+    }
+    return;
+}
+
+template<typename T>
+void Cache<T>::populate_blocks(PacketPtr fill_packet) {
+    assert(fill_packet->blocks.size() != 0);
+    //auto is_low_reuse = fill_packet->is_low_reuse;
+    int idx = 0;
+    for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
+        if (*it == UINT64_MAX) {
+            if (is_sectored) {
                 ++it;
+            } else {
+                auto index = std::distance(fill_packet->blocks.begin(), it);
+
+                fill_packet->blocks.erase(it);
+                fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
             }
             idx++;
+            continue;
         }
-        return;
-    } else {
         auto set_idx = get_set_idx(fill_packet->address);
         auto ways = get_ways(set_idx);
+        auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
+        auto try_hit = std::find(ways.begin(), ways.end(), *it);
         auto block_size = sets[set_idx]->get_block_size();
-        for (uint64_t address = fill_packet->aligned_address; address < fill_packet->aligned_address + fill_packet->size; address += block_size) {
-            auto try_hit = std::find(ways.begin(), ways.end(), address);
-            if (try_hit != ways.end()) {
-                auto way_idx = std::distance(ways.begin(), try_hit);
-                assert(sets[set_idx]->get_valid(way_idx) == true);
-                if (cachesim::DEBUG)
-                    fmt::print("Block address {:#x} already present in set {} way {}. Not adding to fill packet\n", address, set_idx, way_idx);
-                continue;
-            }
-            fill_packet->blocks.push_back(address);
-            if (address == align_address(fill_packet->address, block_size))
-                fill_packet->block_degrees.push_back(fill_packet->degree);
-            else
-                //TODO: Fix
-                fill_packet->block_degrees.push_back(0);
-            fill_packet->llc_counter_values.push_back(0);
-       }
+        auto dropBlock = false;
+        if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
+            dropBlock = true;
+        }
+
+        if (try_hit != ways.end()) {
+            auto way_idx = std::distance(ways.begin(), try_hit);
+            if (cachesim::DEBUG && try_hit != ways.end())
+                fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
+            //assert(valid[way_idx] == true);
+            auto index = std::distance(fill_packet->blocks.begin(), it);
+            fill_packet->blocks.erase(it);
+            fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+            fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
+        } else if (dropBlock){
+            auto index = std::distance(fill_packet->blocks.begin(), it);
+            fill_packet->blocks.erase(it);
+            fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
+            fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
+        } else {
+            ++it;
+        }
+        idx++;
     }
     return;
 }

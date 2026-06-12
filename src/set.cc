@@ -245,7 +245,7 @@ void Set::handle_evict(PacketPtr packet) {
     return;
 }
 
-uint64_t Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
+void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     auto try_hit = std::find(ways.begin(), ways.end(), packet->address);
     uint64_t inv_address = UINT64_MAX;
     if (try_hit != ways.end()) {
@@ -254,9 +254,6 @@ uint64_t Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         inv_address = ways[way_idx];
         auto previous_footprint = packet->footprint;
         packet->footprint |= (bitmask*get_footprint(way_idx, 0)) << (block_num*bits_per_block);
-
-//        if (way_hits[way_idx] > packet->l1_hits)
-//            packet->l1_hits = way_hits[way_idx];
 
         fill_packet(packet, way_idx);
         //fmt::print("Level {} Invalidated block {:#x} block {} packet counter {} counter {} vector size {} serviced_from_llc {}\n",
@@ -272,11 +269,10 @@ uint64_t Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
     } else {
-        inv_address = UINT64_MAX;
         packet->block_degrees.push_back(0);
         packet->llc_counter_values.push_back(0);
     }
-    return inv_address;
+    packet->blocks.push_back(inv_address);
 }
 
 

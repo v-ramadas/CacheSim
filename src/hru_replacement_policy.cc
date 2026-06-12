@@ -30,27 +30,44 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
 void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     auto is_hub_line = (packet->degree > uint64_t(packet->avg_degree));
     if (packet->serviced_from_llc > 0) {
+        //auto counter_value = packet->llc_counter_values[block_idx];
+        uint64_t counter_value = 0;
         if (packet->is_hub_node && was_accessed) {
-            counter[way_idx] = packet->llc_counter_values[block_idx];
+            //if (counter_value == 0) {
+                counter[way_idx] = mru_counter;
+            //} else {
+            //    counter[way_idx] = counter_value;
+            //}
             low_priority[way_idx] = false;
             if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Serviced From LLC earlier. Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
                 packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
         } else if (packet->is_hub_node && !was_accessed) {
-            counter[way_idx] = packet->llc_counter_values[block_idx];
+            //if (counter_value == 0) {
+                counter[way_idx] = mru_counter;
+            //} else {
+            //    counter[way_idx] = counter_value;
+            //}
             low_priority[way_idx] = false;
         } else if (was_accessed) {
+            //if (counter_value == 0) {
+                counter[way_idx] = lru_counter;
+            //} else {
+            //    counter[way_idx] = counter_value;
+            //}
             low_priority[way_idx] = true;
-            counter[way_idx] = packet->llc_counter_values[block_idx];
            if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Serviced From LLC earlier. Non-Hub but Accessed Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
                 packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
         } else if (!was_accessed) {
-            counter[way_idx] = packet->llc_counter_values[block_idx];
-           if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
+            //if (counter_value == 0) {
+                counter[way_idx] = lru_counter;
+            //} else {
+            //    counter[way_idx] = counter_value;
+            //}
+            if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Serviced From LLC earlier. Non-Hub and Unaccessed Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
                 packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
-
         } else {
             counter[way_idx] = lru_counter;
             low_priority[way_idx] = true;

@@ -84,7 +84,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     }
 
-    bool needs_invalidate = false;
     if (hit) {
         //fill_packet->serviced_from_llc = 1;
         eviction_packet->footprint = 0;
@@ -97,14 +96,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         fill_packet->size = CACHELINE_SIZE;
         eviction_packet->size = CACHELINE_SIZE;
         invalidation_packet->size = CACHELINE_SIZE;
-        needs_invalidate = true;
         //}
     } else {
         //fill_packet->serviced_from_llc = 0;
         fill_packet->size = CACHELINE_SIZE;
         eviction_packet->size = CACHELINE_SIZE;
         invalidation_packet->size = CACHELINE_SIZE;
-        needs_invalidate = false;
     }
 
     //fill_packet->address = access_packet->address;
@@ -114,16 +111,23 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     if (hit_at_level != 0) {
         if (hit) {
-            fill_packet->blocks = cache[hit_at_level]->handle_invalidate(fill_packet);
-
+            cache[hit_at_level]->handle_invalidate(invalidation_packet);
+            *fill_packet = *invalidation_packet;
             //cache[0]->handle_invalidate(invalidation_packet);
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
         } else {
             cache[1]->handle_invalidate(invalidation_packet);
+            if (invalidation_packet->blocks.size() != 0)
+                *fill_packet = *invalidation_packet;
             cache[0]->handle_invalidate(invalidation_packet);
-            fill_packet->footprint = invalidation_packet->footprint;
+            if (invalidation_packet->blocks.size() != 0)
+                *fill_packet = *invalidation_packet;
+
+            //fill_packet->footprint = invalidation_packet->footprint;
+            fill_packet->degree = access_packet->degree;
+            fill_packet->avg_degree = access_packet->avg_degree;
             cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
         }
 
@@ -241,7 +245,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                 }
             }
 
-            parsed_count = std::sscanf(line.c_str(), "PC:%llu %15[^:]:0x%llx %llu %llu %f", &pc, action, &address, &next_reuse, &degree, &avg_degree);
+            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %f", &pc, action, &address, &next_reuse, &degree, &avg_degree);
             if (parsed_count >= 3) {
                 try {
                     inst_count++;
@@ -249,7 +253,7 @@ void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_p
                     //std::cout << "pc 0x" << pc << " address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << std::endl;
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "read") == 0) ? true : false;
-                    if (pc != 0xa) continue;
+                    //if (pc != 0xa) continue;
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                         predictor, address, pc, is_read, inst_count, next_reuse, degree, avg_degree);
