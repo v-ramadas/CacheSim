@@ -24,6 +24,7 @@ uint64_t WARMUP_INSTS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
 bool cachesim::useVictimBuffer = false;
 bool cachesim::useMemSignature = false;
+bool cachesim::isoArea = false;
 enum TraceFormat {
     CHAMPSIM,
     ADDRESSES,
@@ -336,11 +337,15 @@ int main(int argc, char** argv) {
             break;
         case ReplacementPolicy::HRU:
             cachesim::dropBlocks = true;
+            cachesim::isoArea = true;
             break;
         default:
             cachesim::dropBlocks = false;
             break;
     }
+
+    llc_num_ways = get_iso_area_cache(llc_num_sets, llc_num_ways, block_size);
+
 #ifdef MULTI_LEVEL
     std::vector<BaseCache*> cache;
     cache.resize(2);

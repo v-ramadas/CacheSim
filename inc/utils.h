@@ -16,6 +16,7 @@ namespace cachesim {
     extern bool dropBlocks;
     extern bool useVictimBuffer;
     extern bool useMemSignature;
+    extern bool isoArea;
 };
 
 enum class InsertionPolicy {

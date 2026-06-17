@@ -31,7 +31,7 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
     } else {
-        num_ways = num_ways*CACHELINE_SIZE/block_size;
+        num_ways = num_ways;//*CACHELINE_SIZE/block_size;
     }
     for (uint64_t i = 0; i < num_sets; ++i) {
         sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
