@@ -305,7 +305,8 @@ int main(int argc, char** argv) {
         {"belady", ReplacementPolicy::Belady},
         {"hrrip", ReplacementPolicy::HRRIP},
         {"fission", ReplacementPolicy::Fission},
-        {"distillation", ReplacementPolicy::Distillation}
+        {"distillation", ReplacementPolicy::Distillation},
+        {"hawkeye", ReplacementPolicy::Hawkeye}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
