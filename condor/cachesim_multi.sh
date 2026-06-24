@@ -11,6 +11,6 @@ for ways in "${ways_list[@]}"; do
                           --trace "${3}" \
                           --trace-format addresses \
                           --replacement-policy "${4}" \
-                          --iters 10 \
-                          --warmup-instructions 25000000
+                          --iters 1
+#                          --warmup-instructions 25000000
 done
