@@ -39,6 +39,8 @@ class CacheStats:
                 return "PC Density"
             elif "Reuse" in line:
                 return "PC Reuse Probability"
+            elif "touched" in line:
+                return "PC Footprint"
 
         elif "Ways:" in line:
             return "INIT"

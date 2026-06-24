@@ -12,23 +12,24 @@ from matplotlib.ticker import ScalarFormatter, MultipleLocator
 parser = argparse.ArgumentParser()
 parser.add_argument("--dir", help="Path to results dir", default="", type=str)
 parser.add_argument("--no-pc-breakdown", help="Do not breakdown stats by PC", action="store_true")
-parser.add_argument("--graph-type", help="Choose the graph type from [hubsort, random, pr_spmv]", default="pr_spmv", type=str)
+parser.add_argument("--graph-type", help="Choose the graph type from [hubsort, random, default]", default="default", type=str)
 parser.add_argument("--num-sets", help="Number of sets", default=2048, type=int)
-parser.add_argument("--cache-size", help="Cache size in MB", default=2, type=int)
+parser.add_argument("--num-ways", help="Num Ways", default=16, type=int)
 args = parser.parse_args()
 
-
+cache_size = float(args.num_sets)*float(args.num_ways)*64/1024/1024
 graph_type = args.graph_type
 if graph_type == "pr_spmv":
     graph_type = "default"
 num_sets = args.num_sets
-expt_list = ["lru_64", "srrip_64", "srrip_8", "ship_64", "ship_8", "prrip_8", 
-                "belady_64"]
+expt_list = ["lru_64", "lru_8", "srrip_64", "srrip_8", "hru_64", "hru_8", "hub_8"]
+
 graph_list = [
         "as-Skitter",
         "cit-Patents",
         "com-LiveJournal",
         "com-Youtube",
+        "soc-LiveJournal",
         "sx-stackoverflow",
         "web-BerkStan",
         "web-Google",
@@ -59,12 +60,11 @@ for expt in expt_list:
             line_type = cache[expt][cache_type].get_line_type(line)
             if (line_type == "INIT"):
                 num_ways = cache[expt][cache_type].get_int_value(line)
-                size = num_sets*float(num_ways)*64/1024/1024
-                if (size != float(args.cache_size)):
+                if (num_ways != float(args.num_ways)):
                     reached_size = False
                     continue
-                cache[expt]["L1D"].size_dict[graph].append(size)
-                cache[expt]["LLC"].size_dict[graph].append(size)
+                cache[expt]["L1D"].size_dict[graph].append(cache_size)
+                cache[expt]["LLC"].size_dict[graph].append(cache_size)
                 reached_size = True
 
             elif reached_size == False:
@@ -79,8 +79,6 @@ for expt in expt_list:
                 if mpki is None:
                     continue
                 cache[expt][cache_type].mpki_dict[graph].append(mpki)
-#            elif line_type == "Utilization":
-#                utilization = cache[expt][cache_type].get_float_value(line)
             elif "PC" in line_type:
                 pc = cache[expt][cache_type].get_pc(line)
                 if line_type == "PC Miss":
@@ -96,21 +94,21 @@ plot_dir = os.path.join(args.dir, "plots")
 if not os.path.exists(plot_dir):
     os.makedirs(plot_dir)
 label_map = {
-    "lru_64": "LRU (64B)",
+    "lru_64": "LRU Baseline",
+    "lru_8": "LRU (8B)",
     "srrip_64": "SRRIP (64B)",
     "srrip_8": "SRRIP (8B)",
-    "ship_64": "SHiP Mem (64B)",
-    "ship_8": "SHiP Mem (8B)",
-    "prrip_8": "Ours (8B)",
-    "belady_64": "Belady's Optimal",
+    "hru_64": "Hub LRU (64B)",
+    "hru_8": "Hub LRU (8B)",
+    "hub_8": "Hub RRIP",
 }
 
 # Define the order you want the bars to appear in
-expt_order = ["lru_64", "srrip_64", "srrip_8", "ship_64", "ship_8", "prrip_8", "belady_64"]
+expt_order = ["lru_64", "lru_8", "srrip_64", "srrip_8", "hru_64", "hru_8", "hub_8"]
 baseline_key = "lru_64"
 
 theme_64 = plt.cm.PuBu(np.linspace(0.1, 0.9, 4)) # 4 policies for 64B
-theme_8  = plt.cm.OrRd(np.linspace(0.1, 0.9, 3)) # 4 policies for 8B
+theme_8  = plt.cm.OrRd(np.linspace(0.1, 0.9, 4)) # 4 policies for 8B
 for cache_type in ["L1D", "LLC"]:
     plt.figure(figsize=(20, 9)) # Widened slightly for the extra tick
     ax = plt.gca()
@@ -190,74 +188,13 @@ for cache_type in ["L1D", "LLC"]:
     labels[-1].set_color('darkblue')
 
     ax.set_ylabel("Normalized MPKI (Lower is Better)", fontsize=14, fontweight='bold')
-    ax.set_title(f"Normalized MPKI with Aggregate Geomean\n{cache_type} - {args.cache_size}MB Cache", fontsize=14)
+    ax.set_title(f"Normalized MPKI with Aggregate Geomean\n{cache_type} - {cache_size}MB Cache", fontsize=14)
     
     ax.grid(axis='y', linestyle='--', alpha=0.4)
     ax.set_axisbelow(True)
     ax.legend(title="Replacement Policy", bbox_to_anchor=(1.02, 1), loc='upper left', prop={'size': 15}) # Size and weight of the legend text)
     
     plt.tight_layout()
-    save_path = os.path.join(plot_dir, f"all_graphs_type_{args.graph_type}_{cache_type}_{args.cache_size}MB_geomean.png")
+    save_path = os.path.join(plot_dir, f"all_graphs_type_{args.graph_type}_{cache_type}_{cache_size}MB_geomean.png")
     plt.savefig(save_path)
     plt.close()
-#for graph in graph_list:
-#    for cache_type in ["L1D", "LLC"]:
-#        plt.figure(figsize=(12, 7))
-#        ax = plt.gca()
-#        
-#        # 1. Prepare Data
-#        base_y = np.array(cache['lru_64'][cache_type].mpki_dict[graph])
-#        x_values = cache['lru_64'][cache_type].size_dict[graph]
-#        
-#        # We only care about the comparison experiments
-#        comp_expts = ['lru_8', 'srrip_64', 'srrip_8', "prrip_64", "prrip_8", "belady_64", "belady_8"]
-#        # Width of a bar and positions
-#        n_groups = len(x_values)
-#        index = np.arange(n_groups)
-#        bar_width = 0.2
-#        
-#        # 2. Plotting the bars
-#        for i, expt in enumerate(comp_expts):
-#            if expt not in cache: continue
-#            
-#            other_y = np.array(cache[expt][cache_type].mpki_dict[graph])
-#            
-#            # Calculate % Change: (Base - New) / Base * 100 
-#            # Note: A positive value here means an improvement (reduction in MPKI)
-#            percent_change = (base_y - other_y) / base_y * 100
-#            
-#            # Offset each experiment's bars
-#            bars = plt.bar(index + (i * bar_width), percent_change, bar_width, 
-#                    label=f"{label_map[expt]} % Reduction",
-#                    alpha=0.8)
-#            ax.bar_label(bars, 
-#                         padding=3, 
-#                         fmt='%.1f%%', 
-#                         fontsize=9, 
-#                         rotation=90 if n_groups > 5 else 0)
-#
-#        for x in index[1:]:
-#            # Position the line slightly to the left of the next index
-#            plt.axvline(x - (bar_width / 2), color='gray', linestyle=':', alpha=0.3)
-#        
-#        # 3. Formatting
-#        plt.title(f"% MPKI Reduction vs LRU: {graph} ({cache_type})")
-#        plt.xlabel("Cache Size (MB)")
-#        plt.ylabel("% Reduction (Higher is Better)")
-#        
-#        # Set X-ticks to the middle of the groups
-#        plt.xticks(index + bar_width / 2, x_values)
-#        
-#        # Add a horizontal line at 0 for reference
-#        plt.axhline(0, color='black', linewidth=0.8, linestyle='-')
-#        plt.ylim(-50.0, 50.0)
-#        plt.legend()
-#        plt.grid(True, axis='y', linestyle='--', alpha=0.6)
-#        
-#        # Optional: Add text labels on top of bars for exact values
-#        plt.tight_layout()
-#        
-#        # Save with a distinct filename
-#        save_path = os.path.join(plot_dir, f"{graph}_{graph_type}_{cache_type}_pct_change.png")
-#        plt.savefig(save_path)
-#        plt.close()
