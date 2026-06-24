@@ -7,7 +7,7 @@ error = $(out_dir)/$Fn(trace_file).stderr
 output = $(out_dir)/$Fn(trace_file).sweep
 
 request_cpus=1
-request_memory=1GB
+request_memory=512MB
 request_disk=256MB
 
 queue trace_file matching files $(trace_dir)/*
