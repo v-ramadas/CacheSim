@@ -18,6 +18,7 @@ bool cachesim::DEBUG = false;
 bool cachesim::L1_DEBUG = false;
 bool cachesim::LLC_DEBUG = false;
 bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
+bool cachesim::NO_ISO_AREA = false;
 uint64_t g_block_size = CACHELINE_SIZE;
 //TODO: Figure out a good value
 uint64_t WARMUP_INSTS = 0;//2*16*2048;
@@ -189,7 +190,7 @@ template <typename T>
 void access_single_level(Cache<T> *cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             uint64_t pc, uint64_t address, bool is_read, uint64_t inst_count, uint64_t next_reuse, uint64_t degree, float avg_degree) {
-    //if (pc != 0xa) return;
+    if (pc != 0xa) return;
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -315,6 +316,7 @@ int main(int argc, char** argv) {
     app.add_flag("--debug-llc", cachesim::LLC_DEBUG, "Enable debug mode");
     app.add_flag("--debug-l1", cachesim::L1_DEBUG, "Enable debug mode");
     app.add_flag("--debug-replacement-policy", cachesim::REPLACEMENT_POLICY_DEBUG, "Enable debug mode");
+    app.add_flag("--no-iso-area", cachesim::NO_ISO_AREA, "Disable iso-area mode");
     app.add_option("--iters", num_iters, "Number of iterations");
     app.add_option("--warmup-instructions", WARMUP_INSTS, "Warmup instruction count");
 
@@ -338,7 +340,7 @@ int main(int argc, char** argv) {
             break;
         case ReplacementPolicy::HRU:
             cachesim::dropBlocks = true;
-            cachesim::isoArea = true;
+            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
         default:
             cachesim::dropBlocks = false;

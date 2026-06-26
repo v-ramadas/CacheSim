@@ -13,6 +13,7 @@ namespace cachesim {
     extern bool L1_DEBUG;
     extern bool REPLACEMENT_POLICY_DEBUG;
     extern bool LLC_DEBUG;
+    extern bool NO_ISO_AREA;
     extern bool dropBlocks;
     extern bool useVictimBuffer;
     extern bool useMemSignature;
