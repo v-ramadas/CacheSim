@@ -24,11 +24,11 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
     packet->next_reuse = next_reuse[way_idx];
     packet->serviced_from_llc = std::max(packet->serviced_from_llc, serviced_from_llc[way_idx]);
     packet->is_hub_node = is_hub_node[way_idx];
-    packet->l1_hits = way_hits[way_idx];
+    packet->l1_hits = std::max(packet->l1_hits, way_hits[way_idx]);
     packet->degree = std::max(packet->degree, degree[way_idx]);
     if (valid[way_idx]) {
         packet->block_degrees.push_back(degree[way_idx]);
-        packet->llc_counter_values.push_back(repl_counter->get_counter_value(way_idx));
+        packet->block_serviced_from_llc.push_back(serviced_from_llc[way_idx]);
     }
     packet->avg_degree = avg_degree[way_idx];
 }
@@ -80,8 +80,10 @@ bool Set::try_hit(PacketPtr packet) {
             if (!packet->is_read) {
                 dirty[way_idx] = true;
             }
-//            auto word_idx = (packet->address - align_address(packet->address, block_size)) >> 3;
-//            set_footprint(way_idx, word_idx, true);
+            auto word_idx = (packet->address - align_address(packet->address, block_size)) >> 3;
+            //fmt::print("Aligned Address {:#x} Address {:#x} word_idx {}\n", packet->aligned_address, packet->address, word_idx);
+
+            set_footprint(way_idx, word_idx, true);
             //TODO: TEMP
             packet->l1_hits = way_hits[way_idx]+1;
             repl_counter->hit_update(packet, way_idx);
@@ -89,6 +91,11 @@ bool Set::try_hit(PacketPtr packet) {
 
             way_hits[way_idx]++;
             degree[way_idx] = std::max(degree[way_idx], packet->degree);
+
+            if (ways[way_idx] == align_address(packet->address, block_size)) {
+                serviced_from_llc[way_idx]++;
+                //cache->update_data_var_hub_hits((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+            }
         }
 
         hits++;
@@ -108,10 +115,11 @@ void Set::handle_fill(PacketPtr packet) {
 
     for (const auto block_address: packet->blocks) {
         bool was_accessed;
-        if (level == 0)
+        if (level == 0) {
             was_accessed = (block_address == align_address(packet->address, block_size)); 
-        else
+        } else {
             was_accessed = ((packet->footprint >> (block_idx*bits_per_block)&bitmask) == bitmask);
+        }
         if (packet->serviced_from_llc > 0) {
             packet->is_hub_node = packet->block_degrees[block_idx] > uint64_t(packet->avg_degree);
             //packet->is_hub_node = packet->degree > uint64_t(packet->avg_degree);
@@ -133,7 +141,8 @@ void Set::handle_fill(PacketPtr packet) {
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
         next_reuse[way_idx] = packet->next_reuse;
-        serviced_from_llc[way_idx] += packet->serviced_from_llc;
+        serviced_from_llc[way_idx] += packet->block_serviced_from_llc[block_idx];
+        //serviced_from_llc[way_idx] += packet->serviced_from_llc;
         is_hub_node[way_idx] = packet->is_hub_node;
         way_hits[way_idx] = packet->l1_hits;
         if (degree[way_idx] < packet->block_degrees[block_idx])
@@ -141,6 +150,7 @@ void Set::handle_fill(PacketPtr packet) {
         avg_degree[way_idx] = packet->avg_degree;
 
         for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++) {
+            bool was_accessed = ((packet->footprint >> (word_idx*bits_per_block)&bitmask) == bitmask);
             if (was_accessed) {
                 set_footprint(way_idx, word_idx, true);
             }
@@ -176,7 +186,13 @@ void Set::handle_evict(PacketPtr packet) {
     num_blocks_to_evict -= num_invalid_blocks;
     while (num_blocks_evicted < num_blocks_to_evict) {
         uint64_t way_idx = num_ways;
-        way_idx = repl_counter->get_eviction_candidate(packet->is_low_reuse);
+        way_idx = repl_counter->get_eviction_candidate(packet->degree < (uint64_t)packet->avg_degree);
+        if (level == 1) {
+            cache->update_data_var_eviction_reuse(degree[way_idx] > (uint64_t)avg_degree[way_idx], next_reuse[way_idx]);
+            cache->update_data_var_pc_evictions1(packet->pc, pc[way_idx]);
+            cache->update_data_var_pc_evictions2(packet->pc, degree[way_idx] > int(avg_degree[way_idx]));
+            cache->update_data_var_pc_evictions3(packet->pc, pc[way_idx], degree[way_idx]);
+        }
 
         if (dirty[way_idx]) {
             dirty[way_idx] = false;
@@ -225,13 +241,16 @@ void Set::handle_evict(PacketPtr packet) {
             //set_block_accesses(way_idx, i, 0);
         }
 
+        //fmt::print("PC {} way {}\n", pc[way_idx], way_idx);
         fill_packet(packet, way_idx);
+
+        //if (degree[way_idx] != 0)
+        //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
+        cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
 
         invalidate_way(way_idx);
         num_blocks_evicted++;
-        cache->update_data_var_utilization(packet->pc, 1,
-            count_footprint(packet->footprint)-count_footprint(previous_footprint));
-        cache->update_data_var_footprint(packet->pc,
+        cache->update_data_var_evictions(packet->pc,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
     }
@@ -250,27 +269,23 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     uint64_t inv_address = UINT64_MAX;
     if (try_hit != ways.end()) {
         auto way_idx = std::distance(ways.begin(), try_hit);
-        serviced_from_llc[way_idx]++;
+        //serviced_from_llc[way_idx]++;
         inv_address = ways[way_idx];
         auto previous_footprint = packet->footprint;
         packet->footprint |= (bitmask*get_footprint(way_idx, 0)) << (block_num*bits_per_block);
 
         fill_packet(packet, way_idx);
-        //fmt::print("Level {} Invalidated block {:#x} block {} packet counter {} counter {} vector size {} serviced_from_llc {}\n",
-         //   level, packet->address, block_num, packet->llc_counter_values[block_num], repl_counter->get_counter_value(way_idx), packet->llc_counter_values.size(), packet->serviced_from_llc);
         invalidate_way(way_idx);
         set_footprint(way_idx, 0, false);
 
-        cache->update_data_var_utilization(packet->pc, 1,
-            count_footprint(packet->footprint)-count_footprint(previous_footprint));
-        cache->update_data_var_footprint(packet->pc,
+        cache->update_data_var_invalidations(packet->pc,
             count_footprint(packet->footprint)-count_footprint(previous_footprint));
         if (cachesim::DEBUG || cachesim::LLC_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
     } else {
         packet->block_degrees.push_back(0);
-        packet->llc_counter_values.push_back(0);
+        packet->block_serviced_from_llc.push_back(0);
     }
     packet->blocks.push_back(inv_address);
 }

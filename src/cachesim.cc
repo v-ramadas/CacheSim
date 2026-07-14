@@ -106,17 +106,47 @@ void Cache<T>::print_stats(uint64_t inst_count, std::string tracename) {
         fmt::print("PC {:#x} Hits {}\n", pc, hits);
     }
 
-//    for (auto& [pc, pairs]: data_var_utilization) {
-//        fmt::print("PC {:#x} Utilization {:4f}\n", pc, (100*(float)(std::get<1>(pairs))/(std::get<0>(pairs)*get_block_size(0)/8)));
-//    }
-
-    for (auto& [pc, pairs]: data_var_utilization) {
-        fmt::print("PC {:#x} Evictions {}\n", pc, std::get<0>(pairs)*get_block_size(0)/8);
+    for (auto& [pc, hist]: data_var_invalidations) {
+        for (auto& [footprint, count]: hist)
+            fmt::print("PC {:#x} Density {} Invalidations {}\n", pc, footprint, count);
+;
     }
 
-    for (auto& [pc, hist]: data_var_footprint) {
+    for (auto& [pc, hist]: data_var_evictions) {
         for (auto& [footprint, count]: hist)
-            fmt::print("PC {:#x} Density {} Count {}\n", pc, footprint, count);
+            fmt::print("PC {:#x} Density {} Evictions {}\n", pc, footprint, count);
+    }
+
+    if (cachesim::GEN_STATS) {
+//        for (auto& [is_hub, map]: data_var_hub_hits) {
+//            for (auto& [reuse, count]: map)
+//                fmt::print("hub_hits: Hub {} Serviced From LLC {} Count {}\n", (is_hub? "True": "False"), reuse, count);
+//        }
+
+        for (auto& [is_hub, map]: data_var_hub_evictions) {
+            for (auto& [reuse, count]: map)
+                fmt::print("hub_evictions: Hub {} Serviced From LLC {} Count {}\n", (is_hub? "True": "False"), reuse, count);
+        }
+
+        for (auto& [is_hub, map]: data_var_eviction_reuse) {
+            for (auto& [reuse, count]: map)
+                fmt::print("eviction_reuse: Hub {} Next Reuse {:#x} Count {}\n", (is_hub? "True": "False"), reuse, count);
+        }
+
+        for (auto& [fill_pc, map]: data_var_pc_evictions1) {
+            for (auto& [eviction_pc, count]: map)
+                fmt::print("Eviction Candidate: Fill PC {} Eviction PC {} Count {}\n", fill_pc, eviction_pc, count);
+        }
+        for (auto& [fill_pc, map]: data_var_pc_evictions2) {
+            for (auto& [eviction_pc, count]: map)
+                fmt::print("Eviction Candidate: Fill PC {} Hub {} Count {}\n", fill_pc, (eviction_pc? "True": "False"), count);
+        }
+        for (auto& [fill_pc, map]: data_var_pc_evictions3) {
+            for (auto& [eviction_pc, degree]: map)
+                fmt::print("Eviction Candidate: Fill PC {} Eviction PC {} Degree {}\n", fill_pc, eviction_pc, (float)(degree)/data_var_pc_evictions1[fill_pc][eviction_pc]);
+        }
+
+
     }
 }
 
@@ -143,7 +173,7 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         packet->clear_blocks();
         packet->blocks.resize(num_blocks);
         packet->block_degrees.resize(num_blocks);
-        packet->llc_counter_values.resize(num_blocks);
+        packet->block_serviced_from_llc.resize(num_blocks);
         packet->blocks[0] = packet->aligned_address;
         // Populate the vector
         for (uint64_t i = 0; i < num_blocks; i++) {
@@ -271,7 +301,8 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
 //    if (packet->block_accesses.size() == 0) {
 //        packet->block_accesses.resize(8, 0);
 //    }
-    Packet invalidate_packet;
+    Packet invalidate_packet = *packet;
+    invalidate_packet.clear();
     invalidate_packet.is_low_reuse = packet->is_low_reuse;
     auto set_idx = get_set_idx(packet->address);
     auto block_size = sets[set_idx]->get_block_size();
@@ -280,7 +311,7 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
     if constexpr (std::is_same_v<T, SectoredSet>) {
         //invalidate_packet.blocks.resize(num_blocks);
         //invalidate_packet.block_degrees.resize(num_blocks);
-        //invalidate_packet.llc_counter_values.resize(num_blocks);
+        //invalidate_packet.block_serviced_from_llc.resize(num_blocks);
         invalidate_packet.address = packet->address;
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
@@ -299,6 +330,11 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
 
     *packet = invalidate_packet;
     num_blocks_used += count_footprint(invalidate_packet.footprint);
+//        fmt::print("Aligned Address {:#x} Footprint {:#x}\n", aligned_address, packet->footprint);
+
+        update_data_var_invalidations(packet->pc,
+            count_footprint(packet->footprint));
+
     evictions+=std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
 }
@@ -321,7 +357,7 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
     if (fill_packet->blocks.size() == 0) {
         fill_packet->blocks.resize(num_blocks, UINT64_MAX);
         fill_packet->block_degrees.resize(num_blocks, 0);
-        fill_packet->llc_counter_values.resize(num_blocks, 0);
+        fill_packet->block_serviced_from_llc.resize(num_blocks, 0);
     }
     assert(fill_packet->blocks.size() == num_blocks);
     auto ways = get_ways(set_idx);
@@ -340,7 +376,7 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
             else
             //TODO: Fix
                 fill_packet->block_degrees[block_idx] = 0;
-            fill_packet->llc_counter_values[block_idx] = 0;
+            fill_packet->block_serviced_from_llc[block_idx] = 0;
         }
     }
     return;
@@ -360,7 +396,7 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
 
                 fill_packet->blocks.erase(it);
                 fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-                fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
+                fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
             }
             idx++;
             continue;
@@ -383,12 +419,12 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             auto index = std::distance(fill_packet->blocks.begin(), it);
             fill_packet->blocks.erase(it);
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-            fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
+            fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
         } else if (dropBlock){
             auto index = std::distance(fill_packet->blocks.begin(), it);
             fill_packet->blocks.erase(it);
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
-            fill_packet->llc_counter_values.erase(fill_packet->llc_counter_values.begin() + index);
+            fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
         } else {
             ++it;
         }

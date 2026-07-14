@@ -8,6 +8,8 @@ class HRU : public BasePolicy {
     uint64_t mru_counter = 0;
     uint64_t lru_counter = 0;
     std::vector<bool> low_priority;
+    bool is_way_full = false;
+    bool is_low_priority_present = true;
     public:
     HRU() {}
     HRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {

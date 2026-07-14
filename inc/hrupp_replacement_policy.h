@@ -8,6 +8,8 @@ class HRUpp : public BasePolicy {
     uint64_t mru_counter = 0;
     uint64_t lru_counter = 0;
     std::vector<bool> low_priority;
+    bool is_way_full = false;
+    bool is_low_priority_present = true;
     public:
     HRUpp() {}
     HRUpp(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
@@ -39,7 +41,7 @@ class HRUpp : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet, uint64_t idx) { return true;}
+    bool can_insert(PacketPtr packet, uint64_t idx);
 
 };
 

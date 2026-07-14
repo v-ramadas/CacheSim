@@ -9,8 +9,7 @@ void HRU::init_counter(PacketPtr packet) {
 }
 
 void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {   
-    auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
-    if (low_priority[way_idx] && is_hub_node) {
+    if (low_priority[way_idx] && packet->is_hub_node) {
         low_priority[way_idx] = false;
     }
 
@@ -28,46 +27,29 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
 }
 
 void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
-    auto is_hub_line = (packet->degree > uint64_t(packet->avg_degree));
     if (packet->serviced_from_llc > 0) {
-        //auto counter_value = packet->llc_counter_values[block_idx];
+        //auto counter_value = packet->block_serviced_from_llc[block_idx];
         uint64_t counter_value = 0;
         if (packet->is_hub_node && was_accessed) {
-            //if (counter_value == 0) {
-                counter[way_idx] = mru_counter;
-            //} else {
-            //    counter[way_idx] = counter_value;
-            //}
+            counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
             if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
-                fmt::print("Serviced From LLC earlier. Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
-                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
+                fmt::print("Serviced From LLC earlier. Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} serviced_from_llc {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
+                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->block_serviced_from_llc[block_idx]);
         } else if (packet->is_hub_node && !was_accessed) {
-            //if (counter_value == 0) {
-                counter[way_idx] = mru_counter;
-            //} else {
-            //    counter[way_idx] = counter_value;
-            //}
+            counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
         } else if (was_accessed) {
-            //if (counter_value == 0) {
-                counter[way_idx] = lru_counter;
-            //} else {
-            //    counter[way_idx] = counter_value;
-            //}
+            counter[way_idx] = lru_counter;
             low_priority[way_idx] = true;
            if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Serviced From LLC earlier. Non-Hub but Accessed Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
-                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
+                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->block_serviced_from_llc.size());
         } else if (!was_accessed) {
-            //if (counter_value == 0) {
-                counter[way_idx] = lru_counter;
-            //} else {
-            //    counter[way_idx] = counter_value;
-            //}
+            counter[way_idx] = lru_counter;
             if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Serviced From LLC earlier. Non-Hub and Unaccessed Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {} block idx {} size of vector {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx,
-                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->llc_counter_values.size());
+                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx], block_idx, packet->block_serviced_from_llc.size());
         } else {
             counter[way_idx] = lru_counter;
             low_priority[way_idx] = true;
@@ -87,10 +69,36 @@ void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bo
                 packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx]);
         }
     }
+    if (std::count(counter.begin(), counter.end(), max_counter) == 0) {
+        is_way_full = true;
+    } else {
+        is_way_full = false;
+    }
+    if (std::count(low_priority.begin(), low_priority.end(), true) == 0) {
+        is_low_priority_present = false;
+    } else {
+        is_low_priority_present = true;
+    }
+
 }
 
 uint64_t HRU::get_eviction_candidate(bool is_low_priority = false) {
-    auto way = std::min_element(counter.begin(), std::next(counter.begin(), num_ways));
+    auto way = counter.end();
+    for (uint64_t i = 0; i < num_ways; ++i) {
+        if (is_low_priority && !low_priority[i]) continue;
+        if (way == counter.end() || counter[i] < *way) {
+            way = counter.begin() + i;
+        }
+    }
+
+    if (*way == max_counter) {
+        way = std::min_element(counter.begin(), std::next(counter.begin(), num_ways));
+    }
+
+    if (way == counter.end()) {
+        way = std::min_element(counter.begin(), std::next(counter.begin(), num_ways));
+    }
+
     uint64_t way_idx = std::distance(counter.begin(), way);
     return way_idx;
 }
@@ -127,13 +135,11 @@ void HRU::repartition_ways(uint64_t num_ways_to_reserve) {
 }
 
 bool HRU::can_insert(PacketPtr packet, uint64_t idx) {
-    return true;
-    //if (packet->serviced_from_llc <= 2) return true;
-    //auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
-    //auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
-    //if (is_hub_node && !was_accessed) { 
-    //    return false; 
-    //} else {
-    //    return true;
-    //}
+    //return true;
+    //if (packet->pc == 0xa) return true;
+    if (!is_way_full) return true;
+    else if (packet->pc != 0xa) return false;
+    //if (is_low_priority_present) return true;
+    //if (packet->degree < (uint64_t)packet->avg_degree) return false;
+    return true;   
 }

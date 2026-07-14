@@ -2,6 +2,7 @@
 #define __CACHESIM_H__
 
 #include "defs.h"
+#include "utils.h"
 
 class BaseCache;
 
@@ -104,7 +105,7 @@ struct Sector {
     std::vector<bool> dirty;
     std::vector<uint64_t> degree;
     std::vector<float> avg_degree;
-    std::vector<uint64_t> llc_counter_values;
+    std::vector<uint64_t> block_serviced_from_llc;
     uint64_t num_blocks;
 
     Sector(uint64_t num_blocks):
@@ -115,7 +116,7 @@ struct Sector {
         dirty.resize(num_blocks, false);
         degree.resize(num_blocks, 0);
         avg_degree.resize(num_blocks, 0.0f);
-        llc_counter_values.resize(num_blocks, 0);
+        block_serviced_from_llc.resize(num_blocks, 0);
     }
 
     Sector(const Sector& other) noexcept : 
@@ -124,7 +125,7 @@ struct Sector {
         dirty(other.dirty),
         degree(other.degree),
         avg_degree(other.avg_degree),
-        llc_counter_values(other.llc_counter_values),
+        block_serviced_from_llc(other.block_serviced_from_llc),
         num_blocks(other.num_blocks)
     {
     }
@@ -146,7 +147,7 @@ struct Sector {
         std::fill(dirty.begin(), dirty.end(), false);
         std::fill(degree.begin(), degree.end(), 0);
         std::fill(avg_degree.begin(), avg_degree.end(), 0.0f);
-        std::fill(llc_counter_values.begin(), llc_counter_values.end(), 0);
+        std::fill(block_serviced_from_llc.begin(), block_serviced_from_llc.end(), 0);
     }
 };
 
@@ -229,8 +230,15 @@ class BaseCache {
 
     virtual bool can_insert_at_level(int level) = 0;
 
-    virtual void update_data_var_utilization(uint64_t pc, uint64_t evictions, uint64_t footprint) = 0;
-    virtual void update_data_var_footprint(uint64_t pc, uint64_t footprint) = 0;
+    virtual void update_data_var_hub_hits(bool is_hub, uint64_t serviced_from_llc) = 0;
+    virtual void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) = 0;
+    virtual void update_data_var_eviction_reuse(bool is_hub, uint64_t reuse) = 0;
+    virtual void update_data_var_pc_evictions1(uint64_t fill_pc, uint64_t eviction_pc) = 0;
+    virtual void update_data_var_pc_evictions2(uint64_t fill_pc, bool is_hub) = 0;
+    virtual void update_data_var_pc_evictions3(uint64_t fill_pc, uint64_t eviction_pc, uint64_t degree) = 0;
+    virtual void update_data_var_invalidations(uint64_t pc, uint64_t footprint) = 0;
+
+    virtual void update_data_var_evictions(uint64_t pc, uint64_t footprint) = 0;
     virtual void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> footprint) = 0;
 
     virtual void update_data_var_hits(uint64_t pc) = 0;
@@ -278,41 +286,135 @@ class Cache: public BaseCache {
     uint64_t write_hits = 0;
     uint64_t write_misses = 0;
     uint64_t evictions = 0;
+    uint64_t invalidations = 0;
     uint64_t num_blocks_used = 0;
     std::vector<uint64_t> partial_misses;
 
 
     // Workload Behavior
     std::unordered_map<uint64_t, uint64_t> data_var_misses;
-    std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> data_var_utilization;
-    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_footprint;
+    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_invalidations;
+    std::unordered_map<bool, std::map<uint64_t, uint64_t>> data_var_hub_hits;
+    std::unordered_map<bool, std::map<uint64_t, uint64_t>> data_var_hub_evictions;
+    std::unordered_map<bool, std::map<int64_t, uint64_t>> data_var_eviction_reuse;
+    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_pc_evictions1;
+    std::unordered_map<uint64_t, std::map<bool, uint64_t>> data_var_pc_evictions2;
+    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_pc_evictions3;
+    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_evictions;
     std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_block_accesses;
     std::map<uint64_t, uint64_t> data_var_hits;
-    void update_data_var_utilization(uint64_t pc, uint64_t _evictions, uint64_t _footprint) {
-        if (data_var_utilization.find(pc) == data_var_utilization.end()) {
-            data_var_utilization[pc] = std::pair<uint64_t, uint64_t>(0, 0);
-        }
-        auto& [evictions, footprint] = data_var_utilization[pc];
-        // 2. Update the members directly
-        evictions += _evictions;
-        footprint += _footprint;
+
+    void update_data_var_hub_hits(bool is_hub, uint64_t serviced_from_llc) {
+//        if (data_var_hub_hits.find(is_hub) == data_var_hub_hits.end()) {
+//            data_var_hub_hits[is_hub] = std::map<uint64_t, uint64_t>();
+//        }
+//
+//        if (data_var_hub_hits[is_hub].find(serviced_from_llc) == data_var_hub_hits[is_hub].end()) {
+//            data_var_hub_hits[is_hub][serviced_from_llc] = 1;
+//        } else {
+//            data_var_hub_hits[is_hub][serviced_from_llc] += 1;
+//        }
     }
 
-    void update_data_var_footprint(uint64_t pc, uint64_t _footprint) {
-        if (data_var_footprint.find(pc) == data_var_footprint.end()) {
-            std::map<uint64_t, uint64_t> footprint_hist;
-            footprint_hist[0]=0;
-            footprint_hist[1]=0;
-            footprint_hist[2]=0;
-            footprint_hist[3]=0;
-            footprint_hist[4]=0;
-            footprint_hist[5]=0;
-            footprint_hist[6]=0;
-            footprint_hist[7]=0;
+    void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) {
+//        if (data_var_hub_evictions.find(is_hub) == data_var_hub_evictions.end()) {
+//            data_var_hub_evictions[is_hub] = std::map<uint64_t, uint64_t>();
+//        }
+//
+//        if (data_var_hub_evictions[is_hub].find(serviced_from_llc) == data_var_hub_evictions[is_hub].end()) {
+//            data_var_hub_evictions[is_hub][serviced_from_llc] = 1;
+//        } else {
+//            data_var_hub_evictions[is_hub][serviced_from_llc] += 1;
+//        }
+    }
 
-            data_var_footprint[pc] = footprint_hist;
+    void update_data_var_eviction_reuse(bool is_hub, uint64_t reuse) {
+        if (reuse == UINT64_MAX) return;
+        if (reuse == 0) return;
+        auto next_reuse = reuse - cachesim::inst_count;
+        next_reuse = next_reuse & ~(0x8 - 1);//0x7f;
+        if (next_reuse > 0x3200) return;
+        if (data_var_eviction_reuse.find(is_hub) == data_var_eviction_reuse.end()) {
+            data_var_eviction_reuse[is_hub] = std::map<int64_t, uint64_t>();
         }
-        data_var_footprint[pc][_footprint] += 1;
+
+        if (data_var_eviction_reuse[is_hub].find(next_reuse) == data_var_eviction_reuse[is_hub].end()) {
+            data_var_eviction_reuse[is_hub][next_reuse] = 1;
+        } else {
+            data_var_eviction_reuse[is_hub][next_reuse] += 1;
+        }
+    }
+
+
+    void update_data_var_pc_evictions1(uint64_t fill_pc, uint64_t eviction_pc) {
+//        if (data_var_pc_evictions1.find(fill_pc) == data_var_pc_evictions1.end()) {
+//            data_var_pc_evictions1[fill_pc] = std::map<uint64_t, uint64_t>();
+//        }
+//
+//        if (data_var_pc_evictions1[fill_pc].find(eviction_pc) == data_var_pc_evictions1[fill_pc].end()) {
+//            data_var_pc_evictions1[fill_pc][eviction_pc] = 1;
+//        } else {
+//            data_var_pc_evictions1[fill_pc][eviction_pc] += 1;
+//        }
+    }
+
+    void update_data_var_pc_evictions2(uint64_t fill_pc, bool is_hub) {
+//        if (data_var_pc_evictions2.find(fill_pc) == data_var_pc_evictions2.end()) {
+//            data_var_pc_evictions2[fill_pc] = std::map<bool, uint64_t>();
+//        }
+//
+//        if (data_var_pc_evictions2[fill_pc].find(is_hub) == data_var_pc_evictions2[fill_pc].end()) {
+//            data_var_pc_evictions2[fill_pc][is_hub] = 1;
+//        } else {
+//            data_var_pc_evictions2[fill_pc][is_hub] += 1;
+//        }
+    }
+
+    void update_data_var_pc_evictions3(uint64_t fill_pc, uint64_t eviction_pc, uint64_t degree) {
+//        if (data_var_pc_evictions3.find(fill_pc) == data_var_pc_evictions3.end()) {
+//            data_var_pc_evictions3[fill_pc] = std::map<uint64_t, uint64_t>();
+//        }
+//
+//        if (data_var_pc_evictions3[fill_pc].find(eviction_pc) == data_var_pc_evictions3[fill_pc].end()) {
+//            data_var_pc_evictions3[fill_pc][eviction_pc] = degree;
+//        } else {
+//            data_var_pc_evictions3[fill_pc][eviction_pc] += degree;
+//        }
+    }
+
+
+    void update_data_var_invalidations(uint64_t pc, uint64_t _footprint) {
+//    if (data_var_invalidations.find(pc) == data_var_invalidations.end()) {
+//        std::map<uint64_t, uint64_t> invalidations_hist;
+//        invalidations_hist[0]=0;
+//        invalidations_hist[1]=0;
+//        invalidations_hist[2]=0;
+//        invalidations_hist[3]=0;
+//        invalidations_hist[4]=0;
+//        invalidations_hist[5]=0;
+//        invalidations_hist[6]=0;
+//        invalidations_hist[7]=0;
+//    
+//        data_var_invalidations[pc] = invalidations_hist;
+//    }
+//    data_var_invalidations[pc][_footprint] += 1;
+}
+
+    void update_data_var_evictions(uint64_t pc, uint64_t _footprint) {
+//        if (data_var_evictions.find(pc) == data_var_evictions.end()) {
+//            std::map<uint64_t, uint64_t> footprint_hist;
+//            footprint_hist[0]=0;
+//            footprint_hist[1]=0;
+//            footprint_hist[2]=0;
+//            footprint_hist[3]=0;
+//            footprint_hist[4]=0;
+//            footprint_hist[5]=0;
+//            footprint_hist[6]=0;
+//            footprint_hist[7]=0;
+//
+//            data_var_evictions[pc] = footprint_hist;
+//        }
+//        data_var_evictions[pc][_footprint] += 1;
     }
 
     void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> _footprint) {
@@ -371,6 +473,7 @@ class Cache: public BaseCache {
     uint64_t get_write_hits() const { return write_hits; }
     uint64_t get_write_misses() const { return write_misses; }
     uint64_t get_evictions() const {return evictions; }
+    uint64_t get_invalidations() const {return invalidations; }
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
     void incr_partial_misses(uint64_t num_misses) { partial_misses[num_misses]++; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}

@@ -14,10 +14,12 @@ namespace cachesim {
     extern bool REPLACEMENT_POLICY_DEBUG;
     extern bool LLC_DEBUG;
     extern bool NO_ISO_AREA;
+    extern bool GEN_STATS;
     extern bool dropBlocks;
     extern bool useVictimBuffer;
     extern bool useMemSignature;
     extern bool isoArea;
+    extern uint64_t inst_count;
 };
 
 enum class InsertionPolicy {
@@ -44,7 +46,7 @@ struct Packet {
     uint64_t degree=0;
     std::vector<uint64_t> block_degrees;
     float avg_degree=0.0f;
-    std::vector<uint64_t> llc_counter_values;
+    std::vector<uint64_t> block_serviced_from_llc;
 
     Packet() {
         clear_pc();
@@ -68,7 +70,7 @@ struct Packet {
         degree = 0;
         block_degrees.clear();
         avg_degree = 0.0f;
-        llc_counter_values.clear();
+        block_serviced_from_llc.clear();
     }
 
     void clear_pc() {
@@ -80,13 +82,13 @@ struct Packet {
         aligned_address = 0;
         size = 0;
         blocks.clear();
-        llc_counter_values.clear();
+        block_serviced_from_llc.clear();
     }
     
     void clear_blocks() {
         blocks.clear();
         block_degrees.clear();
-        llc_counter_values.clear();
+        block_serviced_from_llc.clear();
     }
 
     void clear_metadata() {
@@ -119,7 +121,7 @@ struct Packet {
         degree = packet.degree;
         block_degrees = packet.block_degrees;
         avg_degree = packet.avg_degree;
-        llc_counter_values = packet.llc_counter_values;
+        block_serviced_from_llc = packet.block_serviced_from_llc;
 
         return *this;
     }
