@@ -9,7 +9,8 @@ expt_name=${1:? "Usage: $0 <experiment_name>"}
 for blk_size in "${blk_size_list[@]}"; do
     for app in "${app_list[@]}"; do
         for policy in "${replacement_policy_list[@]}"; do
-            out_dir=results/$(date +%m_%d)/${expt_name}/${app}_${policy}/baseline_${blk_size}/
+            #out_dir=results/$(date +%m_%d)/${expt_name}/${app}_${policy}/baseline_${blk_size}/
+            out_dir=results/$(date +%m_%d)/${expt_name}/${app}/num_sets_${num_sets}/${policy}_${blk_size}/
             trace_dir=../traces/gap/${app}
             mkdir -p ${out_dir}
             echo "Submitting batch for App: $app, Policy: $policy, Blk: $blk_size"

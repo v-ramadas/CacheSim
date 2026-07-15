@@ -1,18 +1,4 @@
-#include "cachesim.h"
-#include "predictor.h"
-#include "utils.h"
-#include "victim_buffer.h"
-
-#include <algorithm>
-#include <chrono>
-#include <numeric>
-#include <vector>
-#include <fmt/chrono.h>
-#include <fmt/core.h>
-#include <CLI/CLI.hpp>
-#include <list>
-
-#include "tracereader.h"
+#include "simulate.h"
 
 uint64_t cachesim::inst_count = 0;
 
@@ -22,241 +8,20 @@ bool cachesim::LLC_DEBUG = false;
 bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
 bool cachesim::NO_ISO_AREA = false;
 bool cachesim::GEN_STATS = false;
+bool cachesim::ENABLE_PREDICTOR = false;
 uint64_t g_block_size = CACHELINE_SIZE;
 //TODO: Figure out a good value
-uint64_t WARMUP_INSTS = 0;//2*16*2048;
+uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
 bool cachesim::useVictimBuffer = false;
 bool cachesim::useMemSignature = false;
 bool cachesim::isoArea = false;
+uint64_t cachesim::DEBUG_INSTRUCTIONS = 10000000;
 enum TraceFormat {
     CHAMPSIM,
     ADDRESSES,
+    INSTRUCTIONS,
 };
-
-#ifdef MULTI_LEVEL
-void access_multi_level(std::vector<BaseCache*> &cache,
-            PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
-
-
-    //if (pc != 0xa) return;
-
-    access_packet->clear();
-    eviction_packet->clear();
-    fill_packet->clear();
-    access_packet->address = address;
-    access_packet->is_read = is_read;
-    access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
-    access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
-    access_packet->pc = pc;
-    access_packet->next_reuse = next_reuse;
-    access_packet->degree = degree;
-    access_packet->avg_degree = avg_degree;
-
-    *fill_packet = *access_packet;
-    fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
-    *eviction_packet = *fill_packet;
-    *invalidation_packet = *fill_packet;
-
-    int num_levels = cache.size();
-    int hit_at_level = num_levels;
-    bool hit = false;
-
-    // Check for hits
-    for (int i = 0; i < num_levels; i++) {
-
-        hit = cache[i]->try_hit(access_packet);
-
-        if (hit) {
-            hit_at_level = i;
-            break;
-        }
-
-        if (!access_packet->is_low_reuse) {
-            access_packet->clear_blocks();
-            access_packet->aligned_address = align_address(access_packet->address, CACHELINE_SIZE);
-        }
-
-    }
-
-    if (hit) {
-        eviction_packet->footprint = 0;
-        fill_packet->size = CACHELINE_SIZE;
-        eviction_packet->size = CACHELINE_SIZE;
-        invalidation_packet->size = CACHELINE_SIZE;
-    } else {
-        fill_packet->size = CACHELINE_SIZE;
-        eviction_packet->size = CACHELINE_SIZE;
-        invalidation_packet->size = CACHELINE_SIZE;
-    }
-
-    if (hit_at_level != 0) {
-        if (hit) {
-            cache[hit_at_level]->handle_invalidate(invalidation_packet);
-            *fill_packet = *invalidation_packet;
-            //cache[0]->handle_invalidate(invalidation_packet);
-            fill_packet->footprint |= invalidation_packet->footprint;
-            fill_packet->serviced_from_llc += 1;
-            cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
-        } else {
-            cache[1]->handle_invalidate(invalidation_packet);
-            if (invalidation_packet->blocks.size() != 0)
-                *fill_packet = *invalidation_packet;
-
-            cache[0]->handle_invalidate(invalidation_packet);
-            if (invalidation_packet->blocks.size() != 0)
-                *fill_packet = *invalidation_packet;
-
-            //fill_packet->footprint = invalidation_packet->footprint;
-            fill_packet->degree = access_packet->degree;
-            fill_packet->avg_degree = access_packet->avg_degree;
-            cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
-        }
-
-        auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
-        auto curr_cache_block_size = prev_cache_block_size;
-        for (int i = 1; i < num_levels; i++) {
-            curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(fill_packet->address));
-
-            if (prev_cache_block_size != curr_cache_block_size) {
-                resize_packet(eviction_packet, curr_cache_block_size);       
-            }
-
-
-            fill_packet->l1_hits = eviction_packet->l1_hits;
-            if (fill_packet->l1_hits == 0) fill_packet->l1_hits = 1;
-            predictor->update_access(fill_packet);
-            // Train on data movement from LLC -> L1D
-            if (eviction_packet->blocks.size() > 0) {
-                predictor->update_footprint(eviction_packet);
-                bool is_low_reuse = false;
-                //bool is_hub_node = true;
-                if (cachesim::inst_count >= WARMUP_INSTS) {
-                    // Predict for data movement from L1D -> LLC
-                    is_low_reuse = predictor->predict(eviction_packet);
-                    //is_hub_node = predictor->is_hub_node(eviction_packet);
-                }
-
-                *fill_packet = *eviction_packet;
-                //fill_packet->is_hub_node = is_hub_node;
-                fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
-
-                fill_packet->shct_value = predictor->get_shct_value(fill_packet);
-
-                if (predictor->get_reuse_distance(eviction_packet) <= 1) {
-                    fill_packet->reuse_distance = UINT64_MAX;
-                } else {
-                    fill_packet->reuse_distance = cachesim::inst_count + predictor->get_reuse_distance(eviction_packet);
-                }
-                fill_packet->next_reuse = eviction_packet->next_reuse;
-                eviction_packet->clear();
-                cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
-
-                if (eviction_packet->blocks.size() > 0) {
-                    predictor->update_eviction(eviction_packet);
-                }
-            } else {
-                break;
-            }
-            eviction_packet->clear();
-            eviction_packet->clear_pc();
-            fill_packet->clear();
-            fill_packet->clear_pc();
-            prev_cache_block_size = curr_cache_block_size;
-        }
-    }
-}
-#else
-template <typename T>
-void access_single_level(Cache<T> *cache,
-            PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
-    //if (pc != 0xa) return;
-
-    access_packet->clear();
-    eviction_packet->clear();
-    fill_packet->clear();
-    access_packet->address = address;
-    access_packet->is_read = is_read;
-    access_packet->size = cache->get_block_size(cache->get_set_idx(access_packet->address));
-    access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
-    access_packet->pc = pc;
-    access_packet->next_reuse = next_reuse;
-    access_packet->degree = degree;
-    access_packet->avg_degree = avg_degree;
-
-    *fill_packet = *access_packet;
-    fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
-    fill_packet->size = CACHELINE_SIZE;
-    *eviction_packet = *fill_packet;
-    *invalidation_packet = *fill_packet;
-
-    bool hit = cache->try_hit(access_packet);
-    if (!hit) {
-        cache->handle_fill_line(fill_packet, eviction_packet, 0);
-    }
-    return;
-}
-#endif
-
-#ifdef MULTI_LEVEL
-void useLogFile(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
-#else
-template<typename T>
-void useLogFile(Cache<T>* cache, const std::string& filename, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
-#endif
-    while (num_iters > 0) {
-        std::ifstream file(filename);
-
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open the file!" << std::endl;
-            return;
-        }
-
-        std::string line;
-        std::string delimiter = "0x";
-        while (std::getline(file, line)) {
-            uint64_t pc = 0;
-            uint64_t address = 0;
-            uint64_t next_reuse = UINT64_MAX;
-            uint64_t degree = 0;
-            float avg_degree = 0.0f;
-            int parsed_count = 0;
-            char action[16];
-            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-                if (cachesim::inst_count > 2500000) {
-                    break;
-                }
-            }
-
-            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %f", &pc, action, &address, &next_reuse, &degree, &avg_degree);
-            if (parsed_count >= 3) {
-                try {
-                    cachesim::inst_count++;
-                    if (next_reuse != UINT64_MAX) next_reuse += cachesim::inst_count;
-                    //std::cout << "pc 0x" << pc << " address 0x" << std::hex << address << " reuse " << std::dec << next_reuse << " degree " << degree << " avg_degree " << avg_degree << std::endl;
-                    // Extract from the start of "0x" to the end of the line
-                    bool is_read = (strcmp(action, "read") == 0) ? true : false;
-                    //if (pc != 0xa) continue;
-#ifdef MULTI_LEVEL
-                    access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        predictor, address, pc, is_read, next_reuse, degree, avg_degree);
-#else
-                    access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        pc, address, is_read, next_reuse, degree, avg_degree);
-#endif
-
-                } catch (const std::exception& e) {
-                    std::cerr << "Conversion error on line: " << line << " -> " <<e.what() << std::endl;
-                }
-            }
-        }
-        file.close();
-        --num_iters;
-    }
-    return;
-}
 
 int main(int argc, char** argv) {
 
@@ -273,6 +38,7 @@ int main(int argc, char** argv) {
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
         {"addresses", TraceFormat::ADDRESSES},
+        {"instructions", TraceFormat::INSTRUCTIONS},
     }));
     app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache")->required();
     app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache")->required();
@@ -282,6 +48,8 @@ int main(int argc, char** argv) {
         {"lru", ReplacementPolicy::LRU},
         {"hru", ReplacementPolicy::HRU},
         {"hrupp", ReplacementPolicy::HRUpp},
+        {"phru", ReplacementPolicy::PHRU},
+        {"phrupp", ReplacementPolicy::PHRUpp},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
         {"prrip", ReplacementPolicy::PRRIP},
@@ -301,9 +69,9 @@ int main(int argc, char** argv) {
     app.add_flag("--debug-replacement-policy", cachesim::REPLACEMENT_POLICY_DEBUG, "Enable debug mode");
     app.add_flag("--no-iso-area", cachesim::NO_ISO_AREA, "Disable iso-area mode");
     app.add_option("--iters", num_iters, "Number of iterations");
-    app.add_option("--warmup-instructions", WARMUP_INSTS, "Warmup instruction count");
+    app.add_option("--warmup-instructions", cachesim::WARMUP_INSTRUCTIONS, "Warmup instruction count");
     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");
-
+    app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Disable iso-area mode");
 
     CLI11_PARSE(app, argc, argv);
     g_block_size = block_size;
@@ -329,7 +97,10 @@ int main(int argc, char** argv) {
             break;
         case ReplacementPolicy::HRUpp:
             cachesim::dropBlocks = true;
-            //cachesim::isoArea = !cachesim::NO_ISO_AREA;
+            break;
+        case ReplacementPolicy::PHRU:
+            cachesim::dropBlocks = true;
+            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
         default:
             cachesim::dropBlocks = false;
@@ -338,24 +109,24 @@ int main(int argc, char** argv) {
 
     llc_num_ways = get_iso_area_cache(llc_num_sets, llc_num_ways, block_size);
 
-#ifdef MULTI_LEVEL
     std::vector<BaseCache*> cache;
+    SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
+#ifdef MULTI_LEVEL
     cache.resize(2);
     if (block_size == CACHELINE_SIZE)
         cache[0] = new Cache<Set>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
     else
         cache[0] = new Cache<SectoredSet>("L1D", 128, 16, block_size, 0, true, ReplacementPolicy::LRU, insertion_policy);
     cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
-    SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, WARMUP_INSTS);
-    //if (block_size < CACHELINE_SIZE) predictor->enable();
-    //else predictor->disable();
-    predictor->enable();
+    if (cachesim::ENABLE_PREDICTOR) predictor->enable();
+    else predictor->disable();
     if (cachesim::useMemSignature)
         predictor->set_mem_signature();
     else
         predictor->set_pc_signature();
 #else
-    Cache<Set>* cache = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
+    cache.resize(1);
+    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
 #endif
 
     std::map<uint64_t, uint64_t> page_count;
@@ -364,59 +135,20 @@ int main(int argc, char** argv) {
     Packet* fill_packet = new Packet();
     Packet* invalidation_packet = new Packet();
     if (trace_format == TraceFormat::ADDRESSES) {
-#ifdef MULTI_LEVEL
-        useLogFile(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
-#else
-        useLogFile(cache, tracename, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
-#endif
+        useAddressTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
+    } else if (trace_format == TraceFormat::INSTRUCTIONS) {
+        useInstructionTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
     } else {
-        champsim::tracereader trace(get_tracereader(tracename, 0, false, false));
-        while (!trace.eof()) {
-            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-                if (cachesim::inst_count > 5000000) {
-                    break;
-                }
-            }
-            cachesim::inst_count++;
-            auto inst = trace();
-            access_packet->clear();
-            eviction_packet->clear();
-            fill_packet->clear();
-            invalidation_packet->clear();
-#ifdef MULTI_LEVEL
-            for (auto& smem:inst.source_memory) {
-                access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                    predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true,
-                    0, 0, 0.0);
-            }
-            for (auto& dmem:inst.destination_memory) {
-                access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                    predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false,
-                    0, 0, 0.0);
-            }
-#else
-            for (auto& smem:inst.source_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), smem.to<uint64_t>(), true, 0, 0, 0.0);
-            }
-            for (auto& dmem:inst.destination_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), dmem.to<uint64_t>(), false, 0, 0, 0.0);
-            }
-#endif
-        }
+        useChampsimTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
     }
 
-#ifdef MULTI_LEVEL
     for (auto cache_inst: cache)
         cache_inst->print_stats(cachesim::inst_count, tracename);
-//    if (!cachesim::useMemSignature)
+    if (cachesim::GEN_STATS)
         predictor->print_stats();
     cache.clear();
+#ifdef MULTI_LEVEL
     delete predictor;
-#else
-    cache->print_stats(cachesim::inst_count, tracename);
-    delete cache;
 #endif
     delete access_packet;
     delete eviction_packet;

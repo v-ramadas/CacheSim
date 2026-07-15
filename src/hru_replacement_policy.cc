@@ -55,19 +55,19 @@ void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bo
             low_priority[way_idx] = true;
         }
     } else {
-        if (packet->is_hub_node && was_accessed) {
-            counter[way_idx] = mru_counter;
-            low_priority[way_idx] = false;
-            if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
-                fmt::print("Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} hub {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx, packet->is_hub_node,
-                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx]);
-        } else {
+//        if (packet->is_hub_node && was_accessed) {
+//            counter[way_idx] = mru_counter;
+//            low_priority[way_idx] = false;
+//            if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
+//                fmt::print("Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} hub {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx, packet->is_hub_node,
+//                packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx]);
+//        } else {
             counter[way_idx] = lru_counter;
             low_priority[way_idx] = true;
             if (cachesim::DEBUG ||cachesim::REPLACEMENT_POLICY_DEBUG)
                 fmt::print("Non-Hub Fill Update. PC {:#x} address {:#x} block_address {:#x} set {} way {} hub {} degree {} l1_hits {} was_accessed {} footprint {:#x} repl_policy {}\n", packet->pc, packet->address, packet->blocks[block_idx], set_idx, way_idx, packet->is_hub_node,
                 packet->degree, packet->l1_hits, was_accessed, packet->footprint, counter[way_idx]);
-        }
+//        }
     }
     if (std::count(counter.begin(), counter.end(), max_counter) == 0) {
         is_way_full = true;
@@ -135,10 +135,10 @@ void HRU::repartition_ways(uint64_t num_ways_to_reserve) {
 }
 
 bool HRU::can_insert(PacketPtr packet, uint64_t idx) {
-    //return true;
+    return true;
     //if (packet->pc == 0xa) return true;
-    if (!is_way_full) return true;
-    else if (packet->pc != 0xa) return false;
+    //if (!is_way_full) return true;
+    //else if (packet->pc != 0xa) return false;
     //if (is_low_priority_present) return true;
     //if (packet->degree < (uint64_t)packet->avg_degree) return false;
     return true;   

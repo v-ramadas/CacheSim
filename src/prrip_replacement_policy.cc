@@ -21,9 +21,9 @@ void PRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
 void PRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
-        if (packet->is_low_reuse) {
+        if (packet->is_high_reuse) {
             counter[way_idx] = maxRRPV-1;
-        } else if (!packet->is_low_reuse && was_accessed) { 
+        } else if (!packet->is_high_reuse && was_accessed) { 
             counter[way_idx] = 0;
         } else {
             counter[way_idx] = (int)((1.0d - packet_reuse_probability)*maxRRPV);

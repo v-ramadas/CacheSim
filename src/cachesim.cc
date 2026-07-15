@@ -217,7 +217,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     uint64_t idx = 0;
     auto set_idx = get_set_idx(fill_packet->address);
     auto block_size = sets[set_idx]->get_block_size();
-    eviction_packet->is_low_reuse = fill_packet->is_low_reuse;
+    eviction_packet->is_high_reuse = fill_packet->is_high_reuse;
 
     if (is_sectored)
         fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
@@ -303,7 +303,7 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
 //    }
     Packet invalidate_packet = *packet;
     invalidate_packet.clear();
-    invalidate_packet.is_low_reuse = packet->is_low_reuse;
+    invalidate_packet.is_high_reuse = packet->is_high_reuse;
     auto set_idx = get_set_idx(packet->address);
     auto block_size = sets[set_idx]->get_block_size();
     auto aligned_address = align_address(packet->address, packet->size);
@@ -385,7 +385,7 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
 template<typename T>
 void Cache<T>::populate_blocks(PacketPtr fill_packet) {
     assert(fill_packet->blocks.size() != 0);
-    //auto is_low_reuse = fill_packet->is_low_reuse;
+    //auto is_high_reuse = fill_packet->is_high_reuse;
     int idx = 0;
     for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
         if (*it == UINT64_MAX) {

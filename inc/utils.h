@@ -20,6 +20,9 @@ namespace cachesim {
     extern bool useMemSignature;
     extern bool isoArea;
     extern uint64_t inst_count;
+    extern bool ENABLE_PREDICTOR;
+    extern uint64_t DEBUG_INSTRUCTIONS;
+    extern uint64_t WARMUP_INSTRUCTIONS;
 };
 
 enum class InsertionPolicy {
@@ -34,7 +37,7 @@ struct Packet {
     uint64_t size;
     std::vector<uint64_t> blocks;
     bool is_read;
-    bool is_low_reuse;
+    bool is_high_reuse;
     bool is_hub_node;
     uint64_t footprint;
     uint64_t serviced_from_llc;
@@ -59,7 +62,7 @@ struct Packet {
         size = 0;
         blocks.clear();
         is_read = false;
-        is_low_reuse = false;
+        is_high_reuse = false;
         is_hub_node = false;
         serviced_from_llc = 0;
         footprint = 0;
@@ -93,14 +96,14 @@ struct Packet {
 
     void clear_metadata() {
         is_read = false;
-        is_low_reuse = false;
+        is_high_reuse = false;
         is_hub_node = false;
         footprint = 0;
     }
 
     void print() {
-        fmt::print("Packet pc {:#x} address {:#x} aligned_address {:#x} size {} is_read {} is_low_reuse {} is_hub_node {} footprint {:#x} serviced_from_llc {} reuse_probability {} reuse_distance {} next_reuse {} l1_hits {} degree {} avg_degree {:4f}\n",
-            pc, address, aligned_address, size, is_read, is_low_reuse, is_hub_node, footprint, serviced_from_llc, reuse_probability, reuse_distance, next_reuse, l1_hits, degree, avg_degree);
+        fmt::print("Packet pc {:#x} address {:#x} aligned_address {:#x} size {} is_read {} is_high_reuse {} is_hub_node {} footprint {:#x} serviced_from_llc {} reuse_probability {} reuse_distance {} next_reuse {} l1_hits {} degree {} avg_degree {:4f}\n",
+            pc, address, aligned_address, size, is_read, is_high_reuse, is_hub_node, footprint, serviced_from_llc, reuse_probability, reuse_distance, next_reuse, l1_hits, degree, avg_degree);
     }
 
     Packet& operator=(const Packet &packet) {
@@ -110,7 +113,7 @@ struct Packet {
         size = packet.size;
         blocks = packet.blocks;
         is_read = packet.is_read;
-        is_low_reuse = packet.is_low_reuse;
+        is_high_reuse = packet.is_high_reuse;
         is_hub_node = packet.is_hub_node;
         serviced_from_llc = packet.serviced_from_llc;
         footprint = packet.footprint;

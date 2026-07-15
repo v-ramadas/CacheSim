@@ -18,6 +18,8 @@
 #include "lru_replacement_policy.h"
 #include "hru_replacement_policy.h"
 #include "hrupp_replacement_policy.h"
+#include "phru_replacement_policy.h"
+#include "phrupp_replacement_policy.h"
 #include "srrip_replacement_policy.h"
 #include "drrip_replacement_policy.h"
 #include "prrip_replacement_policy.h"
@@ -32,6 +34,8 @@ enum class ReplacementPolicy {
     LRU,
     HRU,
     HRUpp,
+    PHRU,
+    PHRUpp,
     SRRIP,
     DRRIP,
     PRRIP,
@@ -51,6 +55,10 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new HRU(set_idx, num_ways, level);
         case ReplacementPolicy::HRUpp:
             return new HRUpp(set_idx, num_ways, level);
+        case ReplacementPolicy::PHRU:
+            return new PHRU(set_idx, num_ways, level);
+        case ReplacementPolicy::PHRUpp:
+            return new PHRUpp(set_idx, num_ways, level);
         case ReplacementPolicy::SRRIP:
             return new SRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::DRRIP:

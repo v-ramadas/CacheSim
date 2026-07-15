@@ -5,7 +5,7 @@ blk_size_list=("64" "8")
 app_list=("pr_spmv")
 #replacement_policy_list=("srrip" "prrip" "lru" "belady" "ship")
 #replacement_policy_list=("distillation" "fission" "prrip" "trrip")
-replacement_policy_list=("lru" "srrip" "hawkeye" "hru" "prrip")
+replacement_policy_list=("lru" "srrip" "hru" "hrupp")
 set_list=("1024" "2048" "4096")
 #num_sets=2048
 # This will exit and print the error if $1 is empty or unset
@@ -14,7 +14,8 @@ for num_sets in "${set_list[@]}"; do
     for blk_size in "${blk_size_list[@]}"; do
         for app in "${app_list[@]}"; do
             for policy in "${replacement_policy_list[@]}"; do
-                out_dir=results/$(date +%m_%d)/${expt_name}/num_sets_${num_sets}/${app}_${policy}/blkSize_${blk_size}/
+                #out_dir=results/$(date +%m_%d)/${expt_name}/num_sets_${num_sets}/${app}_${policy}/blkSize_${blk_size}/
+                out_dir=results/$(date +%m_%d)/${expt_name}/${app}/num_sets_${num_sets}/${policy}_${blk_size}/
                 trace_dir=../traces/gap/hubs/${app}
                 mkdir -p ${out_dir}
                 echo "Submitting batch for App: $app, Policy: $policy, Blk: $blk_size"

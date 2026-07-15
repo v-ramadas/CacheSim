@@ -19,7 +19,12 @@ bool SparsityPredictor::predict(PacketPtr packet) {
     }
     
     //return predict_footprint_basic(packet, signature);
-    return predict_reuse_probability(packet, signature);
+    //return predict_reuse_probability(packet, signature);
+    if (signature == 0x55dea38e87be && SHCT.find(signature) != SHCT.end()) {
+        return (SHCT[signature] >= 1000);
+    } else {
+        return false;
+    }
 }
 
 bool SparsityPredictor::predict_footprint_basic(PacketPtr packet, uint64_t signature) {
@@ -41,10 +46,10 @@ bool SparsityPredictor::predict_reuse_probability(PacketPtr packet, uint64_t sig
     }
     double geomean = std::exp(logSum/ count);
 
-    bool is_low_reuse = (reuse_ratio < geomean);
+    bool is_high_reuse = (reuse_ratio >= geomean);
 //    if (geomean < 0.2)
 //    fmt::print("PC {:#x} reuse_ratio {:4f} geomean {:4f}\n", packet->pc, reuse_ratio, geomean);
-    return is_low_reuse;
+    return is_high_reuse;
 }
 
 bool SparsityPredictor::is_hub_node(PacketPtr packet) {
@@ -296,8 +301,8 @@ void SparsityPredictor::print_stats() {
         fmt::print("Signature {:#x} Predictor Stats ", it->first);
         it->second->print();
         fmt::print("\n");
-        it->second->print_footprint();
-//        fmt::print(" SHCT value {}\n", SHCT[it->first]);
+        //it->second->print_footprint();
+        fmt::print(" SHCT value {}\n", SHCT[it->first]);
 //        it->second->print_shct();
     }
                 

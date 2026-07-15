@@ -53,8 +53,9 @@ def process_log_mmap(input_file, output_file):
                 raw_addr = int(addr_hex, 16)
                 
                 # Align to 64 bytes (0x40)
-                aligned_addr = raw_addr & ~0x3F
-                
+                #aligned_addr = raw_addr & ~0x3F
+                aligned_addr = raw_addr & ~0x7
+
                 # Calculate distance
                 if aligned_addr in next_occurrence:
                     distances[i] = next_occurrence[aligned_addr] - i

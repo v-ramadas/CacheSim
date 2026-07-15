@@ -175,7 +175,7 @@ bool HRRIP::can_insert(PacketPtr packet, uint64_t idx) {
     auto is_hub_node = (packet->degree > int(packet->avg_degree));
     if (is_hub_node && was_accessed) return true;
     if (is_hub_node && !was_accessed) return false;
-    else if (packet->is_low_reuse) return false;
+    else if (!packet->is_high_reuse) return false;
     else return true;
 }
 

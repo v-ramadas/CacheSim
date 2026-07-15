@@ -317,32 +317,32 @@ class Cache: public BaseCache {
     }
 
     void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) {
-//        if (data_var_hub_evictions.find(is_hub) == data_var_hub_evictions.end()) {
-//            data_var_hub_evictions[is_hub] = std::map<uint64_t, uint64_t>();
-//        }
-//
-//        if (data_var_hub_evictions[is_hub].find(serviced_from_llc) == data_var_hub_evictions[is_hub].end()) {
-//            data_var_hub_evictions[is_hub][serviced_from_llc] = 1;
-//        } else {
-//            data_var_hub_evictions[is_hub][serviced_from_llc] += 1;
-//        }
+        if (data_var_hub_evictions.find(is_hub) == data_var_hub_evictions.end()) {
+            data_var_hub_evictions[is_hub] = std::map<uint64_t, uint64_t>();
+        }
+
+        if (data_var_hub_evictions[is_hub].find(serviced_from_llc) == data_var_hub_evictions[is_hub].end()) {
+            data_var_hub_evictions[is_hub][serviced_from_llc] = 1;
+        } else {
+            data_var_hub_evictions[is_hub][serviced_from_llc] += 1;
+        }
     }
 
     void update_data_var_eviction_reuse(bool is_hub, uint64_t reuse) {
-        if (reuse == UINT64_MAX) return;
-        if (reuse == 0) return;
-        auto next_reuse = reuse - cachesim::inst_count;
-        next_reuse = next_reuse & ~(0x8 - 1);//0x7f;
-        if (next_reuse > 0x3200) return;
-        if (data_var_eviction_reuse.find(is_hub) == data_var_eviction_reuse.end()) {
-            data_var_eviction_reuse[is_hub] = std::map<int64_t, uint64_t>();
-        }
-
-        if (data_var_eviction_reuse[is_hub].find(next_reuse) == data_var_eviction_reuse[is_hub].end()) {
-            data_var_eviction_reuse[is_hub][next_reuse] = 1;
-        } else {
-            data_var_eviction_reuse[is_hub][next_reuse] += 1;
-        }
+//        if (reuse == UINT64_MAX) return;
+//        if (reuse == 0) return;
+//        auto next_reuse = reuse - cachesim::inst_count;
+//        next_reuse = next_reuse & ~(0x8 - 1);//0x7f;
+//        if (next_reuse > 0x3200) return;
+//        if (data_var_eviction_reuse.find(is_hub) == data_var_eviction_reuse.end()) {
+//            data_var_eviction_reuse[is_hub] = std::map<int64_t, uint64_t>();
+//        }
+//
+//        if (data_var_eviction_reuse[is_hub].find(next_reuse) == data_var_eviction_reuse[is_hub].end()) {
+//            data_var_eviction_reuse[is_hub][next_reuse] = 1;
+//        } else {
+//            data_var_eviction_reuse[is_hub][next_reuse] += 1;
+//        }
     }
 
 

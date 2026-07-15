@@ -22,7 +22,7 @@ void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr p
     //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
-        if (packet->is_low_reuse) {
+        if (packet->is_high_reuse) {
             counter[way_idx] = maxRRPV-1;
         } else if (was_accessed) { 
             counter[way_idx] = 0;
@@ -30,7 +30,7 @@ void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr p
             counter[way_idx] = (int)((1.0d - packet_reuse_probability)*(maxRRPV-1));
         }
     } else {
-        if ((!packet->is_low_reuse && packet->is_hub_node))
+        if ((!packet->is_high_reuse && packet->is_hub_node))
             counter[way_idx] = 0;//maxRRPV - 2;
         else
             counter[way_idx] = maxRRPV-1;
@@ -41,7 +41,7 @@ void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr p
         //fmt::print("Hub Node. PC {:#x} address {:#x} way {} size {} density {} footprint {:#x} l1_hits {}\n", packet->pc, packet->address, way_idx, packet->blocks.size(), __builtin_popcountll(packet->footprint), packet->footprint, packet->l1_hits); 
     }
 
-    if (!packet->is_low_reuse && packet->is_hub_node) {
+    if (!packet->is_high_reuse && packet->is_hub_node) {
         low_priority[way_idx] = false;
     } else {
         low_priority[way_idx] = true;
@@ -147,7 +147,7 @@ void Distillation::repartition_ways(uint64_t num_ways_to_reserve) {
 bool Distillation::can_insert(PacketPtr packet, uint64_t idx) {
 //    return true;
     auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
-    if (packet->is_low_reuse) { fmt::print("Skip\n");return false; }
+    if (packet->is_high_reuse) { fmt::print("Skip\n");return false; }
     if (packet->is_hub_node && !was_accessed) return false;
     else return true;
 }
