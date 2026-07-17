@@ -5,9 +5,11 @@
 #include <vector>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
+#include "performance_model.h"
 
 const uint64_t CACHELINE_SIZE = 64;
 extern uint64_t g_block_size;
+
 namespace cachesim {
     extern bool DEBUG;
     extern bool L1_DEBUG;
@@ -16,13 +18,14 @@ namespace cachesim {
     extern bool NO_ISO_AREA;
     extern bool GEN_STATS;
     extern bool dropBlocks;
-    extern bool useVictimBuffer;
     extern bool useMemSignature;
     extern bool isoArea;
-    extern uint64_t inst_count;
+    extern uint64_t instCount;
+    extern uint64_t prevInstCount;
     extern bool ENABLE_PREDICTOR;
     extern uint64_t DEBUG_INSTRUCTIONS;
     extern uint64_t WARMUP_INSTRUCTIONS;
+    extern PerformanceModel performanceModel;
 };
 
 enum class InsertionPolicy {

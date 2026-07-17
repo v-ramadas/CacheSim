@@ -11,5 +11,6 @@ for ways in "${ways_list[@]}"; do
                           --trace "${3}" \
                           --trace-format instructions \
                           --replacement-policy "${4}" \
-                          --iters 1
+                          --iters 1 \
+                          --config ${5}
 done

@@ -1,6 +1,7 @@
-#include "simulate.h"
+#include "cachesim.h"
 
-uint64_t cachesim::inst_count = 0;
+uint64_t cachesim::instCount = 0;
+uint64_t cachesim::prevInstCount = 0;
 
 bool cachesim::DEBUG = false;
 bool cachesim::L1_DEBUG = false;
@@ -13,11 +14,12 @@ uint64_t g_block_size = CACHELINE_SIZE;
 //TODO: Figure out a good value
 uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
-bool cachesim::useVictimBuffer = false;
 bool cachesim::useMemSignature = false;
 bool cachesim::isoArea = false;
 uint64_t cachesim::DEBUG_INSTRUCTIONS = 10000000;
-enum TraceFormat {
+PerformanceModel cachesim::performanceModel;
+
+enum class TraceFormat {
     CHAMPSIM,
     ADDRESSES,
     INSTRUCTIONS,
@@ -27,7 +29,8 @@ int main(int argc, char** argv) {
 
     CLI::App app{"CacheSim"};
     std::string tracename;
-    TraceFormat trace_format = CHAMPSIM;
+    std::string configFile = "configs/default.cfg";
+    TraceFormat trace_format = TraceFormat::CHAMPSIM;
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
     uint64_t block_size = CACHELINE_SIZE;
@@ -35,6 +38,7 @@ int main(int argc, char** argv) {
     ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
     InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     app.add_option("--trace", tracename, "Path to input trace file")->required()->expected(1)->check(CLI::ExistingFile);
+    app.add_option("--config", configFile, "Path to config file")->required()->expected(1)->check(CLI::ExistingFile);
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
         {"addresses", TraceFormat::ADDRESSES},
@@ -79,11 +83,9 @@ int main(int argc, char** argv) {
     switch(replacement_policy) {
         case ReplacementPolicy::Fission:
             cachesim::dropBlocks = true;
-            cachesim::useVictimBuffer = true;
             break;
         case ReplacementPolicy::Distillation:
             cachesim::dropBlocks = false;
-            cachesim::useVictimBuffer = true;
             break;
         case ReplacementPolicy::SHIP:
             cachesim::useMemSignature = true;
@@ -108,7 +110,13 @@ int main(int argc, char** argv) {
     }
 
     llc_num_ways = get_iso_area_cache(llc_num_sets, llc_num_ways, block_size);
-
+    
+    try {
+        PerformanceModel::populateModel(configFile);
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        return 1;
+    }
     std::vector<BaseCache*> cache;
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
@@ -143,7 +151,7 @@ int main(int argc, char** argv) {
     }
 
     for (auto cache_inst: cache)
-        cache_inst->print_stats(cachesim::inst_count, tracename);
+        cache_inst->print_stats(cachesim::instCount, tracename);
     if (cachesim::GEN_STATS)
         predictor->print_stats();
     cache.clear();
