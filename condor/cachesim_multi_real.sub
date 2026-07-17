@@ -1,7 +1,7 @@
-executable = cachesim_baseline.sh
+executable = cachesim_multi_real.sh
 arguments = $(num_sets) $(blk_size) $(trace_file) $(replacement_policy)
 
-transfer_input_files = $(trace_file),bin/cachesim_baseline
+transfer_input_files = $(trace_file),bin/cachesim_multi
 log = $(out_dir)/$Fn(trace_file).runlog
 error = $(out_dir)/$Fn(trace_file).stderr
 output = $(out_dir)/$Fn(trace_file).sweep

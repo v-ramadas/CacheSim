@@ -5,11 +5,11 @@ for ways in "${ways_list[@]}"; do
     # Run the simulation
     # Note: 'time' output usually goes to stderr
     echo "Ways: ${ways}"
-    time bin/cachesim_baseline --num-cache-sets ${1} \
+    time bin/cachesim_multi --num-cache-sets ${1} \
                           --num-cache-ways "${ways}" \
                           --cache-block-size ${2} \
                           --trace "${3}" \
-                          --trace-format addresses \
+                          --trace-format instructions \
                           --replacement-policy "${4}" \
                           --iters 1
 done

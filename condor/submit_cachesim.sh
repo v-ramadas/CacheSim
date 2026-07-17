@@ -19,7 +19,7 @@ for num_sets in "${set_list[@]}"; do
                 mkdir -p ${out_dir}
                 echo "Submitting batch for App: $app, Policy: $policy, Blk: $blk_size"
                 rm -f "$out_dir"/*.sweep
-                condor_submit out_dir=$out_dir trace_dir=$trace_dir blk_size=$blk_size num_sets=$num_sets replacement_policy=$policy cachesim_baseline.sub
+                condor_submit out_dir=$out_dir trace_dir=$trace_dir blk_size=$blk_size num_sets=$num_sets replacement_policy=$policy cachesim.sub
             done
         done
     done
