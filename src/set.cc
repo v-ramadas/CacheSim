@@ -187,12 +187,6 @@ void Set::handle_evict(PacketPtr packet) {
     while (num_blocks_evicted < num_blocks_to_evict) {
         uint64_t way_idx = num_ways;
         way_idx = repl_counter->get_eviction_candidate(packet->degree < (uint64_t)packet->avg_degree);
-        if (level == 1) {
-            cache->update_data_var_eviction_reuse(degree[way_idx] > (uint64_t)avg_degree[way_idx], next_reuse[way_idx]);
-            cache->update_data_var_pc_evictions1(packet->pc, pc[way_idx]);
-            cache->update_data_var_pc_evictions2(packet->pc, degree[way_idx] > int(avg_degree[way_idx]));
-            cache->update_data_var_pc_evictions3(packet->pc, pc[way_idx], degree[way_idx]);
-        }
 
         if (dirty[way_idx]) {
             dirty[way_idx] = false;
@@ -283,11 +277,12 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         if (cachesim::DEBUG || cachesim::LLC_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
+        packet->blocks.push_back(inv_address);
     } else {
+        packet->blocks.push_back(UINT64_MAX);
         packet->block_degrees.push_back(0);
         packet->block_serviced_from_llc.push_back(0);
     }
-    packet->blocks.push_back(inv_address);
 }
 
 

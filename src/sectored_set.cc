@@ -164,8 +164,6 @@ void SectoredSet::handle_fill(PacketPtr packet) {
                 way_sector->block_serviced_from_llc[sector_idx] = packet->block_serviced_from_llc[sector_idx];
             }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
-            //fmt::print("Level 0 Inserting address {:#x} sector {} counter {} serviced_from_llc {} vector size {} val {}\n",
-             //       way_sectors[way_idx].sectors[sector_idx], sector_idx, way_sectors[way_idx].block_serviced_from_llc[sector_idx], serviced_from_llc[way_idx], packet->block_serviced_from_llc.size(), packet->block_serviced_from_llc[sector_idx]);
         }
         auto was_accessed = ((packet->footprint >> sector_idx*bits_per_block)&bitmask == bitmask);
         was_accessed |= (align_address(packet->address, block_size) == block_address);

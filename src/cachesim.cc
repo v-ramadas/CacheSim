@@ -450,7 +450,6 @@ template class Cache<SectoredSet>;
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
-    using namespace std::string_literals;
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -470,11 +469,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     int num_levels = cache.size();
     int hit_at_level = num_levels;
+    bool l1_eviction = false;
+    bool llc_eviction = false;
     bool hit = false;
 
-    PerformanceModel::updateCycles("aluInstructionLatency"s, cachesim::instCount-cachesim::prevInstCount);
+    PerformanceModel::processCPU(cachesim::instCount - cachesim::prevInstCount);
     cachesim::prevInstCount = cachesim::instCount;
-    PerformanceModel::updateCycles("l1AccessLatency"s);
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
 
@@ -510,7 +510,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
-            PerformanceModel::updateCycles("l1ToL2AccessLatency"s);
+            if (eviction_packet->blocks.size() != 0) l1_eviction = true;
         } else {
             cache[1]->handle_invalidate(invalidation_packet);
             if (invalidation_packet->blocks.size() != 0)
@@ -523,7 +523,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
             cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
-            PerformanceModel::updateCycles("l2ToMemAccessLatency"s);
+            if (eviction_packet->blocks.size() != 0) l1_eviction = true;
         }
 
         auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
@@ -565,6 +565,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
                 if (eviction_packet->blocks.size() > 0) {
                     predictor->update_eviction(eviction_packet);
+                    llc_eviction = true;
                 }
             } else {
                 break;
@@ -575,6 +576,31 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->clear_pc();
             prev_cache_block_size = curr_cache_block_size;
         }
+    }
+
+    switch(hit_at_level) {
+        case 0:
+            // L1 hit - We assume the CPU has an IPC of 1 on cache hit
+            // and is already accounted for
+            //PerformanceModel::processL1D(fill_packet->address, true, false);
+            break;
+        case 1:
+            // L1 miss
+            //PerformanceModel::processL1D(fill_packet->address, false, false);
+            PerformanceModel::processLLC(fill_packet->address, true, false);
+            // L1 fill
+            //PerformanceModel::processL1D(fill_packet->address, false, true);
+            break;
+        default:
+            // L1 miss
+            //PerformanceModel::processL1D(fill_packet->address, false, false);
+            // LLC miss
+            PerformanceModel::processLLC(fill_packet->address, false, false);
+            // Memory access
+            PerformanceModel::processMemory(fill_packet->address);
+            // L1 fill
+            //PerformanceModel::processL1D(fill_packet->address, false, true);
+            break;
     }
 }
 #else

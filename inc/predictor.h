@@ -34,7 +34,7 @@ struct PredictorMetadata {
     }
 
     void print_footprint() {
-         for (auto idx = 0; idx < footprint_stats.size(); idx++)
+         for (uint64_t idx = 0; idx < footprint_stats.size(); idx++)
             fmt::print("PC {:#x} num blocks touched {:#x} count {}\n",
                     pc, idx+1, footprint_stats[idx]);
     }

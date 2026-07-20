@@ -17,6 +17,9 @@ bool cachesim::dropBlocks = false;
 bool cachesim::useMemSignature = false;
 bool cachesim::isoArea = false;
 uint64_t cachesim::DEBUG_INSTRUCTIONS = 10000000;
+
+bool performance::DETAILED_DRAM = false;
+
 PerformanceModel cachesim::performanceModel;
 
 enum class TraceFormat {
@@ -75,7 +78,8 @@ int main(int argc, char** argv) {
     app.add_option("--iters", num_iters, "Number of iterations");
     app.add_option("--warmup-instructions", cachesim::WARMUP_INSTRUCTIONS, "Warmup instruction count");
     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");
-    app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Disable iso-area mode");
+    app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Enable predictor (not implemented)");
+    app.add_flag("--detailed-dram", performance::DETAILED_DRAM, "Enable detailed DRAM timing model");
 
     CLI11_PARSE(app, argc, argv);
     g_block_size = block_size;
