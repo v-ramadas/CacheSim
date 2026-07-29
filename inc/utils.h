@@ -8,7 +8,6 @@
 #include "performance_model.h"
 
 const uint64_t CACHELINE_SIZE = 64;
-extern uint64_t g_block_size;
 
 namespace cachesim {
     extern bool DEBUG;
@@ -17,6 +16,7 @@ namespace cachesim {
     extern bool LLC_DEBUG;
     extern bool NO_ISO_AREA;
     extern bool GEN_STATS;
+    extern bool SET_DUELING;
     extern bool dropBlocks;
     extern bool useMemSignature;
     extern bool isoArea;

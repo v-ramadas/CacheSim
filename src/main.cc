@@ -10,7 +10,7 @@ bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
 bool cachesim::NO_ISO_AREA = false;
 bool cachesim::GEN_STATS = false;
 bool cachesim::ENABLE_PREDICTOR = false;
-uint64_t g_block_size = CACHELINE_SIZE;
+bool cachesim::SET_DUELING = false;
 //TODO: Figure out a good value
 uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
@@ -80,9 +80,10 @@ int main(int argc, char** argv) {
     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");
     app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Enable predictor (not implemented)");
     app.add_flag("--detailed-dram", performance::DETAILED_DRAM, "Enable detailed DRAM timing model");
+    app.add_flag("--set-dueling", cachesim::SET_DUELING, "Enable set dueling");
+
 
     CLI11_PARSE(app, argc, argv);
-    g_block_size = block_size;
 
     switch(replacement_policy) {
         case ReplacementPolicy::Fission:
@@ -113,7 +114,6 @@ int main(int argc, char** argv) {
             break;
     }
 
-    llc_num_ways = get_iso_area_cache(llc_num_sets, llc_num_ways, block_size);
     
     try {
         PerformanceModel::populateModel(configFile);
@@ -125,11 +125,9 @@ int main(int argc, char** argv) {
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
     cache.resize(2);
-    if (block_size == CACHELINE_SIZE)
-        cache[0] = new Cache<Set>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
-    else
-        cache[0] = new Cache<SectoredSet>("L1D", 128, 16, block_size, 0, true, ReplacementPolicy::LRU, insertion_policy);
-    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, block_size, 1, false, replacement_policy, insertion_policy);
+    //cache[0] = new Cache<Set>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
+    cache[0] = new Cache<SectoredSet>("L1D", 128, 16, 8, 0, true, ReplacementPolicy::LRU, insertion_policy);
+    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, 8, 1, false, replacement_policy, insertion_policy);
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
     if (cachesim::useMemSignature)

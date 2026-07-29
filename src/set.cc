@@ -53,7 +53,8 @@ bool Set::try_hit(PacketPtr packet) {
     uint64_t hit_counter = UINT64_MAX;
     std::vector<uint64_t> way_idx_list;
     for (const auto block: packet->blocks) {
-        auto way = std::find(ways.begin(), ways.end(), block);
+        auto aligned_address = align_address(block, block_size);
+        auto way = std::find(ways.begin(), ways.end(), aligned_address);
         auto way_idx = std::distance(ways.begin(), way);
 
         bool block_hit = (way != ways.end());// && (valid[way_idx] == true);
@@ -61,7 +62,7 @@ bool Set::try_hit(PacketPtr packet) {
 
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)
             fmt::print("{} level {} hit {} align_address {:#x} address {:#x} set {} way {} pc {} size {} degree {} avg_degree {:4f} is_hub_node {} repl_counter {}\n",
-                    __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, block, set_idx, way_idx, pc[way_idx],
+                    __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, aligned_address, set_idx, way_idx, pc[way_idx],
                     packet->blocks.size(), packet->degree, packet->avg_degree, (packet->degree > uint64_t(packet->avg_degree)), repl_counter->get_counter_value(way_idx));
         if (block_hit) {
             if (repl_counter->get_counter_value(way_idx) < hit_counter) hit_counter = repl_counter->get_counter_value(way_idx);
@@ -157,8 +158,8 @@ void Set::handle_fill(PacketPtr packet) {
         }
 
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-            fmt::print("Level {} Inserting address {:#x} @ set {} way {} valid {} repl_counter {} pc {:#x} block_idx {} was_accessed {} set_footprint {} serviced_from_llc {} packet footprint {:#x} degree {} avg_degree {:4f} is_hub_node {}\n",
-                    level, ways[way_idx], set_idx, way_idx, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], block_idx, was_accessed, get_footprint(way_idx, 0), serviced_from_llc[way_idx],
+            fmt::print("Level {} Inserting address {:#x} @ set {} way {} blk_size {} packet size {} total ways {} valid {} repl_counter {} pc {:#x} block_idx {} was_accessed {} set_footprint {} serviced_from_llc {} packet footprint {:#x} degree {} avg_degree {:4f} is_hub_node {}\n",
+                    level, ways[way_idx], set_idx, way_idx, block_size, packet->size, num_ways, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], block_idx, was_accessed, get_footprint(way_idx, 0), serviced_from_llc[way_idx],
                     packet->footprint, packet->degree, packet->avg_degree, packet->degree > uint64_t(packet->avg_degree));
 
         block_idx++;

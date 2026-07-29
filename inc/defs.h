@@ -94,16 +94,27 @@ inline uint64_t count_footprint(uint64_t footprint) {
 
 inline void resize_packet(PacketPtr packet, uint64_t block_size) {
     auto num_blocks = packet->size/block_size;
-    if (packet->blocks.size() > 0 &&
-            packet->blocks.size() != num_blocks) {
-        packet->blocks.resize(num_blocks);
-        auto aligned_address = 
-            align_address(packet->address, packet->size);
-        for (uint64_t idx = 0; idx < num_blocks; ++idx) {
-            packet->blocks[idx] = aligned_address + idx*block_size;
+    if (num_blocks == 0) num_blocks = 1;
+    if (packet->blocks.size() > 0) {
+        if (packet->blocks.size() != num_blocks) {
+            packet->blocks.resize(num_blocks);
+            auto aligned_address = 
+                align_address(packet->address, packet->size);
+            for (uint64_t idx = 0; idx < num_blocks; ++idx) {
+                packet->blocks[idx] = aligned_address + idx*block_size;
+            }
+        } else if (packet->blocks.size() > num_blocks) {
+            packet->blocks.clear();
+            packet->blocks.resize(num_blocks);
+            auto aligned_address = 
+                align_address(packet->address, packet->size);
+            for (uint64_t idx = 0; idx < num_blocks; ++idx) {
+                packet->blocks[idx] = aligned_address + idx*block_size;
+            }
         }
     }
 }
+
 
 inline float bytes_to_mb(uint64_t size) {
     return (float)(size)/(1024.0*1024.0);

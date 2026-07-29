@@ -29,13 +29,24 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
         insertion_policy(policy)
 {
 
+    auto iso_area_num_ways = get_iso_area_cache(num_sets, num_ways, block_size);
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
     } else {
         num_ways = num_ways;//*CACHELINE_SIZE/block_size;
     }
     for (uint64_t i = 0; i < num_sets; ++i) {
-        sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
+        if (!is_sectored) {
+            if ( i < num_sets/2) {
+                sets[i] = new T(this, num_ways, 64, i, repl_policy, level);
+            } else {
+                sets[i] = new T(this, iso_area_num_ways, block_size, i, repl_policy, level);
+            }
+
+        } else {
+            assert(level == 0);
+            sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
+        }
     }
 
     partial_misses.resize(CACHELINE_SIZE/block_size+1, 0);
@@ -226,13 +237,17 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     else
         fill_packet->aligned_address = align_address(fill_packet->address, block_size);
 
+    if (fill_packet->size > fill_packet->blocks.size()*block_size)
+        populate_line(fill_packet);
     populate_blocks(fill_packet);
+
     if (fill_packet->blocks.size() == 0) {
         return;
     }
 
     eviction_packet->aligned_address = fill_packet->aligned_address;
-    eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+    if (eviction_packet->size == 0)
+        eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     sets[set_idx]->handle_evict(eviction_packet);
@@ -248,6 +263,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
     sets[set_idx]->handle_fill(fill_packet);
+
     idx++;
     if (cachesim::DEBUG)
         fmt::print("Level {} Inserted address {:#x} @ set {} Footprint {:#x}\n", level, fill_packet->address, set_idx, fill_packet->footprint);
@@ -262,10 +278,17 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
 //        fill_packet->block_accesses.resize(8, 0);
 //    }
     auto set_idx = get_set_idx(fill_packet->address);
-    fill_packet->aligned_address = align_address(fill_packet->address, fill_packet->size);
+    auto block_size = sets[set_idx]->get_block_size();
+
+    if (is_sectored)
+        fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
+    else
+        fill_packet->aligned_address = align_address(fill_packet->address, block_size);
+
     // Populate the vector
     populate_line(fill_packet);
-    eviction_packet->size = fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+    if (eviction_packet->size == 0)
+        eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
@@ -285,7 +308,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     //partial_misses[fill_packet->blocks.size()-1]++;
     fill_packet->clear_blocks();
     if (cachesim::DEBUG)
-        fmt::print("Level {} Inserted address {:#x} @ set {} Footprint {:#x}\n", level, fill_packet->address, set_idx, fill_packet->footprint);
+        fmt::print("Level {} Inserted address {:#x} @ set {} Footprint {:#x}\n", level, fill_packet->aligned_address, set_idx, fill_packet->footprint);
     return;
 }
 
@@ -360,6 +383,10 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
         fill_packet->blocks.resize(num_blocks, UINT64_MAX);
         fill_packet->block_degrees.resize(num_blocks, 0);
         fill_packet->block_serviced_from_llc.resize(num_blocks, 0);
+    } else if (fill_packet->blocks.size() < num_blocks) {
+        fill_packet->blocks.resize(num_blocks, UINT64_MAX);
+        fill_packet->block_degrees.resize(num_blocks, 0);
+        fill_packet->block_serviced_from_llc.resize(num_blocks, 0);
     }
     assert(fill_packet->blocks.size() == num_blocks);
     auto ways = get_ways(set_idx);
@@ -367,7 +394,6 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
     for (uint64_t block_idx = 0; block_idx < fill_packet->size/sets.at(set_idx)->get_block_size(); block_idx++) {
         auto address = fill_packet->aligned_address + (block_idx*block_size);
         if (fill_packet->blocks[block_idx] != UINT64_MAX) {
-
             if (cachesim::DEBUG)
                 fmt::print("Block address {:#x} already present in set {}. Not adding to fill packet\n", address, set_idx);
             continue;
@@ -477,7 +503,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     cachesim::prevInstCount = cachesim::instCount;
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
-
+        access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
+        //access_packet->aligned_address = align_address(access_packet->aligned_address, access_packet->size);
         hit = cache[i]->try_hit(access_packet);
 
         if (hit) {
@@ -526,10 +553,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             if (eviction_packet->blocks.size() != 0) l1_eviction = true;
         }
 
-        auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(fill_packet->address));
+        auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(eviction_packet->address));
         auto curr_cache_block_size = prev_cache_block_size;
         for (int i = 1; i < num_levels; i++) {
-            curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(fill_packet->address));
+            curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(eviction_packet->address));
 
             if (prev_cache_block_size != curr_cache_block_size) {
                 resize_packet(eviction_packet, curr_cache_block_size);       
