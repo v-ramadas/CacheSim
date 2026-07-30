@@ -1,7 +1,7 @@
 #include "ship_replacement_policy.h"
 #include <fmt/core.h>
 
-void SHIP::init_counter(PacketPtr packet) {
+void SHIP::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
                 uint64_t val = x + _diff;
@@ -14,11 +14,11 @@ void SHIP::init_counter(PacketPtr packet) {
 
 }
 
-void SHIP::hit_update(PacketPtr packet, uint64_t way_idx) {
+void SHIP::hit_update(PacketPtr /*packet*/, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void SHIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void SHIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
     if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {
@@ -31,7 +31,7 @@ void SHIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, b
     insertion_clock[way_idx] = global_clock;
 }
 
-uint64_t SHIP::get_eviction_candidate(bool is_low_priority = false) {
+uint64_t SHIP::get_eviction_candidate(bool /*is_low_priority = false*/) {
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];
     for (uint64_t idx = 0; idx < num_ways; idx++) {
@@ -56,7 +56,7 @@ uint64_t SHIP::get_eviction_candidate(bool is_low_priority = false) {
     return candidate_idx;
 }
 
-uint64_t SHIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t SHIP::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];

@@ -2,7 +2,7 @@
 #include <fmt/core.h>
 
 
-void PHRUpp::init_counter(PacketPtr packet) {
+void PHRUpp::init_counter(PacketPtr /*packet*/) {
     lru_counter++;
     mru_counter+=num_ways;
 }
@@ -48,13 +48,13 @@ void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet,
     }
 }
 
-uint64_t PHRUpp::get_eviction_candidate(bool is_low_priority = false) {
+uint64_t PHRUpp::get_eviction_candidate(bool /*is_low_priority = false*/) {
     auto way = std::min_element(counter.begin(), std::next(counter.begin(), num_ways));
     uint64_t way_idx = std::distance(counter.begin(), way);
     return way_idx;
 }
 
-uint64_t PHRUpp::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t PHRUpp::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto way = std::min_element(std::next(counter.begin(), num_ways), counter.end());
     uint64_t way_idx = std::distance(counter.begin(), way);
@@ -85,6 +85,6 @@ void PHRUpp::repartition_ways(uint64_t num_ways_to_reserve) {
     reserved_ways = num_ways_to_reserve;
 }
 
-bool PHRUpp::can_insert(PacketPtr packet, uint64_t idx) {
+bool PHRUpp::can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) {
     return true;
 }

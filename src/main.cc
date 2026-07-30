@@ -3,6 +3,8 @@
 uint64_t cachesim::instCount = 0;
 uint64_t cachesim::prevInstCount = 0;
 
+uint64_t cachesim::BLOCK_SIZE = CACHELINE_SIZE;
+
 bool cachesim::DEBUG = false;
 bool cachesim::L1_DEBUG = false;
 bool cachesim::LLC_DEBUG = false;
@@ -10,7 +12,6 @@ bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
 bool cachesim::NO_ISO_AREA = false;
 bool cachesim::GEN_STATS = false;
 bool cachesim::ENABLE_PREDICTOR = false;
-bool cachesim::SET_DUELING = false;
 //TODO: Figure out a good value
 uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
@@ -19,6 +20,12 @@ bool cachesim::isoArea = false;
 uint64_t cachesim::DEBUG_INSTRUCTIONS = 10000000;
 
 bool performance::DETAILED_DRAM = false;
+
+bool cachesim::SET_DUELING = false;
+int cachesim::NUM_DUELS = 1;
+uint64_t cachesim::PSEL_MAX = 32;
+uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 1;
+uint64_t cachesim::DUELING_PERIOD = 10000000;
 
 PerformanceModel cachesim::performanceModel;
 
@@ -36,7 +43,6 @@ int main(int argc, char** argv) {
     TraceFormat trace_format = TraceFormat::CHAMPSIM;
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
-    uint64_t block_size = CACHELINE_SIZE;
     uint64_t num_iters = 1;
     ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
     InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
@@ -49,7 +55,7 @@ int main(int argc, char** argv) {
     }));
     app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache")->required();
     app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache")->required();
-    app.add_option("--cache-block-size", block_size, "Cache block size");
+    app.add_option("--cache-block-size", cachesim::BLOCK_SIZE, "Cache block size");
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
         {"lru", ReplacementPolicy::LRU},
@@ -81,6 +87,10 @@ int main(int argc, char** argv) {
     app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Enable predictor (not implemented)");
     app.add_flag("--detailed-dram", performance::DETAILED_DRAM, "Enable detailed DRAM timing model");
     app.add_flag("--set-dueling", cachesim::SET_DUELING, "Enable set dueling");
+    app.add_option("--num-duels", cachesim::NUM_DUELS, "Max Value of PSEL");
+    app.add_option("--psel-max", cachesim::PSEL_MAX, "Max Value of PSEL");
+    app.add_option("--psel-threshold", cachesim::PSEL_THRESHOLD, "PSEL Threshold value");
+    app.add_option("--dueling-instructions", cachesim::DUELING_PERIOD, "Warmup instructions for set dueling");
 
 
     CLI11_PARSE(app, argc, argv);
@@ -125,9 +135,9 @@ int main(int argc, char** argv) {
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
     cache.resize(2);
-    //cache[0] = new Cache<Set>("L1D", 128, 16, block_size, 0, false, ReplacementPolicy::LRU, insertion_policy);
+    //cache[0] = new Cache<Set>("L1D", 128, 16, cachesim::BLOCK_SIZE, 0, false, ReplacementPolicy::LRU, insertion_policy);
     cache[0] = new Cache<SectoredSet>("L1D", 128, 16, 8, 0, true, ReplacementPolicy::LRU, insertion_policy);
-    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, 8, 1, false, replacement_policy, insertion_policy);
+    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, 1, false, replacement_policy, insertion_policy);
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
     if (cachesim::useMemSignature)
@@ -136,7 +146,7 @@ int main(int argc, char** argv) {
         predictor->set_pc_signature();
 #else
     cache.resize(1);
-    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, block_size, 0, false, replacement_policy, insertion_policy);
+    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, 0, false, replacement_policy, insertion_policy);
 #endif
 
     std::map<uint64_t, uint64_t> page_count;
@@ -152,10 +162,13 @@ int main(int argc, char** argv) {
         useChampsimTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
     }
 
-    for (auto cache_inst: cache)
+    for (auto cache_inst: cache) {
         cache_inst->print_stats(cachesim::instCount, tracename);
+        delete cache_inst;
+    }
     if (cachesim::GEN_STATS)
         predictor->print_stats();
+    
     cache.clear();
 #ifdef MULTI_LEVEL
     delete predictor;

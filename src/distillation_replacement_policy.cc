@@ -1,7 +1,7 @@
 #include "distillation_replacement_policy.h"
 #include <fmt/core.h>
 
-void Distillation::init_counter(PacketPtr packet) {
+void Distillation::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
                 uint64_t val = x + _diff;
@@ -14,11 +14,11 @@ void Distillation::init_counter(PacketPtr packet) {
 
 }
 
-void Distillation::hit_update(PacketPtr packet, uint64_t way_idx) {
+void Distillation::hit_update(PacketPtr /*packet*/, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void Distillation::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool was_accessed) {
     //auto packet_reuse_probability = packet->reuse_probability;
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
@@ -48,7 +48,7 @@ void Distillation::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr p
     }
 }
 
-uint64_t Distillation::get_eviction_candidate(bool is_low_priority=false) {
+uint64_t Distillation::get_eviction_candidate(bool /*is_low_priority=false*/) {
     
     // Lambda to encapsulate the comparison logic for reuse
     auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_priority=false) {
@@ -101,7 +101,7 @@ uint64_t Distillation::get_eviction_candidate(bool is_low_priority=false) {
     return candidate_idx;
 }
 
-uint64_t Distillation::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t Distillation::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto candidate_idx = num_ways;
     auto candidate = counter[candidate_idx];
@@ -146,7 +146,7 @@ void Distillation::repartition_ways(uint64_t num_ways_to_reserve) {
 
 bool Distillation::can_insert(PacketPtr packet, uint64_t idx) {
 //    return true;
-    auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
+    auto was_accessed = (((packet->footprint >> idx)&0x1) == 0x1);
     if (packet->is_high_reuse) { fmt::print("Skip\n");return false; }
     if (packet->is_hub_node && !was_accessed) return false;
     else return true;

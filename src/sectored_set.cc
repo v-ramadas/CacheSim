@@ -13,7 +13,7 @@ void SectoredSet::set_footprint(uint64_t way_idx, uint64_t word_idx, bool access
     return;
 }
 
-void SectoredSet::fill_way(PacketPtr packet, uint64_t way_idx) {
+void SectoredSet::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
 void SectoredSet::fill_packet(PacketPtr packet, uint64_t way_idx) {
@@ -52,7 +52,7 @@ void SectoredSet::invalidate_way(uint64_t way_idx) {
 bool SectoredSet::try_hit(PacketPtr packet) {
     bool hit = false;
     bool sector_hit = false;
-    uint64_t hit_counter = UINT64_MAX;
+    //uint64_t hit_counter = UINT64_MAX;
     std::vector<uint64_t> sector_idx_list;
     auto way = std::find(ways.begin(), ways.end(), packet->aligned_address);
     auto way_idx = std::distance(ways.begin(), way);
@@ -114,7 +114,7 @@ bool SectoredSet::try_hit(PacketPtr packet) {
 
 void SectoredSet::handle_fill(PacketPtr packet) {
     auto way = std::find(valid.begin(), valid.end(), false);
-    auto way_idx = std::distance(valid.begin(), way);
+    uint64_t way_idx = std::distance(valid.begin(), way);
     auto hit = false;
     if (way_idx == num_ways) {
         hit = (std::find(ways.begin(), ways.end(), packet->aligned_address) != ways.end());
@@ -138,16 +138,8 @@ void SectoredSet::handle_fill(PacketPtr packet) {
 
     uint64_t sector_idx = 0;
     for (const auto block_address: packet->blocks) {
-        if (packet->blocks.size() > 8) {
-            packet->print();
-            fmt::print("block {:#x}\n",block_address);
-        }
-        if (sector_idx <0 || sector_idx >= 8)
-            fmt::print("sector {} length {}\n", sector_idx, packet->blocks.size());
-        assert(sector_idx >=0 && sector_idx < 8);
-        if (way_sector->valid.size() != 8) {
-            fmt::print("{}, {}\n", sector_idx, way_sector->valid.size());
-        }
+        assert(packet->blocks.size() <= 8);
+        assert(sector_idx < 8);
         assert(way_sector->valid.size() == 8);
         if (way_sector->valid[sector_idx]) {
             assert(way_sector->sectors[sector_idx] == block_address);
@@ -165,7 +157,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
             }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
         }
-        auto was_accessed = ((packet->footprint >> sector_idx*bits_per_block)&bitmask == bitmask);
+        auto was_accessed = (((packet->footprint >> sector_idx*bits_per_block)&bitmask) == bitmask);
         was_accessed |= (align_address(packet->address, block_size) == block_address);
         for (auto word_idx = sector_idx; word_idx < sector_idx + bits_per_block; word_idx++) {
             if (was_accessed) {
@@ -243,7 +235,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 
     invalidate_way(way_idx);
 
-    cache->update_data_var_evictions(packet->pc, count_footprint(packet->footprint));
+    //cache->update_data_var_evictions(packet->pc, count_footprint(packet->footprint));
 
     if (cachesim::DEBUG || cachesim::L1_DEBUG)
         fmt::print("Level {} Num invalid blocks {} evicted line footprint {:#x} serviced_from_llc {}\n",
@@ -255,10 +247,8 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     auto try_hit = std::find(ways.begin(), ways.end(), packet->aligned_address);
     bool hit = (try_hit != ways.end());
-    uint64_t inv_address;
     if (hit) {
         auto way_idx = std::distance(ways.begin(), try_hit);
-        auto previous_footprint = packet->footprint;
         for (uint64_t sector_idx = 0; sector_idx < num_blocks; sector_idx++) {
             packet->footprint |= (bitmask*get_footprint(way_idx, sector_idx)) << (block_num*bits_per_block);
             set_footprint(way_idx, sector_idx, false);
@@ -266,8 +256,8 @@ void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         fill_packet(packet, way_idx);
         way_sectors[way_idx].invalidate();
         invalidate_way(way_idx);
-        cache->update_data_var_invalidations(packet->pc,
-            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        //cache->update_data_var_invalidations(packet->pc,
+        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
         if (cachesim::DEBUG || cachesim::L1_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} serviced_from_llc {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint, packet->serviced_from_llc);

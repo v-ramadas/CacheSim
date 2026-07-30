@@ -2,8 +2,9 @@
 #include <fmt/core.h>
 
 
-void HRUpp::init_counter(PacketPtr packet) {
-    auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
+        uint64_t counter_value = 0;
+void HRUpp::init_counter(PacketPtr /*packet*/) {
+    //auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
     lru_counter++;
     mru_counter+=num_ways;
 }
@@ -29,7 +30,6 @@ void HRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
 void HRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     if (packet->serviced_from_llc > 0) {
         //auto counter_value = packet->block_serviced_from_llc[block_idx];
-        uint64_t counter_value = 0;
         if (packet->is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
@@ -104,7 +104,7 @@ uint64_t HRUpp::get_eviction_candidate(bool is_low_priority = false) {
     return way_idx;
 }
 
-uint64_t HRUpp::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t HRUpp::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto way = std::min_element(std::next(counter.begin(), num_ways), counter.end());
     uint64_t way_idx = std::distance(counter.begin(), way);
@@ -135,12 +135,11 @@ void HRUpp::repartition_ways(uint64_t num_ways_to_reserve) {
     reserved_ways = num_ways_to_reserve;
 }
 
-bool HRUpp::can_insert(PacketPtr packet, uint64_t idx) {
+bool HRUpp::can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) {
     return true;
     //if (packet->pc == 0xa) return true;
     //if (!is_way_full) return true;
     //else if (packet->pc != 0xa) return false;
     //if (is_low_priority_present) return true;
     //if (packet->degree < (uint64_t)packet->avg_degree) return false;
-    return true;   
 }

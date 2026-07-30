@@ -1,7 +1,7 @@
 #include "drrip_replacement_policy.h"
 #include <fmt/core.h>
 
-void DRRIP::init_counter(PacketPtr packet) {
+void DRRIP::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
                 uint64_t val = x + _diff;
@@ -13,7 +13,7 @@ void DRRIP::init_counter(PacketPtr packet) {
     global_clock++;
 }
 
-void DRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
+void DRRIP::hit_update(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 //    counter[way_idx] = 0;
 }
 
@@ -38,8 +38,7 @@ void DRRIP::update_srrip(uint64_t way_idx, PacketPtr packet) {
     }
 }
 
-void DRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
-    auto begin = 0;
+void DRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
     auto end = NUM_POLICY*SDM_SIZE;
     if (set_idx > end) { // follower sets
         if (PSEL > (PSEL_MAX/2)) { // follow BIP
@@ -57,7 +56,7 @@ void DRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, 
 }
 
 
-uint64_t DRRIP::get_eviction_candidate(bool is_low_priority = false) {
+uint64_t DRRIP::get_eviction_candidate(bool /*is_low_priority = false*/) {
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];
     for (uint64_t idx = 0; idx < num_ways; idx++) {
@@ -77,7 +76,7 @@ uint64_t DRRIP::get_eviction_candidate(bool is_low_priority = false) {
     return candidate_idx;
 }
 
-uint64_t DRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t DRRIP::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];

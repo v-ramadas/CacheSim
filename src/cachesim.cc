@@ -12,6 +12,7 @@ Cache<T>::Cache():
         level(0),
         is_sectored(false),
         insertion_policy(InsertionPolicy::EXCLUSIVE) {
+   PSEL = 0;
    num_ways = 16;
    for (uint64_t i = 0; i < num_sets; ++i) {
        sets[i] = new T(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
@@ -28,24 +29,34 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
         is_sectored(is_sectored),
         insertion_policy(policy)
 {
-
+    PSEL = 0;
     auto iso_area_num_ways = get_iso_area_cache(num_sets, num_ways, block_size);
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
     } else {
-        num_ways = num_ways;//*CACHELINE_SIZE/block_size;
+        num_ways = num_ways;
     }
+
+    uint64_t num_set_chunks = num_sets/(2*cachesim::NUM_DUELS);
     for (uint64_t i = 0; i < num_sets; ++i) {
-        if (!is_sectored) {
-            if ( i < num_sets/2) {
-                sets[i] = new T(this, num_ways, 64, i, repl_policy, level);
+        if (is_sectored) {
+            assert(level == 0);
+            sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
+        } else {
+            if (cachesim::SET_DUELING) { 
+                if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 0)) {
+                    sets[i] = new T(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
+                    sets[i]->set_dueling_type(SetDuelingType::Leader64);
+                } else if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 1)) {
+                    sets[i] = new T(this, iso_area_num_ways, 8, i, repl_policy, level);
+                    sets[i]->set_dueling_type(SetDuelingType::Leader8);
+                } else {
+                    sets[i] = new T(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
+                }
             } else {
                 sets[i] = new T(this, iso_area_num_ways, block_size, i, repl_policy, level);
             }
 
-        } else {
-            assert(level == 0);
-            sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
         }
     }
 
@@ -98,6 +109,7 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
          get_write_hits(), get_write_misses());
     fmt::print("Miss Rate {:4f}\n", miss_rate);
     fmt::print("MPKI {:10f}\n", mpki);
+    fmt::print("PSEL {}\n", get_psel());
     fmt::print("Num Cycles {}\n", PerformanceModel::getCycles());
     if (get_evictions() > 0) {
         fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/(get_evictions()*(get_block_size(0)/8)));
@@ -357,8 +369,8 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
     num_blocks_used += count_footprint(invalidate_packet.footprint);
 //        fmt::print("Aligned Address {:#x} Footprint {:#x}\n", aligned_address, packet->footprint);
 
-        update_data_var_invalidations(packet->pc,
-            count_footprint(packet->footprint));
+        //update_data_var_invalidations(packet->pc,
+        //    count_footprint(packet->footprint));
 
     evictions+=std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
@@ -431,7 +443,7 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
         }
         auto set_idx = get_set_idx(fill_packet->address);
         auto ways = get_ways(set_idx);
-        auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
+        //auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
         auto try_hit = std::find(ways.begin(), ways.end(), *it);
         auto block_size = sets[set_idx]->get_block_size();
         auto dropBlock = false;
@@ -495,9 +507,13 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
     int num_levels = cache.size();
     int hit_at_level = num_levels;
-    bool l1_eviction = false;
-    bool llc_eviction = false;
     bool hit = false;
+
+    if (cachesim::SET_DUELING) {
+        if (cache[num_levels-1]->should_breakdown()) {
+            cache[num_levels-1]->breakdown(cachesim::BLOCK_SIZE);
+        }
+    }
 
     PerformanceModel::processCPU(cachesim::instCount - cachesim::prevInstCount);
     cachesim::prevInstCount = cachesim::instCount;
@@ -537,7 +553,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
-            if (eviction_packet->blocks.size() != 0) l1_eviction = true;
         } else {
             cache[1]->handle_invalidate(invalidation_packet);
             if (invalidation_packet->blocks.size() != 0)
@@ -550,7 +565,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
             cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
-            if (eviction_packet->blocks.size() != 0) l1_eviction = true;
         }
 
         auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(eviction_packet->address));
@@ -569,8 +583,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             if (eviction_packet->blocks.size() > 0) {
                 predictor->update_footprint(eviction_packet);
                 predictor->update_access(fill_packet);
-                bool is_high_reuse = false;
-                //bool is_hub_node = true;
                 if (cachesim::instCount >= cachesim::WARMUP_INSTRUCTIONS) {
                     // Predict for data movement from L1D -> LLC
                     fill_packet->is_high_reuse = predictor->predict(eviction_packet);
@@ -592,7 +604,6 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
                 if (eviction_packet->blocks.size() > 0) {
                     predictor->update_eviction(eviction_packet);
-                    llc_eviction = true;
                 }
             } else {
                 break;
@@ -662,7 +673,7 @@ void access_single_level(std::vector<BaseCache*> &cache,
 }
 #endif
 
-void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
+void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
     while (num_iters > 0) {
         std::ifstream file(filename);
 
@@ -712,7 +723,7 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
     return;
 }
 
-void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
+void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
     while (num_iters > 0) {
         std::ifstream file(filename);
 
@@ -761,7 +772,8 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
     return;
 }
 
-void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
+void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
+    while (num_iters > 0) {
         champsim::tracereader trace(get_tracereader(filename, 0, false, false));
         while (!trace.eof()) {
             if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
@@ -797,4 +809,29 @@ void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename
             }
 #endif
         }
+        --num_iters;
+    }
+    return;
+}
+
+template<typename T>
+void Cache<T>::incr_psel() {
+    if (PSEL < cachesim::PSEL_MAX) {
+        PSEL++;
+    }
+}
+
+template<typename T>
+void Cache<T>::decr_psel() {
+    if (PSEL > 0) {
+        PSEL--;
+    }
+}
+
+template<typename T>
+void Cache<T>::breakdown(uint64_t block_size) {
+    if (is_broken_down == true)
+        return;
+
+    is_broken_down = true;
 }

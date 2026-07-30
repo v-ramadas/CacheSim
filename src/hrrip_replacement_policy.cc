@@ -1,7 +1,7 @@
 #include "hrrip_replacement_policy.h"
 #include <fmt/core.h>
 
-void HRRIP::init_counter(PacketPtr packet) {
+void HRRIP::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), low_priority.cbegin(), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x, bool is_low_priority) { 
             uint64_t cur_diff = (is_low_priority) ? std::min((uint64_t)1, _diff) : _diff;    
@@ -32,9 +32,9 @@ void HRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
         packet->degree, packet->l1_hits, old_counter_value, counter[way_idx]);
 }
 
-void HRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void HRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool was_accessed) {
     //auto packet_reuse_probability = packet->reuse_probability;
-    double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
+    //double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
     if (packet->serviced_from_llc > 0) {
         if (is_hub_node)
@@ -66,7 +66,7 @@ void HRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, 
         packet->degree, packet->l1_hits, counter[way_idx]);
 }
 
-uint64_t HRRIP::get_eviction_candidate(bool is_low_priority=false) {
+uint64_t HRRIP::get_eviction_candidate(bool /*is_low_priority=false*/) {
     
     // Lambda to encapsulate the comparison logic for reuse
     auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_priority=false) {
@@ -119,7 +119,7 @@ uint64_t HRRIP::get_eviction_candidate(bool is_low_priority=false) {
     return candidate_idx;
 }
 
-uint64_t HRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t HRRIP::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];
@@ -171,8 +171,8 @@ bool HRRIP::can_insert(PacketPtr packet, uint64_t idx) {
     if (packet->degree == 0) return false;
     else return true;
     //if (packet->serviced_from_llc == 0) return true;
-    auto was_accessed = ((packet->footprint >> idx)&0x1 == 0x1);
-    auto is_hub_node = (packet->degree > int(packet->avg_degree));
+    auto was_accessed = (((packet->footprint >> idx)&0x1) == 0x1);
+    auto is_hub_node = (packet->degree > uint64_t(packet->avg_degree));
     if (is_hub_node && was_accessed) return true;
     if (is_hub_node && !was_accessed) return false;
     else if (!packet->is_high_reuse) return false;

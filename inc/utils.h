@@ -10,21 +10,30 @@
 const uint64_t CACHELINE_SIZE = 64;
 
 namespace cachesim {
+    extern uint64_t instCount;
+    extern uint64_t prevInstCount;
+
+    extern uint64_t BLOCK_SIZE;
+
     extern bool DEBUG;
     extern bool L1_DEBUG;
     extern bool REPLACEMENT_POLICY_DEBUG;
     extern bool LLC_DEBUG;
     extern bool NO_ISO_AREA;
     extern bool GEN_STATS;
-    extern bool SET_DUELING;
     extern bool dropBlocks;
     extern bool useMemSignature;
     extern bool isoArea;
-    extern uint64_t instCount;
-    extern uint64_t prevInstCount;
     extern bool ENABLE_PREDICTOR;
     extern uint64_t DEBUG_INSTRUCTIONS;
     extern uint64_t WARMUP_INSTRUCTIONS;
+
+    extern bool SET_DUELING;
+    extern int NUM_DUELS;
+    extern uint64_t PSEL_MAX;
+    extern uint64_t PSEL_THRESHOLD;
+    extern uint64_t DUELING_PERIOD;
+
     extern PerformanceModel performanceModel;
 };
 
@@ -58,6 +67,9 @@ struct Packet {
         clear_pc();
         clear();
     }
+    
+    Packet(const Packet &packet) = default;
+     ~Packet() = default;
 
     void clear() {
         address = 0;

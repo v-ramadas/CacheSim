@@ -5,7 +5,7 @@
 //uint64_t Hawkeye::sampler_ways = 8;
 //uint64_t Hawkeye::samper_sets = (Hawkeye::sampled_cache_size/Hawkeye::sampler_ways);
 
-void Hawkeye::init_counter(PacketPtr packet) {
+void Hawkeye::init_counter(PacketPtr /*packet*/) {
 }
 
 void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
@@ -27,8 +27,8 @@ void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
                 unsigned int curr_timer = mytimer;
                 if(curr_timer < addr_history[sampler_set][sampler_tag].last_quanta)
                    curr_timer = curr_timer + TIMER_SIZE;
-                bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > OPTGEN_VECTOR_SIZE);
-                uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
+                //bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > OPTGEN_VECTOR_SIZE);
+                //uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
                 //and for prefetch hits, we train the last prefetch trigger PC
                 predictor->increment(addr_history[sampler_set][sampler_tag].PC);
                 //Some maintenance operations for OPTgen
@@ -60,7 +60,7 @@ void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
     }
 }
 
-void Hawkeye::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
     uint64_t paddr = (packet->address >> 6) << 6;
 
     //Ignore writebacks
@@ -144,7 +144,7 @@ void Hawkeye::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet
     }
 }
 
-uint64_t Hawkeye::get_eviction_candidate(bool is_low_priority = false) {
+uint64_t Hawkeye::get_eviction_candidate(bool /*is_low_priority = false*/) {
     // look for the maxRRPV line
     for (uint64_t idx = 0; idx < num_ways; idx++) {
         if (counter[idx] == maxRRPV)
@@ -177,7 +177,7 @@ uint64_t Hawkeye::get_eviction_candidate(bool is_low_priority = false) {
     return 0;
 }
 
-uint64_t Hawkeye::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t Hawkeye::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     return 0;
 }

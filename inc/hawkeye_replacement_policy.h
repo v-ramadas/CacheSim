@@ -18,7 +18,7 @@ struct AddrInfo {
     bool prefetched;
     uint32_t lru;
 
-    void init(unsigned int curr_quanta)
+    void init(unsigned int /*curr_quanta*/)
     {
         last_quanta = 0;
         PC = 0;
@@ -26,7 +26,7 @@ struct AddrInfo {
         lru = 0;
     }
 
-    void update(unsigned int curr_quanta, uint64_t _pc, bool prediction)
+    void update(unsigned int curr_quanta, uint64_t _pc, bool /*prediction*/)
     {
         last_quanta = curr_quanta;
         PC = _pc;
@@ -193,7 +193,7 @@ class Hawkeye : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet, uint64_t idx) { return true;}
+    bool can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) { return true;}
 
     void replace_addr_history_element(uint64_t sampler_set);
     void update_addr_history_lru(uint64_t sampler_set, uint64_t curr_lru);

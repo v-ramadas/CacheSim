@@ -16,7 +16,7 @@ void Set::set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed) {
     return;
 }
 
-void Set::fill_way(PacketPtr packet, uint64_t way_idx) {
+void Set::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
 void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
@@ -102,6 +102,21 @@ bool Set::try_hit(PacketPtr packet) {
         hits++;
     } else {
         cache->incr_partial_misses(packet->blocks.size() - way_idx_list.size());
+        switch(get_dueling_type()) {
+            case SetDuelingType::Leader64:
+                cache->decr_psel();
+                if (cachesim::DEBUG)
+                    fmt::print("decr psel {} set {} num_ways {} aligned_address {:#x} address {:#x} pc {:#x} size {} block_size {} num_hits {}\n", cache->get_psel(), set_idx, num_ways,  packet->aligned_address, packet->address, packet->pc, packet->size, block_size,  way_idx_list.size());
+                break;
+            case SetDuelingType::Leader8:
+                cache->incr_psel();
+                if (cachesim::DEBUG)
+                  fmt::print("incr psel {} set {} num_ways {} aligned_address {:#x} address {:#x} pc {:#x} size {} block_size {} num_hits {}\n", cache->get_psel(), set_idx, num_ways,  packet->aligned_address, packet->address, packet->pc, packet->size, block_size,  way_idx_list.size());
+                break;
+            default:
+                break;
+        }
+
     }
 
     return hit;
@@ -222,7 +237,6 @@ void Set::handle_evict(PacketPtr packet) {
             }
         }
 
-        auto previous_footprint = packet->footprint;
         for (uint64_t i = 0; i < block_size/8; ++i) {
             packet->footprint |= get_footprint(way_idx, i) << (i + num_blocks_evicted*(block_size/8));
             if (cachesim::DEBUG || cachesim::LLC_DEBUG)
@@ -245,8 +259,8 @@ void Set::handle_evict(PacketPtr packet) {
 
         invalidate_way(way_idx);
         num_blocks_evicted++;
-        cache->update_data_var_evictions(packet->pc,
-            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        //cache->update_data_var_evictions(packet->pc,
+        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
     }
 
@@ -266,15 +280,15 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         auto way_idx = std::distance(ways.begin(), try_hit);
         //serviced_from_llc[way_idx]++;
         inv_address = ways[way_idx];
-        auto previous_footprint = packet->footprint;
+        //auto previous_footprint = packet->footprint;
         packet->footprint |= (bitmask*get_footprint(way_idx, 0)) << (block_num*bits_per_block);
 
         fill_packet(packet, way_idx);
         invalidate_way(way_idx);
         set_footprint(way_idx, 0, false);
 
-        cache->update_data_var_invalidations(packet->pc,
-            count_footprint(packet->footprint)-count_footprint(previous_footprint));
+        //cache->update_data_var_invalidations(packet->pc,
+        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
         if (cachesim::DEBUG || cachesim::LLC_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
         }
@@ -286,4 +300,28 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     }
 }
 
+template<typename VecType>
+void Set::breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool incr) {
+    for (size_t i = prev_num_ways; i-- > 0; ) {
+        VecType val = vec[i];
+        size_t baseIdx = i * scale_factor;
+        for (size_t j = 0; j < scale_factor; ++j) {
+            if (incr)
+                vec[baseIdx + j] = val + (block_size/scale_factor)*j;
+            else
+                vec[baseIdx + j] = val;
+        }
+    }
+}
 
+void Set::set_breakdown(uint64_t new_block_size) {
+    assert(new_block_size < block_size);
+
+    uint64_t scale_factor = block_size/new_block_size;
+    uint64_t new_num_ways = num_ways*scale_factor;
+    ways.resize(new_num_ways);
+
+    breakdown(ways, num_ways, scale_factor, true);
+    num_ways = new_num_ways;
+    block_size = new_block_size;
+}

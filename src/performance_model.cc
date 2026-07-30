@@ -92,8 +92,8 @@ void PerformanceModel::printParams() {
     }
 }
 
-void PerformanceModel::processCPU(const uint64_t numInstructions) {
-    uint64_t progressCycles = 0;
+void PerformanceModel::processCPU(const uint64_t /*numInstructions*/) {
+    //uint64_t progressCycles = 0;
 
     //uint64_t num_decode_windows = (numInstructions + getParam("cpu_decode_width"))/getParam("cpu_decode_width");
     //progressCycles += getParam("cpu_decode_latency")*num_decode_windows;
@@ -114,7 +114,7 @@ void PerformanceModel::processCPU(const uint64_t numInstructions) {
 }
 
 
-void PerformanceModel::processL1D(uint64_t address, bool is_hit, bool is_fill) {
+void PerformanceModel::processL1D(uint64_t /*address*/, bool is_hit, bool is_fill) {
     if (is_fill) {
         numCycles += (getParam("l1d_latency")+1)/2;
     } else if (is_hit) {
@@ -124,7 +124,7 @@ void PerformanceModel::processL1D(uint64_t address, bool is_hit, bool is_fill) {
     }
 }
 
-void PerformanceModel::processLLC(uint64_t address, bool is_hit, bool is_fill) {
+void PerformanceModel::processLLC(uint64_t /*address*/, bool is_hit, bool is_fill) {
     if (is_fill) {
         numCycles += (getParam("llc_latency")+1)/2;
     } else if (is_hit) {

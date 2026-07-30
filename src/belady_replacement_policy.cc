@@ -1,24 +1,24 @@
 #include "belady_replacement_policy.h"
 #include <fmt/core.h>
 
-void Belady::init_counter(PacketPtr packet) {
+void Belady::init_counter(PacketPtr /*packet*/) {
 }
 
-void Belady::hit_update(PacketPtr packet, uint64_t way_idx) {
+void Belady::hit_update(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
-void Belady::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void Belady::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
     counter[way_idx] = packet->next_reuse;
 }
 
-uint64_t Belady::get_eviction_candidate(bool is_low_priority=false) {
+uint64_t Belady::get_eviction_candidate(bool /*is_low_priority=false*/) {
     auto way = std::max_element(counter.begin(), std::next(counter.begin(), num_ways));
     uint64_t way_idx = std::distance(counter.begin(), way);
     return way_idx;
 
 }
 
-uint64_t Belady::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t Belady::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto way = std::max_element(std::next(counter.begin(), num_ways), counter.end());
     uint64_t way_idx = std::distance(counter.begin(), way);

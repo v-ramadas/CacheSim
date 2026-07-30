@@ -1,7 +1,7 @@
 #include "prrip_replacement_policy.h"
 #include <fmt/core.h>
 
-void PRRIP::init_counter(PacketPtr packet) {
+void PRRIP::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), std::next(counter.cend()), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) { 
                 uint64_t val = x + _diff;
@@ -14,11 +14,11 @@ void PRRIP::init_counter(PacketPtr packet) {
 
 }
 
-void PRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
+void PRRIP::hit_update(PacketPtr /*packet*/, uint64_t way_idx) {
     counter[way_idx] = 0;
 }
 
-void PRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+void PRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool was_accessed) {
     double packet_reuse_probability = (double)(__builtin_popcountll(packet->footprint))/8.0d;
     if (packet->serviced_from_llc > 0) {
         if (packet->is_high_reuse) {
@@ -33,7 +33,7 @@ void PRRIP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, 
     }
 }
 
-uint64_t PRRIP::get_eviction_candidate(bool is_low_priority=false) {
+uint64_t PRRIP::get_eviction_candidate(bool /*is_low_priority=false*/) {
     
     // Lambda to encapsulate the comparison logic for reuse
     auto is_better_candidate = [&](uint64_t current_idx, uint64_t best_idx, bool compare_reuse=false) {
@@ -84,7 +84,7 @@ uint64_t PRRIP::get_eviction_candidate(bool is_low_priority=false) {
     return candidate_idx;
 }
 
-uint64_t PRRIP::get_reserved_eviction_candidate(bool is_low_priority = false) {
+uint64_t PRRIP::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
     assert(reserved_ways != 0);
     auto candidate_idx = 0;
     auto candidate = counter[candidate_idx];

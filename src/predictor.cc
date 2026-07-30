@@ -27,12 +27,12 @@ bool SparsityPredictor::predict(PacketPtr packet) {
     }
 }
 
-bool SparsityPredictor::predict_footprint_basic(PacketPtr packet, uint64_t signature) {
+bool SparsityPredictor::predict_footprint_basic(PacketPtr packet, uint64_t /*signature*/) {
     if (packet->footprint == 0xff) return true;
     else return false;
 }
 
-bool SparsityPredictor::predict_reuse_probability(PacketPtr packet, uint64_t signature) {
+bool SparsityPredictor::predict_reuse_probability(PacketPtr /*packet*/, uint64_t signature) {
     double reuse_ratio = history[signature]->get_reuse_probability();
 
     double logSum = 0.0;
@@ -116,7 +116,7 @@ void SparsityPredictor::update_access(PacketPtr packet) {
     auto signature_accesses = history[signature]->accesses;
     auto old_footprint = history[signature]->footprint;
     auto delta_access = double(accesses - history[signature]->last_accessed);
-    auto mem_region = align_address(packet->address, CACHELINE_SIZE);
+    //auto mem_region = align_address(packet->address, CACHELINE_SIZE);
     if (history[signature]->last_accessed == 0) {
         history[signature]->reuse_distance = delta_access/16.0;
     } else if (history[signature]->reuse_distance <= delta_access) {
@@ -236,11 +236,11 @@ double SparsityPredictor::get_reuse_probability(PacketPtr packet) {
 
 
     double p_less = 0.0d, p_equal = 0.0d, p_greater = 0.0d;
-    for (auto idx = 0; idx < history[signature]->footprint_stats.size(); idx++) {
+    for (auto idx = 0ULL; idx < history[signature]->footprint_stats.size(); idx++) {
         auto footprint_count = history[signature]->footprint_stats[idx];
-        if (idx < footprint-1) {
+        if (idx < uint64_t(footprint-1)) {
             p_less += footprint_count; 
-        } else if (idx == footprint-1) {
+        } else if (idx == uint64_t(footprint-1)) {
             p_equal = footprint_count;
         } else {
             p_greater += footprint_count;
