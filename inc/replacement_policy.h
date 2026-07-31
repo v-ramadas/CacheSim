@@ -32,6 +32,8 @@ class BasePolicy {
     virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;
     virtual uint64_t get_reserved_ways() = 0;
     virtual bool can_insert(PacketPtr packet, uint64_t idx) = 0;
+    virtual void set_breakdown(uint64_t old_block_size, uint64_t new_block_size) = 0;
+    virtual void set_contract(uint64_t way_idx, uint64_t size) = 0;
 };
 
 #endif

@@ -211,6 +211,9 @@ class Hawkeye : public BasePolicy {
         return (bits(set_idx, 0 , 6) == bits(set_idx, ((uint64_t)log2(/*num_sets*/ 1024) - 6), 6));
     }
 
+    void set_breakdown(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+
+    void set_contract(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
 };
 
 #endif

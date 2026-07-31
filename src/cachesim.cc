@@ -15,7 +15,7 @@ Cache<T>::Cache():
    PSEL = 0;
    num_ways = 16;
    for (uint64_t i = 0; i < num_sets; ++i) {
-       sets[i] = new T(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
+       sets[i] = std::make_unique<T>(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
    }
    partial_misses.resize(CACHELINE_SIZE/64+1, 0);
 }
@@ -41,20 +41,20 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
     for (uint64_t i = 0; i < num_sets; ++i) {
         if (is_sectored) {
             assert(level == 0);
-            sets[i] = new T(this, num_ways, block_size, i, repl_policy, level);
+            sets[i] = std::make_unique<T>(this, num_ways, block_size, i, repl_policy, level);
         } else {
             if (cachesim::SET_DUELING) { 
                 if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 0)) {
-                    sets[i] = new T(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
+                    sets[i] = std::make_unique<T>(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
                     sets[i]->set_dueling_type(SetDuelingType::Leader64);
                 } else if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 1)) {
-                    sets[i] = new T(this, iso_area_num_ways, 8, i, repl_policy, level);
+                    sets[i] = std::make_unique<T>(this, iso_area_num_ways, 8, i, repl_policy, level);
                     sets[i]->set_dueling_type(SetDuelingType::Leader8);
                 } else {
-                    sets[i] = new T(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
+                    sets[i] = std::make_unique<T>(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
                 }
             } else {
-                sets[i] = new T(this, iso_area_num_ways, block_size, i, repl_policy, level);
+                sets[i] = std::make_unique<T>(this, iso_area_num_ways, block_size, i, repl_policy, level);
             }
 
         }
@@ -832,6 +832,12 @@ template<typename T>
 void Cache<T>::breakdown(uint64_t block_size) {
     if (is_broken_down == true)
         return;
-
+    fmt::print("Breaking down at {}\n", cachesim::instCount);
+    for (uint64_t i = 0; i < num_sets; i++) {
+        if (sets[i]->get_dueling_type() == SetDuelingType::Follower) {
+            sets[i]->set_breakdown(block_size);    
+        }
+    }
+    fmt::print("Breakdown done\n");
     is_broken_down = true;
 }

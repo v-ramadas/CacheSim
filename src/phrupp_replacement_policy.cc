@@ -88,3 +88,42 @@ void PHRUpp::repartition_ways(uint64_t num_ways_to_reserve) {
 bool PHRUpp::can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) {
     return true;
 }
+
+template<typename VecType>
+void PHRUpp::breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool /*incr*/) {
+    vec.resize(prev_num_ways*scale_factor);
+    for (size_t i = prev_num_ways; i-- > 0; ) {
+        VecType val = vec[i];
+        size_t baseIdx = i * scale_factor;
+        for (size_t j = 0; j < scale_factor; ++j) {
+            vec[baseIdx + j] = val;
+        }
+    }
+}
+
+void PHRUpp::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
+    assert(old_block_size != new_block_size);
+    uint64_t scale_factor = old_block_size/new_block_size;
+    uint64_t new_num_ways = num_ways*scale_factor;
+
+    // First, resize all the vectors to break down their contents
+    breakdown(counter, num_ways, scale_factor, false);
+    breakdown(low_priority, num_ways, scale_factor, false);
+
+    num_ways = new_num_ways;
+}
+
+template<typename VecType>
+void PHRUpp::contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks) {
+    assert(way_idx + num_blocks <= vec.size());
+    auto start_it = vec.begin() + way_idx;
+    auto end_it = vec.begin() + (way_idx + num_blocks);
+    vec.erase(start_it, end_it);
+}
+
+void PHRUpp::set_contract(uint64_t way_idx, uint64_t size) {
+    // First, resize all the vectors to break down their contents
+    contract(counter, way_idx, size);
+    contract(low_priority, way_idx, size);
+    num_ways -= size;
+}

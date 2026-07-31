@@ -31,7 +31,7 @@ class Set {
     BaseCache* cache;
     uint64_t num_ways;
     std::vector<uint64_t> ways;
-    BasePolicy* repl_counter;
+    std::unique_ptr<BasePolicy> repl_counter;
     std::vector<bool> valid;
     std::vector<uint64_t> serviced_from_llc;
     std::vector<bool> is_hub_node;
@@ -67,8 +67,9 @@ class Set {
     }
     template<typename VecType>
     void breakdown(std::vector<VecType>& vec, uint64_t block_size, uint64_t scale_factor, bool incr);
+    template<typename VecType>
+    void contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks);
     void set_breakdown(uint64_t block_size);
-
 
     public:
     Set() {}
@@ -83,7 +84,7 @@ class Set {
         bits_per_block = block_size/8;
         bitmask = (1ULL << bits_per_block) - 1;
         ways.resize(num_ways, UINT64_MAX);
-        repl_counter = create_policy(policy, set_idx, num_ways, level);
+        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         serviced_from_llc.resize(num_ways, 0);
@@ -99,7 +100,6 @@ class Set {
     }
 
     ~Set() {
-        delete repl_counter;
     }
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
@@ -123,7 +123,7 @@ class Set {
     bool get_valid(uint64_t idx) const {return valid[idx];}
     uint64_t get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
-    BasePolicy* get_replacement_policy() const { return repl_counter; }
+    BasePolicy* get_replacement_policy() const { return repl_counter.get(); }
 
     bool is_eviction_needed(uint64_t num_ways) const {
         return (get_num_invalid() < num_ways);
@@ -203,7 +203,7 @@ class SectoredSet: public Set {
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
         way_sectors.assign(num_ways, Sector(num_blocks));
-        repl_counter = create_policy(policy, set_idx, num_ways, level);
+        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         serviced_from_llc.resize(num_ways, 0);
@@ -220,7 +220,6 @@ class SectoredSet: public Set {
     }
 
     ~SectoredSet() {
-        delete repl_counter;
     }
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
@@ -298,6 +297,7 @@ class BaseCache {
     virtual uint64_t get_evictions() const = 0; 
     virtual uint64_t get_num_blocks_used() const = 0; 
     virtual uint64_t get_psel() const = 0;
+    virtual uint64_t get_num_sets() const = 0;
     virtual bool should_breakdown() const = 0;
     virtual void incr_partial_misses(uint64_t num_misses) = 0;
     virtual std::vector<uint64_t> get_partial_misses() const = 0; 
@@ -313,7 +313,7 @@ class Cache: public BaseCache {
     uint64_t num_ways;
     uint64_t total_accesses = 0;
     uint64_t level = 0;
-    std::unordered_map<uint64_t, T*> sets;
+    std::unordered_map<uint64_t, std::unique_ptr<T>> sets;
     const bool is_sectored;
     const InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     //Stats
@@ -520,6 +520,7 @@ class Cache: public BaseCache {
     uint64_t get_invalidations() const {return invalidations; }
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
     uint64_t get_psel() const { return PSEL; }
+    uint64_t get_num_sets() const { return num_sets;}
     bool should_breakdown() const {
         return (cachesim::instCount > cachesim::DUELING_PERIOD && get_psel() < cachesim::PSEL_THRESHOLD);
     }

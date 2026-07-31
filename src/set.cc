@@ -61,9 +61,9 @@ bool Set::try_hit(PacketPtr packet) {
         hit &= block_hit;
 
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-            fmt::print("{} level {} hit {} align_address {:#x} address {:#x} set {} way {} pc {} size {} degree {} avg_degree {:4f} is_hub_node {} repl_counter {}\n",
-                    __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, aligned_address, set_idx, way_idx, pc[way_idx],
-                    packet->blocks.size(), packet->degree, packet->avg_degree, (packet->degree > uint64_t(packet->avg_degree)), repl_counter->get_counter_value(way_idx));
+            fmt::print("{} level {} hit {} align_address {:#x} address {:#x} set {} way {} pc {} size {} degree {} avg_degree {:4f} is_hub_node {}\n",
+                    __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, aligned_address, set_idx, way_idx, packet->pc,
+                    packet->blocks.size(), packet->degree, packet->avg_degree, (packet->degree > uint64_t(packet->avg_degree)));
         if (block_hit) {
             if (repl_counter->get_counter_value(way_idx) < hit_counter) hit_counter = repl_counter->get_counter_value(way_idx);
             way_idx_list.push_back(way_idx);
@@ -198,7 +198,6 @@ void Set::handle_evict(PacketPtr packet) {
         return;
     }
 
-
     num_blocks_to_evict -= num_invalid_blocks;
     while (num_blocks_evicted < num_blocks_to_evict) {
         uint64_t way_idx = num_ways;
@@ -302,26 +301,96 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
 
 template<typename VecType>
 void Set::breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool incr) {
+    vec.resize(prev_num_ways*scale_factor);
     for (size_t i = prev_num_ways; i-- > 0; ) {
         VecType val = vec[i];
         size_t baseIdx = i * scale_factor;
         for (size_t j = 0; j < scale_factor; ++j) {
-            if (incr)
-                vec[baseIdx + j] = val + (block_size/scale_factor)*j;
-            else
+            if (incr) {
+                //Need the following if condition to remove a compile time -Wbool-compare warning
+                if constexpr (std::is_same_v<VecType, bool>) {
+                    vec[baseIdx + j] = val;
+                } else {
+                    if (val == UINT64_MAX) {
+                        vec[baseIdx + j] = val;
+                    }
+                    else {
+                        vec[baseIdx + j] = val + (block_size/scale_factor)*j;
+                    }
+                }
+            } else {
                 vec[baseIdx + j] = val;
+            }
         }
     }
+}
+
+template<typename VecType>
+void Set::contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks) {
+    assert(way_idx + num_blocks <= vec.size());
+    auto start_it = vec.begin() + way_idx;
+    auto end_it = vec.begin() + (way_idx + num_blocks);
+    vec.erase(start_it, end_it);
 }
 
 void Set::set_breakdown(uint64_t new_block_size) {
     assert(new_block_size < block_size);
 
+    // Second, evict ways if iso area set needs to convert ways to tags
     uint64_t scale_factor = block_size/new_block_size;
     uint64_t new_num_ways = num_ways*scale_factor;
-    ways.resize(new_num_ways);
+    auto iso_area_new_num_ways = get_iso_area_cache(cache->get_num_sets(), num_ways, new_block_size);
+    auto num_blocks_to_evict = std::ceil((new_num_ways - iso_area_new_num_ways)/scale_factor);
 
+    while (num_blocks_to_evict) {
+        uint64_t way_idx = num_ways;
+        way_idx = repl_counter->get_eviction_candidate(false);
+
+        if (dirty[way_idx]) {
+            dirty[way_idx] = false;
+        }
+        repl_counter->evict(way_idx);
+        if (iso_area_new_num_ways != new_num_ways) {
+            contract(ways, way_idx, 1);
+            contract(valid, way_idx, 1);
+            contract(serviced_from_llc, way_idx, 1);
+            contract(is_hub_node, way_idx, 1);
+            contract(distance_counts, way_idx, 1);
+            contract(dirty, way_idx, 1);
+            contract(footprint, way_idx, 1);
+            contract(pc, way_idx, 1);
+            contract(next_reuse, way_idx, 1);
+            contract(way_hits, way_idx, 1);
+            contract(degree, way_idx, 1);
+            contract(avg_degree, way_idx, 1);
+            get_replacement_policy()->set_contract(way_idx, 1);
+            num_ways--;
+        }
+
+        num_blocks_to_evict --;
+    }
+    assert(num_ways*scale_factor == iso_area_new_num_ways);
+    // First, resize all the vectors and break down their contents
     breakdown(ways, num_ways, scale_factor, true);
-    num_ways = new_num_ways;
+    breakdown(valid, num_ways, scale_factor, false);
+    breakdown(serviced_from_llc, num_ways, scale_factor, false);
+    breakdown(is_hub_node, num_ways, scale_factor, false);
+    breakdown(distance_counts, num_ways, scale_factor, false);
+    breakdown(dirty, num_ways, scale_factor, false);
+    breakdown(footprint, num_ways, scale_factor, false);
+    breakdown(pc, num_ways, scale_factor, false);
+    breakdown(next_reuse, num_ways, scale_factor, false);
+    breakdown(way_hits, num_ways, scale_factor, false);
+    breakdown(degree, num_ways, scale_factor, false);
+    breakdown(avg_degree, num_ways, scale_factor, false);
+
+
+    get_replacement_policy()->set_breakdown(block_size, new_block_size);
+
+    num_ways = iso_area_new_num_ways;
     block_size = new_block_size;
+    num_blocks = CACHELINE_SIZE/block_size;
+    num_lines = num_ways/num_blocks;
+    bits_per_block = block_size/8;
+    bitmask = (1ULL << bits_per_block) - 1;
 }

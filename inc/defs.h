@@ -145,15 +145,15 @@ inline float get_total_cache_size(uint64_t num_sets, uint64_t num_ways, uint64_t
 
 inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, uint64_t block_size) {
     // 1. Calculate the budget baseline using the 64-byte block cache
-    float target_budget_bytes = get_total_cache_size(num_sets, reference_ways, 64, true);
+    float target_budget_bytes = get_total_cache_size(num_sets, reference_ways, 64, false);
     
-    fmt::print("Target Budget ({} sets, {} ways): {:4f} MB\n",
-            num_sets, reference_ways, bytes_to_mb(target_budget_bytes));
+    //fmt::print("Target Budget ({} sets, {} ways): {:4f} MB\n",
+    //        num_sets, reference_ways, bytes_to_mb(target_budget_bytes));
 
     // 2. Incrementally search for the highest number of ways for the 8-byte block cache
     if (block_size != CACHELINE_SIZE) {
         if (!cachesim::isoArea) {
-            get_total_cache_size(num_sets, reference_ways * (CACHELINE_SIZE/block_size), block_size, true);
+            get_total_cache_size(num_sets, reference_ways * (CACHELINE_SIZE/block_size), block_size, false);
             return (reference_ways * (CACHELINE_SIZE/block_size));
         }
         uint64_t current_ways = 1;
@@ -171,9 +171,9 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
         }
 
         current_ways = ((current_ways + 8) / 8) * 8;
-        new_size = get_total_cache_size(num_sets, current_ways, block_size, true);
-        fmt::print("New Budget ({} sets, {} ways): {:4f} MB\n",
-                num_sets, current_ways, bytes_to_mb(new_size));
+        new_size = get_total_cache_size(num_sets, current_ways, block_size, false);
+        //fmt::print("New Budget ({} sets, {} ways): {:4f} MB\n",
+        //        num_sets, current_ways, bytes_to_mb(new_size));
 
         return current_ways;
     } else {

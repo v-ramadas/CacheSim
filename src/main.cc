@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     app.add_option("--num-duels", cachesim::NUM_DUELS, "Max Value of PSEL");
     app.add_option("--psel-max", cachesim::PSEL_MAX, "Max Value of PSEL");
     app.add_option("--psel-threshold", cachesim::PSEL_THRESHOLD, "PSEL Threshold value");
-    app.add_option("--dueling-instructions", cachesim::DUELING_PERIOD, "Warmup instructions for set dueling");
+    app.add_option("--dueling-period", cachesim::DUELING_PERIOD, "Warmup instructions for set dueling");
 
 
     CLI11_PARSE(app, argc, argv);

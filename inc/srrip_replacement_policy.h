@@ -47,6 +47,10 @@ class SRRIP : public BasePolicy {
     uint64_t get_reserved_ways() {return reserved_ways;}
 
     bool can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) { return true;}
+
+    void set_breakdown(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+
+    void set_contract(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
 };
 
 #endif
