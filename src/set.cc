@@ -60,10 +60,10 @@ bool Set::try_hit(PacketPtr packet) {
         bool block_hit = (way != ways.end());// && (valid[way_idx] == true);
         hit &= block_hit;
 
-        if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-            fmt::print("{} level {} hit {} align_address {:#x} address {:#x} set {} way {} pc {} size {} degree {} avg_degree {:4f} is_hub_node {}\n",
-                    __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, aligned_address, set_idx, way_idx, packet->pc,
-                    packet->blocks.size(), packet->degree, packet->avg_degree, (packet->degree > uint64_t(packet->avg_degree)));
+        //if (cachesim::DEBUG || cachesim::LLC_DEBUG)
+            //fmt::print("{} level {} hit {} align_address {:#x} address {:#x} set {} way {} pc {} size {} degree {} avg_degree {:4f} is_hub_node {}\n",
+            //        __func__, level, (hit) ? "HIT" : "MISS", packet->aligned_address, aligned_address, set_idx, way_idx, packet->pc,
+            //        packet->blocks.size(), packet->degree, packet->avg_degree, (packet->degree > uint64_t(packet->avg_degree)));
         if (block_hit) {
             if (repl_counter->get_counter_value(way_idx) < hit_counter) hit_counter = repl_counter->get_counter_value(way_idx);
             way_idx_list.push_back(way_idx);
@@ -116,7 +116,6 @@ bool Set::try_hit(PacketPtr packet) {
             default:
                 break;
         }
-
     }
 
     return hit;
@@ -173,8 +172,8 @@ void Set::handle_fill(PacketPtr packet) {
         }
 
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-            fmt::print("Level {} Inserting address {:#x} @ set {} way {} blk_size {} packet size {} total ways {} valid {} repl_counter {} pc {:#x} block_idx {} was_accessed {} set_footprint {} serviced_from_llc {} packet footprint {:#x} degree {} avg_degree {:4f} is_hub_node {}\n",
-                    level, ways[way_idx], set_idx, way_idx, block_size, packet->size, num_ways, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], block_idx, was_accessed, get_footprint(way_idx, 0), serviced_from_llc[way_idx],
+            fmt::print("{}: Level {} Inserting address {:#x} @ set {} way {} blk_size {} packet size {} total ways {} valid {} repl_counter {} pc {:#x} block_idx {} was_accessed {} set_footprint {} serviced_from_llc {} packet footprint {:#x} degree {} avg_degree {:4f} is_hub_node {}\n",
+                    cachesim::instCount, level, ways[way_idx], set_idx, way_idx, block_size, packet->size, num_ways, (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx), pc[way_idx], block_idx, was_accessed, get_footprint(way_idx, 0), serviced_from_llc[way_idx],
                     packet->footprint, packet->degree, packet->avg_degree, packet->degree > uint64_t(packet->avg_degree));
 
         block_idx++;
@@ -189,12 +188,13 @@ void Set::handle_evict(PacketPtr packet) {
     auto num_invalid_blocks = get_num_invalid();
     uint64_t num_blocks_to_evict = packet->size/block_size;
     if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-        fmt::print("Level {} Num invalid blocks {} Evicted blocks {} packet size {}\n",
-            level, num_invalid_blocks, num_blocks_evicted, packet->size);
+        fmt::print("{}: Level {} Num invalid blocks {} Evicted blocks {} packet size {}\n",
+            cachesim::instCount, level, num_invalid_blocks, num_blocks_evicted, packet->size);
 
     if (!is_eviction_needed(num_blocks_to_evict)) {
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-            fmt::print("Level {} No eviction needed for set {} because there are {} invalid ways\n", level, set_idx, std::count(valid.begin(), valid.end(), false));
+            fmt::print("{}: Level {} No eviction needed for set {} because there are {} invalid ways\n", 
+                    cachesim::instCount, level, set_idx, std::count(valid.begin(), valid.end(), false));
         return;
     }
 
@@ -239,8 +239,8 @@ void Set::handle_evict(PacketPtr packet) {
         for (uint64_t i = 0; i < block_size/8; ++i) {
             packet->footprint |= get_footprint(way_idx, i) << (i + num_blocks_evicted*(block_size/8));
             if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-                fmt::print("Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} num_blocks_to_evict {} packet footprint {:#x} word_idx {} get_footprint {} serviced_from_llc {} num_blocks_evicted {} degree {} avg_degree {:4f} repl_counter {}\n",
-                    level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
+                fmt::print("{}: Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} num_blocks_to_evict {} packet footprint {:#x} word_idx {} get_footprint {} serviced_from_llc {} num_blocks_evicted {} degree {} avg_degree {:4f} repl_counter {}\n",
+                    cachesim::instCount, level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
                     pc[way_idx], num_blocks_to_evict, packet->footprint,
                     i, get_footprint(way_idx, i), serviced_from_llc[way_idx], num_blocks_evicted,
                     degree[way_idx], avg_degree[way_idx], repl_counter->get_counter_value(way_idx));
@@ -266,8 +266,8 @@ void Set::handle_evict(PacketPtr packet) {
 
 
     if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-        fmt::print("Level {} Num invalid blocks {} evicted blocks {} evicted line footprint {:#x}\n",
-            level, num_invalid_blocks, num_blocks_evicted, packet->footprint);
+        fmt::print("{}: Level {} Num invalid blocks {} evicted blocks {} evicted line footprint {:#x}\n",
+            cachesim::instCount, level, num_invalid_blocks, num_blocks_evicted, packet->footprint);
 
     return;
 }
@@ -289,7 +289,8 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         //cache->update_data_var_invalidations(packet->pc,
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
         if (cachesim::DEBUG || cachesim::LLC_DEBUG) {
-            fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint);
+            fmt::print("{}: Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", 
+                    cachesim::instCount, level, packet->address, set_idx, way_idx, packet->footprint);
         }
         packet->blocks.push_back(inv_address);
     } else {
@@ -342,10 +343,50 @@ void Set::set_breakdown(uint64_t new_block_size) {
     auto iso_area_new_num_ways = get_iso_area_cache(cache->get_num_sets(), num_ways, new_block_size);
     auto num_blocks_to_evict = std::ceil((new_num_ways - iso_area_new_num_ways)/scale_factor);
 
+    
+    //for (int way_idx = 0; way_idx < num_ways; way_idx++) {
+    //    fmt::print("Set Contents. set {} way {} before breakdown. addr {:#x} repl_counter {} next_reuse {} degree {} avg_degree {:4f}\n",
+    //            set_idx, way_idx, ways[way_idx], repl_counter->get_counter_value(way_idx), next_reuse[way_idx], degree[way_idx], avg_degree[way_idx]);
+    //}
+#if 0
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
+        repl_counter->evict(way_idx);
+        ways[way_idx] = UINT64_MAX;
+        valid[way_idx] = false;
+        serviced_from_llc[way_idx] = 0;
+        is_hub_node[way_idx] = false;
+        distance_counts[way_idx] = 0;
+        dirty[way_idx] = false;
+        footprint[way_idx] = 0;
+        pc[way_idx] = UINT64_MAX;
+        next_reuse[way_idx] = 0;
+        way_hits[way_idx] = 0;
+        degree[way_idx] = 0;
+        avg_degree[way_idx] = 0;
+    }
+#endif
     while (num_blocks_to_evict) {
+#if 1
         uint64_t way_idx = num_ways;
-        way_idx = repl_counter->get_eviction_candidate(false);
-
+        auto way = std::find(valid.begin(), valid.end(), false);
+        if (way != valid.end()) {
+            way_idx = std::distance(valid.begin(), way);
+        } else {
+            way_idx = repl_counter->get_eviction_candidate(false);
+        }
+        way_idx = std::distance(degree.begin(), std::min(degree.begin(), degree.end()));
+        fmt::print("Evicting set {} way {} during breakdown. addr {:#x} repl_counter {} next_reuse {} degree {} avg_degree {:4f}\n",
+                set_idx, way_idx, ways[way_idx], repl_counter->get_counter_value(way_idx), next_reuse[way_idx], degree[way_idx], avg_degree[way_idx]);
+#endif
+#if 0
+        uint64_t way_idx = num_ways;
+        auto way = std::find(degree.begin(), degree.end(), 0);
+        if (way != degree.end()) {
+            way_idx = std::distance(degree.begin(), way);
+        } else {
+            way_idx = std::distance(degree.begin(), std::min_element(degree.begin(), degree.end()));
+        }
+#endif
         if (dirty[way_idx]) {
             dirty[way_idx] = false;
         }
@@ -383,11 +424,15 @@ void Set::set_breakdown(uint64_t new_block_size) {
     breakdown(way_hits, num_ways, scale_factor, false);
     breakdown(degree, num_ways, scale_factor, false);
     breakdown(avg_degree, num_ways, scale_factor, false);
-
-
+    num_ways = iso_area_new_num_ways;
     get_replacement_policy()->set_breakdown(block_size, new_block_size);
 
-    num_ways = iso_area_new_num_ways;
+//    for (int way_idx = 0; way_idx < num_ways; way_idx++) {
+//        fmt::print("Set Contents. set {} way {} after breakdown. addr {:#x} repl_counter {} next_reuse {} degree {} avg_degree {:4f}\n",
+//                set_idx, way_idx, ways[way_idx], repl_counter->get_counter_value(way_idx), next_reuse[way_idx], degree[way_idx], avg_degree[way_idx]);
+//
+//    }
+
     block_size = new_block_size;
     num_blocks = CACHELINE_SIZE/block_size;
     num_lines = num_ways/num_blocks;

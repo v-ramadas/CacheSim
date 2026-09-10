@@ -4,6 +4,8 @@
 #include "performance_model.h"
 #include "msl/bits.h"
 #include <cassert>
+#include <random>
+#include <algorithm>
 
 template<typename T>
 Cache<T>::Cache():
@@ -29,7 +31,7 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
         is_sectored(is_sectored),
         insertion_policy(policy)
 {
-    PSEL = 0;
+    PSEL = cachesim::PSEL_MAX;
     auto iso_area_num_ways = get_iso_area_cache(num_sets, num_ways, block_size);
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
@@ -37,27 +39,53 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
         num_ways = num_ways;
     }
 
-    uint64_t num_set_chunks = num_sets/(2*cachesim::NUM_DUELS);
-    for (uint64_t i = 0; i < num_sets; ++i) {
-        if (is_sectored) {
+    //uint64_t num_set_chunks = num_sets/(2*cachesim::NUM_DUELS);
+
+    if (is_sectored) {
+        for (uint64_t i = 0; i < num_sets; ++i) {
             assert(level == 0);
             sets[i] = std::make_unique<T>(this, num_ways, block_size, i, repl_policy, level);
-        } else {
-            if (cachesim::SET_DUELING) { 
-                if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 0)) {
+        }
+    } else {
+        if (cachesim::SET_DUELING) { 
+            uint64_t num_leaders = 2*cachesim::NUM_DUELS;
+            uint64_t half_leaders = num_leaders/2;
+
+            std::vector<uint64_t> indices(num_sets);
+            std::vector<bool> is_leader64(num_sets, false);
+            std::vector<bool> is_leader8(num_sets, false);
+
+            for (uint64_t i =0; i < num_sets; ++i) indices[i] = i;
+            std::mt19937 rng(1337);
+            std::shuffle(indices.begin(), indices.end(), rng);
+            for (uint64_t i = 0; i < num_leaders; i++) {
+                uint64_t idx = indices[i];
+                if (i < half_leaders) {
+                    is_leader64[idx] = true;
+                } else {
+                    is_leader8[idx] = true;
+                }
+            }
+
+            for (uint64_t i = 0; i < num_sets; i++) {
+                //if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 0)) {
+                if (is_leader64[i]) {
                     sets[i] = std::make_unique<T>(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
                     sets[i]->set_dueling_type(SetDuelingType::Leader64);
-                } else if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 1)) {
+                //} else if ((i%num_set_chunks == 0) && (((i/num_set_chunks)%2) == 1)) {
+                } else if (is_leader8[i]) {
                     sets[i] = std::make_unique<T>(this, iso_area_num_ways, 8, i, repl_policy, level);
                     sets[i]->set_dueling_type(SetDuelingType::Leader8);
                 } else {
                     sets[i] = std::make_unique<T>(this, num_ways, CACHELINE_SIZE, i, repl_policy, level);
                 }
-            } else {
+            }
+        } else {
+            for (uint64_t i = 0; i < num_sets; ++i) {
                 sets[i] = std::make_unique<T>(this, iso_area_num_ways, block_size, i, repl_policy, level);
             }
-
         }
+
     }
 
     partial_misses.resize(CACHELINE_SIZE/block_size+1, 0);
@@ -224,6 +252,13 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         else
             data_var_misses[packet->pc]++;
     }
+
+//    if (!is_sectored && cachesim::instCount % 500000 == 0) {
+//        fmt::print("Inst {} MPKI {:4f}\n",
+//                cachesim::instCount, (((float)(get_misses()))/cachesim::instCount)*1000);
+//
+//    }
+
     return hit;
 }
 
@@ -691,9 +726,13 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
             float avg_degree = 0.0f;
             int parsed_count = 0;
             char action[16];
-            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-                if (cachesim::instCount > cachesim::DEBUG_INSTRUCTIONS) {
+            if (cachesim::DEBUG_ALL || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
+
+                if (cachesim::instCount >  cachesim::END_DEBUG) {
                     break;
+                }
+                if (cachesim::instCount >= cachesim::START_DEBUG) {
+                    cachesim::DEBUG = true;
                 }
             }
 
@@ -741,9 +780,13 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
             float avg_degree = 0.0f;
             int parsed_count = 0;
             char action[16];
-            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-                if (cachesim::instCount > cachesim::DEBUG_INSTRUCTIONS) {
+            if (cachesim::DEBUG_ALL || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
+
+                if (cachesim::instCount >  cachesim::END_DEBUG) {
                     break;
+                }
+                if (cachesim::instCount >= cachesim::START_DEBUG) {
+                    cachesim::DEBUG = true;
                 }
             }
 
@@ -832,7 +875,8 @@ template<typename T>
 void Cache<T>::breakdown(uint64_t block_size) {
     if (is_broken_down == true)
         return;
-    fmt::print("Breaking down at {}\n", cachesim::instCount);
+    fmt::print("Breaking down at {}. MPKI {:4f}\n", cachesim::instCount, (((float)(get_misses()))/cachesim::instCount)*1000);
+;
     for (uint64_t i = 0; i < num_sets; i++) {
         if (sets[i]->get_dueling_type() == SetDuelingType::Follower) {
             sets[i]->set_breakdown(block_size);    

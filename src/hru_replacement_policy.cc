@@ -164,6 +164,7 @@ void HRU::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
     breakdown(low_priority, num_ways, scale_factor, false);
 
     num_ways = new_num_ways;
+    lru_counter = mru_counter;
 }
 
 template<typename VecType>
