@@ -6,6 +6,7 @@ uint64_t cachesim::prevInstCount = 0;
 uint64_t cachesim::BLOCK_SIZE = CACHELINE_SIZE;
 
 bool cachesim::DEBUG = false;
+bool cachesim::DEBUG_ALL = false;
 bool cachesim::L1_DEBUG = false;
 bool cachesim::LLC_DEBUG = false;
 bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
@@ -17,14 +18,15 @@ uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
 bool cachesim::dropBlocks = false;
 bool cachesim::useMemSignature = false;
 bool cachesim::isoArea = false;
-uint64_t cachesim::DEBUG_INSTRUCTIONS = 10000000;
+uint64_t cachesim::START_DEBUG = 0;
+uint64_t cachesim::END_DEBUG = 10000000;
 
 bool performance::DETAILED_DRAM = false;
 
 bool cachesim::SET_DUELING = false;
 int cachesim::NUM_DUELS = 1;
-uint64_t cachesim::PSEL_MAX = 32;
-uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 1;
+uint64_t cachesim::PSEL_MAX = 64;
+uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 2;
 uint64_t cachesim::DUELING_PERIOD = 10000000;
 
 PerformanceModel cachesim::performanceModel;
@@ -76,11 +78,13 @@ int main(int argc, char** argv) {
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
     }));
-    app.add_flag("--debug", cachesim::DEBUG, "Enable debug mode");
+    app.add_flag("--debug", cachesim::DEBUG_ALL, "Enable debug mode");
     app.add_flag("--debug-llc", cachesim::LLC_DEBUG, "Enable debug mode");
     app.add_flag("--debug-l1", cachesim::L1_DEBUG, "Enable debug mode");
     app.add_flag("--debug-replacement-policy", cachesim::REPLACEMENT_POLICY_DEBUG, "Enable debug mode");
     app.add_flag("--no-iso-area", cachesim::NO_ISO_AREA, "Disable iso-area mode");
+    app.add_option("--debug-start", cachesim::START_DEBUG, "Start debugging here");
+    app.add_option("--debug-end", cachesim::END_DEBUG, "End debugging here");
     app.add_option("--iters", num_iters, "Number of iterations");
     app.add_option("--warmup-instructions", cachesim::WARMUP_INSTRUCTIONS, "Warmup instruction count");
     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");

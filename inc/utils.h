@@ -16,6 +16,7 @@ namespace cachesim {
     extern uint64_t BLOCK_SIZE;
 
     extern bool DEBUG;
+    extern bool DEBUG_ALL;
     extern bool L1_DEBUG;
     extern bool REPLACEMENT_POLICY_DEBUG;
     extern bool LLC_DEBUG;
@@ -25,7 +26,9 @@ namespace cachesim {
     extern bool useMemSignature;
     extern bool isoArea;
     extern bool ENABLE_PREDICTOR;
-    extern uint64_t DEBUG_INSTRUCTIONS;
+    extern uint64_t START_DEBUG;
+    extern uint64_t END_DEBUG;
+
     extern uint64_t WARMUP_INSTRUCTIONS;
 
     extern bool SET_DUELING;
