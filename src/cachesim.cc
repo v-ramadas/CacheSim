@@ -885,3 +885,17 @@ void Cache<T>::breakdown(uint64_t block_size) {
     fmt::print("Breakdown done\n");
     is_broken_down = true;
 }
+
+template<typename T>
+void Cache<T>::merge(uint64_t block_size) {
+    if (is_broken_down == false)
+        return;
+    fmt::print("Merging at {}. MPKI {:4f}\n", cachesim::instCount, (((float)(get_misses()))/cachesim::instCount)*1000);
+    for (uint64_t i = 0; i < num_sets; i++) {
+        if (sets[i]->get_dueling_type() == SetDuelingType::Follower) {
+            sets[i]->set_merge(block_size);
+        }
+    }
+    fmt::print("Merge done\n");
+    is_broken_down = false;
+}

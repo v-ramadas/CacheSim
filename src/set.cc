@@ -439,3 +439,44 @@ void Set::set_breakdown(uint64_t new_block_size) {
     bits_per_block = block_size/8;
     bitmask = (1ULL << bits_per_block) - 1;
 }
+
+// Inverse of set_breakdown: merge small blocks back into fewer, larger ones.
+// There's no sound way to decide which group of small blocks becomes one
+// coherent big block (they may not even all be valid), so instead of trying
+// to preserve data the way set_breakdown does, invalidate everything and
+// resize down (or up) to the iso-area way count for the new, larger block
+// size. footprint is contracted/reset 1-per-way here, mirroring the same
+// (pre-existing) 1-per-way handling set_breakdown itself uses, even though
+// its true size is num_ways*(block_size/8) - not something this change
+// introduces or fixes.
+void Set::set_merge(uint64_t new_block_size) {
+    assert(new_block_size > block_size);
+
+    uint64_t new_num_ways = get_iso_area_cache_merge(cache->get_num_sets(), num_ways, block_size, new_block_size);
+
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
+        repl_counter->evict(way_idx);
+    }
+
+    ways.assign(new_num_ways, UINT64_MAX);
+    valid.assign(new_num_ways, false);
+    serviced_from_llc.assign(new_num_ways, 0);
+    is_hub_node.assign(new_num_ways, false);
+    distance_counts.assign(new_num_ways, 0);
+    dirty.assign(new_num_ways, false);
+    footprint.assign(new_num_ways, false);
+    pc.assign(new_num_ways, UINT64_MAX);
+    next_reuse.assign(new_num_ways, 0);
+    way_hits.assign(new_num_ways, 0);
+    degree.assign(new_num_ways, 0);
+    avg_degree.assign(new_num_ways, 0);
+
+    get_replacement_policy()->set_merge(block_size, new_block_size, new_num_ways);
+
+    num_ways = new_num_ways;
+    block_size = new_block_size;
+    num_blocks = CACHELINE_SIZE/block_size;
+    num_lines = num_ways/num_blocks;
+    bits_per_block = block_size/8;
+    bitmask = (1ULL << bits_per_block) - 1;
+}

@@ -34,6 +34,7 @@ class BasePolicy {
     virtual bool can_insert(PacketPtr packet, uint64_t idx) = 0;
     virtual void set_breakdown(uint64_t old_block_size, uint64_t new_block_size) = 0;
     virtual void set_contract(uint64_t way_idx, uint64_t size) = 0;
+    virtual void set_merge(uint64_t old_block_size, uint64_t new_block_size, uint64_t new_num_ways) = 0;
 };
 
 #endif

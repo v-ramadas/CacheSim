@@ -44,6 +44,8 @@ class LRU : public BasePolicy {
     void set_breakdown(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
 
     void set_contract(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+
+    void set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t /*new_num_ways*/) {}
 };
 
 #endif

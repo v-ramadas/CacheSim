@@ -70,6 +70,7 @@ class Set {
     template<typename VecType>
     void contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks);
     void set_breakdown(uint64_t block_size);
+    void set_merge(uint64_t new_block_size);
 
     public:
     Set() {}
@@ -298,7 +299,7 @@ class BaseCache {
     virtual uint64_t get_num_blocks_used() const = 0; 
     virtual uint64_t get_psel() const = 0;
     virtual uint64_t get_num_sets() const = 0;
-    virtual bool should_breakdown() const = 0;
+    virtual bool should_breakdown() = 0;
     virtual void incr_partial_misses(uint64_t num_misses) = 0;
     virtual std::vector<uint64_t> get_partial_misses() const = 0; 
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
@@ -496,6 +497,7 @@ class Cache: public BaseCache {
     void populate_line(PacketPtr packet);
     void populate_blocks(PacketPtr packet);
     void breakdown(uint64_t block_size);
+    void merge(uint64_t block_size);
 
     bool is_eviction_needed(PacketPtr packet) const;
     bool can_insert_at_level(int level);

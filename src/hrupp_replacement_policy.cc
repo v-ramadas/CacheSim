@@ -182,3 +182,10 @@ void HRUpp::set_contract(uint64_t way_idx, uint64_t size) {
     contract(low_priority, way_idx, size);
     num_ways -= size;
 }
+
+void HRUpp::set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t new_num_ways) {
+    counter.assign(new_num_ways, max_counter);
+    low_priority.assign(new_num_ways, true);
+    num_ways = new_num_ways;
+    lru_counter = mru_counter;
+}

@@ -181,3 +181,13 @@ void HRU::set_contract(uint64_t way_idx, uint64_t size) {
     contract(low_priority, way_idx, size);
     num_ways -= size;
 }
+
+void HRU::set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t new_num_ways) {
+    // No sound way to merge per-way replacement state across a group of
+    // small blocks, so reset it for the new (larger-block) geometry instead,
+    // same defaults as a fresh construction.
+    counter.assign(new_num_ways, max_counter);
+    low_priority.assign(new_num_ways, true);
+    num_ways = new_num_ways;
+    lru_counter = mru_counter;
+}

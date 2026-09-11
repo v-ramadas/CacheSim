@@ -128,6 +128,10 @@ int main(int argc, char** argv) {
             break;
     }
 
+    if (cachesim::BLOCK_SIZE == 64) {
+        cachesim::SET_DUELING = false;
+    }
+
     
     try {
         PerformanceModel::populateModel(configFile);

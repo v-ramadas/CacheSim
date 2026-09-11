@@ -181,4 +181,34 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
     }
 }
 
+// Inverse of get_iso_area_cache: current config is the smaller-block cache
+// (e.g. 8B), we want the largest new_block_size (e.g. 64B) way count that
+// fits the same total (data+tag) byte budget. Because tag bits/block shrink
+// as block_size grows, this can come out slightly larger than the naive
+// current_ways / (new_block_size/current_block_size) division would give -
+// hence the same incremental search get_iso_area_cache uses, not a divide.
+inline uint64_t get_iso_area_cache_merge(uint64_t num_sets, uint64_t current_ways,
+                                          uint64_t current_block_size, uint64_t new_block_size) {
+    float target_budget_bytes = get_total_cache_size(num_sets, current_ways, current_block_size, false);
+
+    if (!cachesim::isoArea) {
+        uint64_t scale_factor = new_block_size / current_block_size;
+        return current_ways / scale_factor;
+    }
+
+    uint64_t ways = 1;
+    float new_size;
+    while (true) {
+        new_size = get_total_cache_size(num_sets, ways, new_block_size, false);
+        if (new_size > target_budget_bytes) {
+            ways--;
+            break;
+        }
+        ways++;
+    }
+    ways = ((ways + 8) / 8) * 8;
+    new_size = get_total_cache_size(num_sets, ways, new_block_size, false);
+    return ways;
+}
+
 #endif
