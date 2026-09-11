@@ -9,6 +9,21 @@
 
 const uint64_t CACHELINE_SIZE = 64;
 
+// PSEL: the original mechanism - a single saturating +-1 counter on Leader64
+// vs Leader8 misses, decision re-checked live every access past DUELING_PERIOD.
+// ZTEST: cumulative + windowed conditional-binomial z-test on Leader64 vs
+// Leader8 miss *counts* (assumes ~equal exposure between the two leader
+// groups; doesn't need per-side access counts). ZTEST_RATIO: the same
+// cumulative + windowed structure, but a two-proportion z-test on miss
+// *rates* (misses/accesses per side) - corrects for any exposure imbalance,
+// at the cost of tracking access counts too. Both z-test modes lock in
+// permanently once confidently favored.
+enum class DuelingMode {
+    PSEL,
+    ZTEST,
+    ZTEST_RATIO,
+};
+
 namespace cachesim {
     extern uint64_t instCount;
     extern uint64_t prevInstCount;
@@ -36,6 +51,17 @@ namespace cachesim {
     extern uint64_t PSEL_MAX;
     extern uint64_t PSEL_THRESHOLD;
     extern uint64_t DUELING_PERIOD;
+
+    extern DuelingMode DUELING_MODE;
+    extern bool LOG_DUELING_METRICS;
+
+    extern uint64_t CONF_EPOCH;
+    extern uint64_t CONF_MAX;
+    extern uint64_t CONF_MARGIN;
+    extern double Z_THRESHOLD;
+
+    extern uint64_t Z_WINDOW_SIZE;
+    extern double WINDOW_Z_THRESHOLD;
 
     extern PerformanceModel performanceModel;
 };

@@ -8,7 +8,9 @@
 #include "victim_buffer.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
+#include <deque>
 #include <numeric>
 #include <vector>
 #include <fmt/chrono.h>
@@ -30,6 +32,7 @@ class Set {
     protected:
     BaseCache* cache;
     uint64_t num_ways;
+    uint64_t original_num_ways = 0;
     std::vector<uint64_t> ways;
     std::unique_ptr<BasePolicy> repl_counter;
     std::vector<bool> valid;
@@ -77,6 +80,7 @@ class Set {
     Set(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, uint64_t _level) {
         cache = p;
         num_ways = _num_ways;
+        original_num_ways = _num_ways;
         block_size = blk_size;
         set_idx = _set_idx;
         level = _level;
@@ -261,10 +265,12 @@ class BaseCache {
     virtual void populate_line(PacketPtr packet) = 0;
     virtual void populate_blocks(PacketPtr packet) = 0;
     virtual void breakdown(uint64_t block_size) = 0;
+    virtual void merge(uint64_t block_size) = 0;
 
     virtual bool can_insert_at_level(int level) = 0;
     virtual void incr_psel() = 0;
     virtual void decr_psel() = 0;
+    virtual void record_leader_access(SetDuelingType type, bool hit) = 0;
 
 //    virtual void update_data_var_hub_hits(bool is_hub, uint64_t serviced_from_llc) = 0;
     virtual void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) = 0;
@@ -300,6 +306,7 @@ class BaseCache {
     virtual uint64_t get_psel() const = 0;
     virtual uint64_t get_num_sets() const = 0;
     virtual bool should_breakdown() = 0;
+    virtual bool should_merge() = 0;
     virtual void incr_partial_misses(uint64_t num_misses) = 0;
     virtual std::vector<uint64_t> get_partial_misses() const = 0; 
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
@@ -331,8 +338,73 @@ class Cache: public BaseCache {
     uint64_t PSEL;
     bool is_broken_down = false;
 
+    // Set-dueling confidence estimator (DuelingMode::ZTEST / ZTEST_RATIO):
+    // every CONF_EPOCH instructions, compute a z-score comparing Leader64 vs
+    // Leader8 behavior - ZTEST uses a conditional-binomial test on miss
+    // *counts* directly (assumes ~equal exposure between the two leader
+    // groups, measured within ~0.1-2.6% across a 9-trace suite; doesn't need
+    // per-side access counts), ZTEST_RATIO uses a two-proportion test on miss
+    // *rates* (misses/accesses per side, corrects for any exposure imbalance
+    // at the cost of tracking accesses too). Both modes share the same
+    // checkpoint/streak/lock machinery below - only which z-score feeds it
+    // differs (see update_dueling_confidence()). Only CONF_MAX consecutive
+    // checkpoints where z > Z_THRESHOLD build confidence; anything else
+    // resets the streak to zero. A second, independent check runs the same
+    // test over only the last Z_WINDOW_SIZE checkpoints (recent-only, not
+    // all-time) - this exists because the cumulative test is slow to react
+    // to a genuine late phase change (it has to outweigh the entire
+    // accumulated history first); the windowed test reacts on its own
+    // timescale instead. Either path reaching its streak requirement locks
+    // in the decision. Past DUELING_PERIOD both checks apply against a much
+    // lower bar (one confirming checkpoint), so a workload that never builds
+    // full confidence still gets a decision eventually - but never from a
+    // single raw access read.
+    //
+    // DuelingMode::PSEL bypasses all of this and reproduces the original
+    // mechanism: a live, unlatched check of PSEL < PSEL_THRESHOLD once
+    // instCount passes DUELING_PERIOD, re-evaluated every access.
+    //
+    // duel_locked only ever latches true (breakdown). The "don't break down
+    // yet" state is never latched, since it's already the safe default and
+    // staying live lets a later real change in behavior still be caught, no
+    // matter how far into the run.
+    uint64_t conf_last_check = 0;
+    uint64_t conf_counter = 0;
+    uint64_t window_conf_counter = 0;
+    bool duel_locked = false;
+
+    uint64_t merge_streak = 0;
+
+    uint64_t leader64_accesses = 0;
+    uint64_t leader64_misses = 0;
+    uint64_t leader8_accesses = 0;
+    uint64_t leader8_misses = 0;
+
+    // Windowed check: ring buffer of the last Z_WINDOW_SIZE checkpoints'
+    // per-checkpoint deltas (access64, miss64, access8, miss8), plus running
+    // sums over that window so the windowed counts don't need to be
+    // recomputed from scratch each time.
+    std::deque<std::array<uint64_t, 4>> window_buffer;
+    uint64_t window_leader64_accesses = 0;
+    uint64_t window_leader64_misses = 0;
+    uint64_t window_leader8_accesses = 0;
+    uint64_t window_leader8_misses = 0;
+    uint64_t window_snapshot_leader64_accesses = 0;
+    uint64_t window_snapshot_leader64_misses = 0;
+    uint64_t window_snapshot_leader8_accesses = 0;
+    uint64_t window_snapshot_leader8_misses = 0;
+
+    // Investigative instrumentation: periodically dump PSEL, whole-cache MPKI,
+    // and the cumulative/windowed z-scores, independent of DuelingMode, so
+    // the full trajectory is visible even after a decision is made and even
+    // in PSEL mode. Gated behind --log-dueling-metrics; off by default.
+    uint64_t metrics_log_last = 0;
+
     void incr_psel();
     void decr_psel();
+    void record_leader_access(SetDuelingType type, bool hit);
+    void update_dueling_confidence();
+    void log_dueling_metrics();
 
 
     // Workload Behavior
@@ -523,8 +595,22 @@ class Cache: public BaseCache {
     uint64_t get_num_blocks_used() const {return num_blocks_used; }
     uint64_t get_psel() const { return PSEL; }
     uint64_t get_num_sets() const { return num_sets;}
-    bool should_breakdown() const {
-        return (cachesim::instCount > cachesim::DUELING_PERIOD && get_psel() < cachesim::PSEL_THRESHOLD);
+    bool should_breakdown() {
+        // Always maintained regardless of mode, so the z-test's cumulative
+        // and windowed state (and log_dueling_metrics()'s view of it) stay
+        // available even when DuelingMode::PSEL is what actually gates the
+        // decision below.
+        update_dueling_confidence();
+        log_dueling_metrics();
+        if (cachesim::DUELING_MODE == DuelingMode::PSEL) {
+            return cachesim::instCount > cachesim::DUELING_PERIOD && PSEL < cachesim::PSEL_THRESHOLD;
+        } else {
+            return duel_locked;
+        }
+    }
+
+    bool should_merge() {
+        return false;
     }
 
     void incr_partial_misses(uint64_t num_misses) { partial_misses[num_misses]++; }

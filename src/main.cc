@@ -29,6 +29,23 @@ uint64_t cachesim::PSEL_MAX = 64;
 uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 2;
 uint64_t cachesim::DUELING_PERIOD = 10000000;
 
+DuelingMode cachesim::DUELING_MODE = DuelingMode::ZTEST;
+bool cachesim::LOG_DUELING_METRICS = false;
+
+uint64_t cachesim::CONF_EPOCH = 200000;
+uint64_t cachesim::CONF_MAX = 8;
+uint64_t cachesim::CONF_MARGIN = cachesim::PSEL_THRESHOLD;
+double cachesim::Z_THRESHOLD = 2.0;
+
+// Validated against the 9-trace pr_spmv suite at CONF_EPOCH=10000: smaller
+// windows (e.g. 20 checkpoints) have too little data to be safe at any
+// reasonable threshold (false-locked on web-BerkStan even at z=7.0). 1600
+// checkpoints / z=2.5 was the smallest safe combination found - 3 of 4
+// known-negative traces stay safe, and the 5 true-positive traces converge
+// noticeably faster than the cumulative-only test.
+uint64_t cachesim::Z_WINDOW_SIZE = 1600;
+double cachesim::WINDOW_Z_THRESHOLD = 2.5;
+
 PerformanceModel cachesim::performanceModel;
 
 enum class TraceFormat {
@@ -94,7 +111,19 @@ int main(int argc, char** argv) {
     app.add_option("--num-duels", cachesim::NUM_DUELS, "Max Value of PSEL");
     app.add_option("--psel-max", cachesim::PSEL_MAX, "Max Value of PSEL");
     app.add_option("--psel-threshold", cachesim::PSEL_THRESHOLD, "PSEL Threshold value");
-    app.add_option("--dueling-period", cachesim::DUELING_PERIOD, "Warmup instructions for set dueling");
+    app.add_option("--dueling-period", cachesim::DUELING_PERIOD, "Hard cap (instructions) on set dueling before a winner is forced");
+    app.add_option("--dueling-mode", cachesim::DUELING_MODE, "Set-dueling decision mechanism: psel (original, live-checked PSEL threshold), ztest (cumulative+windowed conditional-binomial z-test on miss counts), or ztest-ratio (same, but a two-proportion z-test on miss rates)")->transform(CLI::CheckedTransformer(std::map<std::string, DuelingMode>{
+        {"psel", DuelingMode::PSEL},
+        {"ztest", DuelingMode::ZTEST},
+        {"ztest-ratio", DuelingMode::ZTEST_RATIO},
+    }));
+    app.add_option("--conf-epoch", cachesim::CONF_EPOCH, "Instructions between set-dueling confidence checkpoints");
+    app.add_option("--conf-max", cachesim::CONF_MAX, "Consecutive agreeing checkpoints required to lock a set-dueling winner");
+    app.add_option("--conf-margin", cachesim::CONF_MARGIN, "Distance from the PSEL midpoint required for a checkpoint to count as confident (unused by the current decision rule, kept for compatibility)");
+    app.add_option("--z-threshold", cachesim::Z_THRESHOLD, "Two-proportion z-score required (cumulative Leader64 vs Leader8 miss rate) for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
+    app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
+    app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
+    app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
 
 
     CLI11_PARSE(app, argc, argv);

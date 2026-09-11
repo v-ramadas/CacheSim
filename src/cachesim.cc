@@ -6,6 +6,7 @@
 #include <cassert>
 #include <random>
 #include <algorithm>
+#include <cmath>
 
 template<typename T>
 Cache<T>::Cache():
@@ -144,31 +145,31 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     } else {
         fmt::print("Utilization undefined (No evictions)\n");
     }
-    fmt::print("Partial Misses ");
-    auto partial_misses = get_partial_misses();
-    for (long unsigned idx = 0; idx < partial_misses.size(); idx++) {
-        fmt::print("{}:{} ", idx, partial_misses[idx]);
-    }
-    fmt::print("\n");
-
-    for (auto& [pc, misses]: data_var_misses) {
-        fmt::print("PC {:#x} Misses {}\n", pc, misses);
-    }
-
-    for (auto& [pc, hits]: data_var_hits) {
-        fmt::print("PC {:#x} Hits {}\n", pc, hits);
-    }
-
-    for (auto& [pc, hist]: data_var_invalidations) {
-        for (auto& [footprint, count]: hist)
-            fmt::print("PC {:#x} Density {} Invalidations {}\n", pc, footprint, count);
-;
-    }
-
-    for (auto& [pc, hist]: data_var_evictions) {
-        for (auto& [footprint, count]: hist)
-            fmt::print("PC {:#x} Density {} Evictions {}\n", pc, footprint, count);
-    }
+//    fmt::print("Partial Misses ");
+//    auto partial_misses = get_partial_misses();
+//    for (long unsigned idx = 0; idx < partial_misses.size(); idx++) {
+//        fmt::print("{}:{} ", idx, partial_misses[idx]);
+//    }
+//    fmt::print("\n");
+//
+//    for (auto& [pc, misses]: data_var_misses) {
+//        fmt::print("PC {:#x} Misses {}\n", pc, misses);
+//    }
+//
+//    for (auto& [pc, hits]: data_var_hits) {
+//        fmt::print("PC {:#x} Hits {}\n", pc, hits);
+//    }
+//
+//    for (auto& [pc, hist]: data_var_invalidations) {
+//        for (auto& [footprint, count]: hist)
+//            fmt::print("PC {:#x} Density {} Invalidations {}\n", pc, footprint, count);
+//;
+//    }
+//
+//    for (auto& [pc, hist]: data_var_evictions) {
+//        for (auto& [footprint, count]: hist)
+//            fmt::print("PC {:#x} Density {} Evictions {}\n", pc, footprint, count);
+//    }
 
     if (cachesim::GEN_STATS) {
 //        for (auto& [is_hub, map]: data_var_hub_hits) {
@@ -547,6 +548,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     if (cachesim::SET_DUELING) {
         if (cache[num_levels-1]->should_breakdown()) {
             cache[num_levels-1]->breakdown(cachesim::BLOCK_SIZE);
+        } else if (cache[num_levels-1]->should_merge()) {
+            cache[num_levels-1]->merge(CACHELINE_SIZE);
         }
     }
 
@@ -869,6 +872,180 @@ void Cache<T>::decr_psel() {
     if (PSEL > 0) {
         PSEL--;
     }
+}
+
+// Conditional-binomial z-score: given mis64 + mis8 total misses observed
+// over what's assumed to be equal exposure (leader64 and leader8 have the
+// same number of sets and see near-identical traffic in practice, measured
+// within ~0.1-2.6% across a 9-trace suite), test whether the split between
+// them deviates from 50/50. Used by DuelingMode::ZTEST - doesn't need
+// per-side access counts, only misses.
+static double binomial_z(uint64_t mis64, uint64_t mis8) {
+    uint64_t total = mis64 + mis8;
+    if (total == 0)
+        return 0.0;
+    return ((double)mis64 - (double)mis8) / std::sqrt((double)total);
+}
+
+// Two-proportion z-score: how many standard errors apart are miss rates
+// mis64/acc64 and mis8/acc8, under a pooled-variance null of "no
+// difference"? Used by DuelingMode::ZTEST_RATIO - corrects for any exposure
+// imbalance between the two sides, at the cost of needing access counts too.
+static double two_proportion_z(uint64_t acc64, uint64_t mis64, uint64_t acc8, uint64_t mis8) {
+    if (acc64 == 0 || acc8 == 0)
+        return 0.0;
+    double p64 = (double)mis64 / (double)acc64;
+    double p8 = (double)mis8 / (double)acc8;
+    double pooled = (double)(mis64 + mis8) / (double)(acc64 + acc8);
+    double se = std::sqrt(pooled * (1.0 - pooled) * (1.0 / (double)acc64 + 1.0 / (double)acc8));
+    return (se > 0.0) ? (p64 - p8) / se : 0.0;
+}
+
+// Logs one CSV row every CONF_EPOCH instructions (same cadence as the real
+// decision checkpoints - update_dueling_confidence() always runs first, see
+// should_breakdown(), so the z-scores below reflect this checkpoint's
+// freshly-updated state, not the previous one). Gated behind
+// --log-dueling-metrics; a no-op otherwise. Logs both z-test variants
+// (miss-count and miss-ratio) regardless of which one is actually driving
+// the decision, so they can be compared side by side.
+template<typename T>
+void Cache<T>::log_dueling_metrics() {
+    if (!cachesim::LOG_DUELING_METRICS)
+        return;
+
+    if (cachesim::instCount - metrics_log_last < cachesim::CONF_EPOCH)
+        return;
+    metrics_log_last = cachesim::instCount;
+
+    // All three MPKI figures share the same denominator (instCount), so
+    // they're directly comparable in absolute terms - leader64/leader8 MPKI
+    // will naturally look much smaller than the whole-cache figure since
+    // leader sets are only a small fraction (2*NUM_DUELS out of num_sets) of
+    // the cache, not because misses are rarer there.
+    double cache_mpki = ((double)get_misses() / (double)cachesim::instCount) * 1000.0;
+    double leader64_mpki = ((double)leader64_misses / (double)cachesim::instCount) * 1000.0;
+    double leader8_mpki = ((double)leader8_misses / (double)cachesim::instCount) * 1000.0;
+    double cum_z_miss = binomial_z(leader64_misses, leader8_misses);
+    double window_z_miss = binomial_z(window_leader64_misses, window_leader8_misses);
+    double cum_z_ratio = two_proportion_z(leader64_accesses, leader64_misses, leader8_accesses, leader8_misses);
+    double window_z_ratio = two_proportion_z(window_leader64_accesses, window_leader64_misses,
+                                              window_leader8_accesses, window_leader8_misses);
+
+    fmt::print("METRIC,{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{}\n",
+        cachesim::instCount, PSEL, cache_mpki, leader64_mpki, leader8_mpki,
+        cum_z_miss, window_z_miss, cum_z_ratio, window_z_ratio, duel_locked ? 1 : 0);
+}
+
+template<typename T>
+void Cache<T>::record_leader_access(SetDuelingType type, bool hit) {
+    switch (type) {
+        case SetDuelingType::Leader64:
+            leader64_accesses++;
+            if (!hit) leader64_misses++;
+            break;
+        case SetDuelingType::Leader8:
+            leader8_accesses++;
+            if (!hit) leader8_misses++;
+            break;
+        default:
+            break;
+    }
+}
+
+// Confidence estimator for set dueling (DuelingMode::ZTEST / ZTEST_RATIO only
+// - should_breakdown() short-circuits to the original PSEL check in
+// DuelingMode::PSEL and never calls this). Every CONF_EPOCH instructions,
+// two independent checks run, using binomial_z (ZTEST) or two_proportion_z
+// (ZTEST_RATIO) depending on cachesim::DUELING_MODE:
+//
+// 1. Cumulative: z-test on Leader64 vs Leader8 misses since the start of the
+//    run - a side with too few misses naturally produces a small |z|
+//    instead of needing a separate hand-tuned minimum-sample gate.
+// 2. Windowed: the same test, but restricted to only the last
+//    Z_WINDOW_SIZE checkpoints. The cumulative test is slow to react to a
+//    genuine late phase change (it has to outweigh the entire accumulated
+//    history first); this reacts on its own timescale instead, at the cost
+//    of losing the cumulative test's "old noise can no longer hurt you"
+//    property - hence its own, separately tunable WINDOW_Z_THRESHOLD.
+//
+// Either check reaching CONF_MAX consecutive passing checkpoints locks in
+// the decision; a checkpoint that doesn't pass resets *that check's* streak
+// to zero (the other check's streak is independent). Past DUELING_PERIOD
+// both checks apply against a much lower bar (one confirming checkpoint),
+// so a workload that never builds full confidence still gets a decision
+// eventually, but never from one raw access read.
+//
+// duel_locked is a two-way latch: it tracks whichever way the statistical
+// signal currently favors, so a genuine later reversal (checked and found to
+// never occur across as-Skitter, web-BerkStan, web-Google, sx-stackoverflow)
+// would still be reflected here. Note breakdown() itself still only latches
+// one-way via is_broken_down - once the cache has physically broken down its
+// sets into 8B blocks it stays that way regardless of what duel_locked does
+// afterward.
+template<typename T>
+void Cache<T>::update_dueling_confidence() {
+    if (cachesim::instCount - conf_last_check < cachesim::CONF_EPOCH)
+        return;
+    conf_last_check = cachesim::instCount;
+
+    bool use_ratio = (cachesim::DUELING_MODE == DuelingMode::ZTEST_RATIO);
+
+    // Cumulative check.
+    double z_cumulative = use_ratio
+        ? two_proportion_z(leader64_accesses, leader64_misses, leader8_accesses, leader8_misses)
+        : binomial_z(leader64_misses, leader8_misses);
+    bool favors_cumulative = z_cumulative > cachesim::Z_THRESHOLD;
+    if (favors_cumulative) {
+        if (conf_counter < cachesim::CONF_MAX)
+            conf_counter++;
+    } else {
+        conf_counter = 0;
+    }
+
+    // Windowed check: record this checkpoint's deltas, evict the oldest
+    // entry once the window is full, maintain running windowed sums. Always
+    // tracks all four (access64, miss64, access8, miss8) regardless of mode,
+    // since log_dueling_metrics() reports both z-test variants for
+    // comparison either way.
+    std::array<uint64_t, 4> delta = {
+        leader64_accesses - window_snapshot_leader64_accesses,
+        leader64_misses - window_snapshot_leader64_misses,
+        leader8_accesses - window_snapshot_leader8_accesses,
+        leader8_misses - window_snapshot_leader8_misses,
+    };
+    window_snapshot_leader64_accesses = leader64_accesses;
+    window_snapshot_leader64_misses = leader64_misses;
+    window_snapshot_leader8_accesses = leader8_accesses;
+    window_snapshot_leader8_misses = leader8_misses;
+
+    window_buffer.push_back(delta);
+    window_leader64_accesses += delta[0];
+    window_leader64_misses += delta[1];
+    window_leader8_accesses += delta[2];
+    window_leader8_misses += delta[3];
+    if (window_buffer.size() > cachesim::Z_WINDOW_SIZE) {
+        const auto& oldest = window_buffer.front();
+        window_leader64_accesses -= oldest[0];
+        window_leader64_misses -= oldest[1];
+        window_leader8_accesses -= oldest[2];
+        window_leader8_misses -= oldest[3];
+        window_buffer.pop_front();
+    }
+
+    double z_window = use_ratio
+        ? two_proportion_z(window_leader64_accesses, window_leader64_misses,
+                            window_leader8_accesses, window_leader8_misses)
+        : binomial_z(window_leader64_misses, window_leader8_misses);
+    bool favors_window = z_window > cachesim::WINDOW_Z_THRESHOLD;
+    if (favors_window) {
+        if (window_conf_counter < cachesim::CONF_MAX)
+            window_conf_counter++;
+    } else {
+        window_conf_counter = 0;
+    }
+
+    //uint64_t effective_conf_max = (cachesim::instCount >= cachesim::DUELING_PERIOD) ? 1 : cachesim::CONF_MAX;
+    duel_locked = (conf_counter >= cachesim::CONF_MAX || window_conf_counter >= cachesim::CONF_MAX);
 }
 
 template<typename T>

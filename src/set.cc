@@ -73,6 +73,7 @@ bool Set::try_hit(PacketPtr packet) {
     }
 
     accesses++;
+    cache->record_leader_access(get_dueling_type(), hit);
 
     if (hit) {
         if (level == 0 || cache->get_insertion_policy() != InsertionPolicy::EXCLUSIVE)
@@ -375,8 +376,6 @@ void Set::set_breakdown(uint64_t new_block_size) {
             way_idx = repl_counter->get_eviction_candidate(false);
         }
         way_idx = std::distance(degree.begin(), std::min(degree.begin(), degree.end()));
-        fmt::print("Evicting set {} way {} during breakdown. addr {:#x} repl_counter {} next_reuse {} degree {} avg_degree {:4f}\n",
-                set_idx, way_idx, ways[way_idx], repl_counter->get_counter_value(way_idx), next_reuse[way_idx], degree[way_idx], avg_degree[way_idx]);
 #endif
 #if 0
         uint64_t way_idx = num_ways;
@@ -444,15 +443,23 @@ void Set::set_breakdown(uint64_t new_block_size) {
 // There's no sound way to decide which group of small blocks becomes one
 // coherent big block (they may not even all be valid), so instead of trying
 // to preserve data the way set_breakdown does, invalidate everything and
-// resize down (or up) to the iso-area way count for the new, larger block
-// size. footprint is contracted/reset 1-per-way here, mirroring the same
+// resize back to original_num_ways - the way count this set had before it
+// was ever broken down - rather than recomputing an iso-area target from the
+// *current* (already rounded) way count. get_iso_area_cache_merge() rounds
+// its result up to a multiple of 8, same as get_iso_area_cache() does going
+// the other way; composing the two isn't idempotent, so doing that on every
+// merge made each breakdown+merge round trip inflate the way count by ~8
+// (confirmed by direct calculation: 32 -> 160 -> 40 -> 200 -> 48 -> ...),
+// eventually corrupting the heap after enough repeated cycles. Restoring the
+// literal original value sidesteps the asymmetry entirely.
+// footprint is contracted/reset 1-per-way here, mirroring the same
 // (pre-existing) 1-per-way handling set_breakdown itself uses, even though
 // its true size is num_ways*(block_size/8) - not something this change
 // introduces or fixes.
 void Set::set_merge(uint64_t new_block_size) {
     assert(new_block_size > block_size);
 
-    uint64_t new_num_ways = get_iso_area_cache_merge(cache->get_num_sets(), num_ways, block_size, new_block_size);
+    uint64_t new_num_ways = original_num_ways;
 
     for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
         repl_counter->evict(way_idx);
