@@ -375,6 +375,33 @@ class Cache: public BaseCache {
 
     uint64_t merge_streak = 0;
 
+    // DuelingMode::PSEL confidence estimator, handled inside
+    // update_dueling_confidence() alongside the z-test branch rather than as
+    // a separate function: a "switch" is PSEL crossing PSEL_THRESHOLD - going
+    // from >= threshold to < threshold (favors breakdown) or from < threshold
+    // back up to >= threshold (favors 64B) - counted in incr_psel()/
+    // decr_psel() by comparing PSEL's value before and after the +-1 step.
+    // This is a coarser, rarer event than a raw increment/decrement reversal:
+    // PSEL can reverse direction many times per epoch while staying on the
+    // same side of the threshold the whole time, and none of that counts as
+    // a switch here. Every CONF_EPOCH instructions, a checkpoint counts
+    // toward psel_quiet_streak only if zero threshold-crossings happened
+    // *and* at least one incr_psel()/decr_psel() call happened during that
+    // epoch - without the latter, an epoch with no accesses to the leader
+    // sets at all (e.g. cold start) is indistinguishable from zero-switches,
+    // and would otherwise look identical to a genuinely settled epoch. Any
+    // crossing, or a completely idle epoch, resets the streak to zero.
+    // CONF_MAX consecutive quiet checkpoints sets duel_locked = true, same as
+    // the z-test's own streak requirement.
+    uint64_t psel_switches_this_epoch = 0;
+    uint64_t psel_changes_this_epoch = 0;
+    // Snapshot of psel_switches_this_epoch taken right before
+    // update_dueling_confidence() resets it for the next epoch, so
+    // log_dueling_metrics() (called right after) can still report the just-
+    // completed epoch's switch count instead of always seeing 0.
+    uint64_t psel_switches_last_epoch = 0;
+    uint64_t psel_quiet_streak = 0;
+
     uint64_t leader64_accesses = 0;
     uint64_t leader64_misses = 0;
     uint64_t leader8_accesses = 0;
@@ -596,17 +623,12 @@ class Cache: public BaseCache {
     uint64_t get_psel() const { return PSEL; }
     uint64_t get_num_sets() const { return num_sets;}
     bool should_breakdown() {
-        // Always maintained regardless of mode, so the z-test's cumulative
-        // and windowed state (and log_dueling_metrics()'s view of it) stay
-        // available even when DuelingMode::PSEL is what actually gates the
-        // decision below.
+        // update_dueling_confidence() now handles PSEL's own quiet-epoch
+        // streak alongside the z-test branch, setting duel_locked either
+        // way, so this just reads the one shared flag regardless of mode.
         update_dueling_confidence();
         log_dueling_metrics();
-        if (cachesim::DUELING_MODE == DuelingMode::PSEL) {
-            return cachesim::instCount > cachesim::DUELING_PERIOD && PSEL < cachesim::PSEL_THRESHOLD;
-        } else {
-            return duel_locked;
-        }
+        return duel_locked;
     }
 
     bool should_merge() {

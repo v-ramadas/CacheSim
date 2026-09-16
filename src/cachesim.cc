@@ -862,15 +862,31 @@ void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename
 
 template<typename T>
 void Cache<T>::incr_psel() {
+    psel_changes_this_epoch++;
     if (PSEL < cachesim::PSEL_MAX) {
         PSEL++;
+    }
+    // PSEL only ever moves by +-1, so landing exactly on PSEL_THRESHOLD via
+    // an increment means it crossed up from PSEL_THRESHOLD - 1 (favoring
+    // breakdown) to favoring 64B. PSEL_THRESHOLD is never == PSEL_MAX, so
+    // this can't misfire while saturated at the top.
+    if (PSEL == cachesim::PSEL_THRESHOLD) {
+        psel_switches_this_epoch++;
     }
 }
 
 template<typename T>
 void Cache<T>::decr_psel() {
+    psel_changes_this_epoch++;
     if (PSEL > 0) {
         PSEL--;
+    }
+    // Symmetric to incr_psel(): landing exactly on PSEL_THRESHOLD - 1 via a
+    // decrement means it crossed down from PSEL_THRESHOLD (favoring 64B) to
+    // favoring breakdown. PSEL_THRESHOLD is never 0, so this can't misfire
+    // while saturated at the bottom.
+    if (PSEL == cachesim::PSEL_THRESHOLD - 1) {
+        psel_switches_this_epoch++;
     }
 }
 
@@ -931,9 +947,10 @@ void Cache<T>::log_dueling_metrics() {
     double window_z_ratio = two_proportion_z(window_leader64_accesses, window_leader64_misses,
                                               window_leader8_accesses, window_leader8_misses);
 
-    fmt::print("METRIC,{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{}\n",
+    fmt::print("METRIC,{},{},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{:.6f},{},{}\n",
         cachesim::instCount, PSEL, cache_mpki, leader64_mpki, leader8_mpki,
-        cum_z_miss, window_z_miss, cum_z_ratio, window_z_ratio, duel_locked ? 1 : 0);
+        cum_z_miss, window_z_miss, cum_z_ratio, window_z_ratio, duel_locked ? 1 : 0,
+        psel_switches_last_epoch);
 }
 
 template<typename T>
@@ -987,6 +1004,23 @@ void Cache<T>::update_dueling_confidence() {
     if (cachesim::instCount - conf_last_check < cachesim::CONF_EPOCH)
         return;
     conf_last_check = cachesim::instCount;
+
+    if (cachesim::DUELING_MODE == DuelingMode::PSEL) {
+        if (psel_switches_this_epoch == 0 && psel_changes_this_epoch > 0) {
+            if (psel_quiet_streak < cachesim::CONF_MAX)
+                psel_quiet_streak++;
+        } else {
+            psel_quiet_streak = 0;
+        }
+        psel_switches_last_epoch = psel_switches_this_epoch;
+        psel_switches_this_epoch = 0;
+        psel_changes_this_epoch = 0;
+
+        if ((psel_quiet_streak >= cachesim::CONF_MAX) && (PSEL < cachesim::PSEL_THRESHOLD)) {
+            duel_locked = true;
+        }
+        return;
+    }
 
     bool use_ratio = (cachesim::DUELING_MODE == DuelingMode::ZTEST_RATIO);
 
