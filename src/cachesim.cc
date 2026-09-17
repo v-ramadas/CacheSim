@@ -993,12 +993,10 @@ void Cache<T>::record_leader_access(SetDuelingType type, bool hit) {
 // eventually, but never from one raw access read.
 //
 // duel_locked is a two-way latch: it tracks whichever way the statistical
-// signal currently favors, so a genuine later reversal (checked and found to
-// never occur across as-Skitter, web-BerkStan, web-Google, sx-stackoverflow)
-// would still be reflected here. Note breakdown() itself still only latches
-// one-way via is_broken_down - once the cache has physically broken down its
-// sets into 8B blocks it stays that way regardless of what duel_locked does
-// afterward.
+// signal currently favors (true = favor breakdown, false = favor 64B), for
+// both PSEL and the z-test modes below. should_merge() reads it directly -
+// once the cache is already broken down (is_broken_down), a reversion to
+// duel_locked == false is what triggers merge() back to 64B.
 template<typename T>
 void Cache<T>::update_dueling_confidence() {
     if (cachesim::instCount - conf_last_check < cachesim::CONF_EPOCH)
@@ -1016,8 +1014,8 @@ void Cache<T>::update_dueling_confidence() {
         psel_switches_this_epoch = 0;
         psel_changes_this_epoch = 0;
 
-        if ((psel_quiet_streak >= cachesim::CONF_MAX) && (PSEL < cachesim::PSEL_THRESHOLD)) {
-            duel_locked = true;
+        if (psel_quiet_streak >= cachesim::CONF_MAX) {
+            duel_locked = (PSEL < cachesim::PSEL_THRESHOLD);
         }
         return;
     }

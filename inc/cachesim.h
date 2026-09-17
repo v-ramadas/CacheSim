@@ -359,14 +359,15 @@ class Cache: public BaseCache {
     // full confidence still gets a decision eventually - but never from a
     // single raw access read.
     //
-    // DuelingMode::PSEL bypasses all of this and reproduces the original
-    // mechanism: a live, unlatched check of PSEL < PSEL_THRESHOLD once
-    // instCount passes DUELING_PERIOD, re-evaluated every access.
+    // DuelingMode::PSEL uses its own quiet-epoch streak instead of a z-score
+    // (see the psel_quiet_streak fields below) but shares the same
+    // duel_locked flag and two-way latch semantics.
     //
-    // duel_locked only ever latches true (breakdown). The "don't break down
-    // yet" state is never latched, since it's already the safe default and
-    // staying live lets a later real change in behavior still be caught, no
-    // matter how far into the run.
+    // duel_locked is a two-way latch for every mode: true means the
+    // statistics currently favor breakdown, false means they favor 64B.
+    // should_merge() reads it directly, so a genuine reversal on an
+    // already-broken-down cache triggers a merge back to 64B, no matter how
+    // far into the run it happens.
     uint64_t conf_last_check = 0;
     uint64_t conf_counter = 0;
     uint64_t window_conf_counter = 0;
@@ -390,8 +391,10 @@ class Cache: public BaseCache {
     // sets at all (e.g. cold start) is indistinguishable from zero-switches,
     // and would otherwise look identical to a genuinely settled epoch. Any
     // crossing, or a completely idle epoch, resets the streak to zero.
-    // CONF_MAX consecutive quiet checkpoints sets duel_locked = true, same as
-    // the z-test's own streak requirement.
+    // CONF_MAX consecutive quiet checkpoints latches duel_locked - true if
+    // PSEL settled below PSEL_THRESHOLD, false if it settled at or above it
+    // (see update_dueling_confidence()) - same as the z-test's own streak
+    // requirement.
     uint64_t psel_switches_this_epoch = 0;
     uint64_t psel_changes_this_epoch = 0;
     // Snapshot of psel_switches_this_epoch taken right before
@@ -631,7 +634,14 @@ class Cache: public BaseCache {
     }
 
     bool should_merge() {
-        return false;
+        // should_breakdown() is always called first each access (see
+        // access_multi_level()) and refreshes duel_locked for this
+        // checkpoint, so this only needs the two conditions: never merge a
+        // cache that isn't broken down, and otherwise merge back to 64B once
+        // the statistics have reverted to favoring it.
+        if (!is_broken_down)
+            return false;
+        return !duel_locked;
     }
 
     void incr_partial_misses(uint64_t num_misses) { partial_misses[num_misses]++; }
