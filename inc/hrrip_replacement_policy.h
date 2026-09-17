@@ -8,8 +8,7 @@ class HRRIP : public BasePolicy {
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;
-    std::vector<bool> low_priority;
-    std::vector<float> reuse_probability;
+
     uint64_t diff = UINT64_MAX;
 
     public:
@@ -19,10 +18,7 @@ class HRRIP : public BasePolicy {
         maxRRPV(std::bit_floor(_num_ways)-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, UINT_MAX);
-        insertion_clock.resize(num_ways, 0);
-        low_priority.resize(num_ways, false);
-        reuse_probability.resize(num_ways, 0.0);
+        counter.resize(num_ways, maxRRPV);
         denseRRPV = maxRRPV;
         sparseRRPV = maxRRPV;
         level = _level;
@@ -50,13 +46,19 @@ class HRRIP : public BasePolicy {
 
     uint64_t get_reserved_ways() {return reserved_ways;}
 
-    bool can_insert(PacketPtr packet, uint64_t idx);
+    bool can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) { return true; }
 
-    void set_breakdown(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+    void set_breakdown(uint64_t old_block_size, uint64_t new_block_size);
 
-    void set_contract(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+    template<typename VecType>
+    void breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool incr);
 
-    void set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t /*new_num_ways*/) {}
+    void set_contract(uint64_t way_idx, uint64_t size);
+
+    void set_merge(uint64_t old_block_size, uint64_t new_block_size, uint64_t new_num_ways);
+
+    template<typename VecType>
+    void contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks);
 };
 
 #endif
