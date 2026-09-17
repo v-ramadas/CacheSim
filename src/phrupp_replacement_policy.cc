@@ -1,4 +1,5 @@
 #include "phrupp_replacement_policy.h"
+#include "defs.h"
 #include <fmt/core.h>
 
 
@@ -7,8 +8,70 @@ void PHRUpp::init_counter(PacketPtr /*packet*/) {
     mru_counter+=num_ways;
 }
 
-void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {   
+void PHRUpp::record_heuristic(bool predicted_hub, bool actual_hub) {
+    if (predicted_hub && actual_hub) heur_tp++;
+    else if (predicted_hub && !actual_hub) heur_fp++;
+    else if (!predicted_hub && actual_hub) heur_fn++;
+    else heur_tn++;
+}
+
+void PHRUpp::print_heuristic_stats() {
+    uint64_t total = heur_tp + heur_fp + heur_fn + heur_tn;
+    if (total == 0) return;
+    double precision = (heur_tp + heur_fp) > 0 ? (double)heur_tp / (heur_tp + heur_fp) : 0.0;
+    double recall = (heur_tp + heur_fn) > 0 ? (double)heur_tp / (heur_tp + heur_fn) : 0.0;
+    double accuracy = (double)(heur_tp + heur_tn) / total;
+    fmt::print("PHRUpp heuristic quality: TP {} FP {} FN {} TN {} | precision {:4f} recall {:4f} accuracy {:4f}\n",
+        heur_tp, heur_fp, heur_fn, heur_tn, precision, recall, accuracy);
+
+    uint64_t fn_total = 0;
+    for (auto v : fn_l1hits_hist) fn_total += v;
+    uint64_t tn_total = 0;
+    for (auto v : tn_l1hits_hist) tn_total += v;
+    if (fn_total == 0 && tn_total == 0) return;
+
+    fmt::print("PHRUpp FN pattern (fill-time misses only, {} of them): both_zero {} ({:4f}) l1hits_gt_footprint {} ({:4f})\n",
+        fn_total, fn_both_zero, fn_total ? (double)fn_both_zero/fn_total : 0.0, fn_l1hits_gt_footprint, fn_total ? (double)fn_l1hits_gt_footprint/fn_total : 0.0);
+    fmt::print("PHRUpp FN l1_hits histogram [0,1,2,3,4-7,8-15,16-31,32+]: {} {} {} {} {} {} {} {}\n",
+        fn_l1hits_hist[0], fn_l1hits_hist[1], fn_l1hits_hist[2], fn_l1hits_hist[3],
+        fn_l1hits_hist[4], fn_l1hits_hist[5], fn_l1hits_hist[6], fn_l1hits_hist[7]);
+    fmt::print("PHRUpp FN footprint_count histogram [0,1,2,3,4,5,6,7,8]: {} {} {} {} {} {} {} {} {}\n",
+        fn_footprint_hist[0], fn_footprint_hist[1], fn_footprint_hist[2], fn_footprint_hist[3], fn_footprint_hist[4],
+        fn_footprint_hist[5], fn_footprint_hist[6], fn_footprint_hist[7], fn_footprint_hist[8]);
+
+    fmt::print("PHRUpp TN pattern (fill-time misses only, {} of them): both_zero {} ({:4f}) l1hits_gt_footprint {} ({:4f})\n",
+        tn_total, tn_both_zero, tn_total ? (double)tn_both_zero/tn_total : 0.0, tn_l1hits_gt_footprint, tn_total ? (double)tn_l1hits_gt_footprint/tn_total : 0.0);
+    fmt::print("PHRUpp TN l1_hits histogram [0,1,2,3,4-7,8-15,16-31,32+]: {} {} {} {} {} {} {} {}\n",
+        tn_l1hits_hist[0], tn_l1hits_hist[1], tn_l1hits_hist[2], tn_l1hits_hist[3],
+        tn_l1hits_hist[4], tn_l1hits_hist[5], tn_l1hits_hist[6], tn_l1hits_hist[7]);
+    fmt::print("PHRUpp TN footprint_count histogram [0,1,2,3,4,5,6,7,8]: {} {} {} {} {} {} {} {} {}\n",
+        tn_footprint_hist[0], tn_footprint_hist[1], tn_footprint_hist[2], tn_footprint_hist[3], tn_footprint_hist[4],
+        tn_footprint_hist[5], tn_footprint_hist[6], tn_footprint_hist[7], tn_footprint_hist[8]);
+}
+
+void PHRUpp::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count) {
+    uint64_t& both_zero = is_fn ? fn_both_zero : tn_both_zero;
+    uint64_t& gt_footprint = is_fn ? fn_l1hits_gt_footprint : tn_l1hits_gt_footprint;
+    uint64_t* l1hits_hist = is_fn ? fn_l1hits_hist : tn_l1hits_hist;
+    uint64_t* footprint_hist = is_fn ? fn_footprint_hist : tn_footprint_hist;
+
+    if (l1_hits == 0 && footprint_count == 0) both_zero++;
+    if (l1_hits > footprint_count) gt_footprint++;
+
+    uint64_t l1_bucket;
+    if (l1_hits <= 3) l1_bucket = l1_hits;
+    else if (l1_hits < 8) l1_bucket = 4;
+    else if (l1_hits < 16) l1_bucket = 5;
+    else if (l1_hits < 32) l1_bucket = 6;
+    else l1_bucket = 7;
+    l1hits_hist[l1_bucket]++;
+
+    footprint_hist[std::min(footprint_count, (uint64_t)8)]++;
+}
+
+void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
     auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
+    record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
     if (low_priority[way_idx] && is_hub_node) {
         low_priority[way_idx] = false;
     }
@@ -22,7 +85,14 @@ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
 
 void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     auto is_hub_node = (packet->block_serviced_from_llc[block_idx] >= hub_threshold);
-    //auto is_hub_node = packet->is_hub_node;
+    record_heuristic(is_hub_node, packet->is_hub_node);
+    // Diagnostic only, doesn't affect replacement: when the heuristic
+    // correctly/incorrectly says non-hub, log l1_hits/footprint_count so we
+    // can compare the FN distribution against the TN distribution - if
+    // they match, that profile can't be discriminating anything.
+    if (!is_hub_node) {
+        record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+    }
     if (packet->serviced_from_llc > 0) {
         if (is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;

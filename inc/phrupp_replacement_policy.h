@@ -11,7 +11,37 @@ class PHRUpp : public BasePolicy {
     std::vector<bool> low_priority;
     bool is_way_full = false;
     bool is_low_priority_present = true;
+
+    // Instrumentation only - measures how well the LLC-reuse heuristic
+    // (block_serviced_from_llc >= hub_threshold) tracks the true,
+    // degree-based hub classification HRU has direct access to. Shared
+    // across all per-set PHRUpp instances (one per set) since we want one
+    // confusion matrix for the whole run, not 1024 tiny ones. See
+    // notes/phru_hub_heuristic_quality.md for the PHRU investigation this
+    // mirrors.
+    inline static uint64_t heur_tp = 0; // heuristic says hub, degree says hub
+    inline static uint64_t heur_fp = 0; // heuristic says hub, degree says not
+    inline static uint64_t heur_fn = 0; // heuristic says not, degree says hub
+    inline static uint64_t heur_tn = 0; // heuristic says not, degree says not
+    static void record_heuristic(bool predicted_hub, bool actual_hub);
+
+    // Diagnostic: for false negatives AND true negatives (fill-time misses
+    // only, where l1_hits/footprint are actually meaningful - see
+    // fill_update()), histogram l1_hits and footprint_count to look for an
+    // exploitable pattern instead of guessing at one.
+    inline static uint64_t fn_both_zero = 0;
+    inline static uint64_t fn_l1hits_gt_footprint = 0;
+    inline static uint64_t fn_l1hits_hist[8] = {0}; // buckets: 0,1,2,3,4-7,8-15,16-31,32+
+    inline static uint64_t fn_footprint_hist[9] = {0}; // buckets: exactly 0..8
+    inline static uint64_t tn_both_zero = 0;
+    inline static uint64_t tn_l1hits_gt_footprint = 0;
+    inline static uint64_t tn_l1hits_hist[8] = {0};
+    inline static uint64_t tn_footprint_hist[9] = {0};
+    static void record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count);
+
     public:
+    static void print_heuristic_stats();
+
     PHRUpp() {}
     PHRUpp(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
         set_idx = _set_idx;

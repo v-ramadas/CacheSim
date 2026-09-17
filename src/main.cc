@@ -205,6 +205,10 @@ int main(int argc, char** argv) {
     }
     if (cachesim::GEN_STATS)
         predictor->print_stats();
+    if (replacement_policy == ReplacementPolicy::PHRU)
+        PHRU::print_heuristic_stats();
+    if (replacement_policy == ReplacementPolicy::PHRUpp)
+        PHRUpp::print_heuristic_stats();
     
     cache.clear();
 #ifdef MULTI_LEVEL
