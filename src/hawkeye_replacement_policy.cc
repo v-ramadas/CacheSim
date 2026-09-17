@@ -231,8 +231,54 @@ void Hawkeye::update_addr_history_lru(uint64_t sampler_set, uint64_t curr_lru)
         if((it->second).lru < curr_lru)
         {
             (it->second).lru++;
-            assert((it->second).lru < sampler_ways); 
+            assert((it->second).lru < sampler_ways);
         }
     }
+}
+
+template<typename VecType>
+void Hawkeye::breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool /*incr*/) {
+    vec.resize(prev_num_ways*scale_factor);
+    for (size_t i = prev_num_ways; i-- > 0; ) {
+        VecType val = vec[i];
+        size_t baseIdx = i * scale_factor;
+        for (size_t j = 0; j < scale_factor; ++j) {
+            vec[baseIdx + j] = val;
+        }
+    }
+}
+
+void Hawkeye::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
+    assert(old_block_size != new_block_size);
+    uint64_t scale_factor = old_block_size/new_block_size;
+    uint64_t new_num_ways = num_ways*scale_factor;
+
+    breakdown(counter, num_ways, scale_factor, false);
+    breakdown(signatures, num_ways, scale_factor, false);
+
+    num_ways = new_num_ways;
+}
+
+template<typename VecType>
+void Hawkeye::contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks) {
+    assert(way_idx + num_blocks <= vec.size());
+    auto start_it = vec.begin() + way_idx;
+    auto end_it = vec.begin() + (way_idx + num_blocks);
+    vec.erase(start_it, end_it);
+}
+
+void Hawkeye::set_contract(uint64_t way_idx, uint64_t size) {
+    contract(counter, way_idx, size);
+    contract(signatures, way_idx, size);
+    num_ways -= size;
+}
+
+void Hawkeye::set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t new_num_ways) {
+    // No sound way to merge per-way RRPV/signature state across a group of
+    // small blocks, so reset it for the new (larger-block) geometry instead,
+    // same defaults as a fresh construction.
+    counter.assign(new_num_ways, maxRRPV);
+    signatures.assign(new_num_ways, 0);
+    num_ways = new_num_ways;
 }
 

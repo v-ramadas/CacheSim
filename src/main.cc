@@ -88,8 +88,6 @@ int main(int argc, char** argv) {
         {"ship", ReplacementPolicy::SHIP},
         {"belady", ReplacementPolicy::Belady},
         {"hrrip", ReplacementPolicy::HRRIP},
-        {"fission", ReplacementPolicy::Fission},
-        {"distillation", ReplacementPolicy::Distillation},
         {"hawkeye", ReplacementPolicy::Hawkeye}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
@@ -129,11 +127,8 @@ int main(int argc, char** argv) {
     CLI11_PARSE(app, argc, argv);
 
     switch(replacement_policy) {
-        case ReplacementPolicy::Fission:
-            cachesim::dropBlocks = true;
-            break;
-        case ReplacementPolicy::Distillation:
-            cachesim::dropBlocks = false;
+        case ReplacementPolicy::LRU:
+            cachesim::SET_DUELING = false;
             break;
         case ReplacementPolicy::SHIP:
             cachesim::useMemSignature = true;
@@ -152,6 +147,12 @@ int main(int argc, char** argv) {
             cachesim::dropBlocks = true;
             cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
+        case ReplacementPolicy::Belady:
+            cachesim::SET_DUELING = false;
+            break;
+        case ReplacementPolicy::Hawkeye:
+            cachesim::SET_DUELING = false;
+            break;
         default:
             cachesim::dropBlocks = false;
             break;
@@ -161,7 +162,6 @@ int main(int argc, char** argv) {
         cachesim::SET_DUELING = false;
     }
 
-    
     try {
         PerformanceModel::populateModel(configFile);
     } catch (const std::exception& e) {

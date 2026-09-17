@@ -24,8 +24,6 @@
 #include "drrip_replacement_policy.h"
 #include "prrip_replacement_policy.h"
 #include "ship_replacement_policy.h"
-#include "fission_replacement_policy.h"
-#include "distillation_replacement_policy.h"
 #include "belady_replacement_policy.h"
 #include "hrrip_replacement_policy.h"
 #include "hawkeye_replacement_policy.h"
@@ -41,8 +39,6 @@ enum class ReplacementPolicy {
     PRRIP,
     SHIP,
     Belady,
-    Distillation,
-    Fission,
     HRRIP,
     Hawkeye,
 };
@@ -67,10 +63,6 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new PRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::SHIP:
             return new SHIP(set_idx, num_ways, level);
-        case ReplacementPolicy::Fission:
-            return new Fission(set_idx, num_ways, level);
-        case ReplacementPolicy::Distillation:
-            return new Distillation(set_idx, num_ways, level);
         case ReplacementPolicy::Belady:
             return new Belady(set_idx, num_ways, level);
         case ReplacementPolicy::HRRIP:

@@ -5,7 +5,6 @@
 #include "utils.h"
 #include "predictor.h"
 #include "utils.h"
-#include "victim_buffer.h"
 
 #include <algorithm>
 #include <array>

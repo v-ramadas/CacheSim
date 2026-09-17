@@ -40,11 +40,17 @@ class Belady : public BasePolicy {
 
     bool can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) {return true;}
 
-    void set_breakdown(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+    void set_breakdown(uint64_t old_block_size, uint64_t new_block_size);
 
-    void set_contract(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/) {}
+    template<typename VecType>
+    void breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool incr);
 
-    void set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t /*new_num_ways*/) {}
+    void set_contract(uint64_t way_idx, uint64_t size);
+
+    void set_merge(uint64_t old_block_size, uint64_t new_block_size, uint64_t new_num_ways);
+
+    template<typename VecType>
+    void contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks);
 };
 
 #endif
