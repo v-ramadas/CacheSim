@@ -48,6 +48,10 @@ double cachesim::WINDOW_Z_THRESHOLD = 2.5;
 
 PerformanceModel cachesim::performanceModel;
 
+bool cachesim::USE_GHOST_CACHE = false;
+uint64_t cachesim::GHOST_CACHE_SIZE = 32;
+GhostCache cachesim::ghostCache;
+
 enum class TraceFormat {
     CHAMPSIM,
     ADDRESSES,
@@ -122,9 +126,15 @@ int main(int argc, char** argv) {
     app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
     app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
     app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
+    app.add_flag("--use-ghost-cache", cachesim::USE_GHOST_CACHE, "Enable a small ghost cache that catches lines evicted from the LLC, so PHRU/PHRUpp can detect a line evicted too early via a fast re-miss instead of relying only on block_serviced_from_llc");
+    app.add_option("--ghost-cache-size", cachesim::GHOST_CACHE_SIZE, "Ghost cache capacity in entries (only used if --use-ghost-cache is set)");
 
 
     CLI11_PARSE(app, argc, argv);
+
+    if (cachesim::USE_GHOST_CACHE) {
+        cachesim::ghostCache.resize(cachesim::GHOST_CACHE_SIZE);
+    }
 
     switch(replacement_policy) {
         case ReplacementPolicy::LRU:
@@ -209,7 +219,11 @@ int main(int argc, char** argv) {
         PHRU::print_heuristic_stats();
     if (replacement_policy == ReplacementPolicy::PHRUpp)
         PHRUpp::print_heuristic_stats();
-    
+    if (cachesim::USE_GHOST_CACHE)
+        fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {}\n",
+            cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,
+            cachesim::ghostCache.debug_lookup_count, cachesim::ghostCache.debug_hit_count);
+
     cache.clear();
 #ifdef MULTI_LEVEL
     delete predictor;

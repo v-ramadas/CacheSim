@@ -150,6 +150,14 @@ void Set::handle_fill(PacketPtr packet) {
         //    fmt::print("Filling block address {:#x} from set {} block {} at level {}. was_accessed {} packet degree {} block degree {} block list size {} serviced_from_llc {}\n", block_address, set_idx, way_idx, level, was_accessed, packet->degree, packet->block_degrees[block_idx], packet->block_degrees.size(), packet->serviced_from_llc);
         //}
 
+        // A hit here means this exact address was evicted from this LLC set
+        // recently enough to still be in the ghost cache, and is now
+        // missing again - direct proof it was evicted too early, which
+        // block_serviced_from_llc alone can't ever produce (see
+        // inc/ghost_cache.h). PHRU/PHRUpp use this as an extra hub signal.
+        packet->from_ghost_cache = (cachesim::USE_GHOST_CACHE && level == 1 && block_address != UINT64_MAX)
+            ? cachesim::ghostCache.contains_and_remove(block_address) : false;
+
         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
         if (block_address != UINT64_MAX) {
             ways[way_idx] = block_address;
@@ -256,6 +264,23 @@ void Set::handle_evict(PacketPtr packet) {
         //if (degree[way_idx] != 0)
         //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
         cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+
+        // Capture the evicted line's address before invalidate_way() clears
+        // it, so a fast re-miss on this same address can be caught as a
+        // "ghost cache hit" (see inc/ghost_cache.h). LLC only (level 1) -
+        // PHRU/PHRUpp are LLC-level policies, and L1D evictions aren't what
+        // this is meant to catch. Only store lines that already have
+        // serviced_from_llc[way_idx] > 0 - i.e. this exact line has already
+        // round-tripped through LLC at least once before, not a first-time
+        // compulsory fill. The ghost cache is small and global (shared
+        // across all 1024 sets); storing every eviction indiscriminately
+        // wastes most of its capacity on the ~93-99% single-touch, never-
+        // revisited cold lines identified in notes/phru_hub_heuristic_quality.md,
+        // which will never generate a hit anyway. Restricting to
+        // already-proven lines makes better use of the limited slots.
+        if (cachesim::USE_GHOST_CACHE && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > 0) {
+            cachesim::ghostCache.insert(ways[way_idx]);
+        }
 
         invalidate_way(way_idx);
         num_blocks_evicted++;

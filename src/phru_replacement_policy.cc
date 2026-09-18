@@ -70,7 +70,16 @@ void PHRU::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count
 }
 
 void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
+    // Pre-existing bug, found via ASAN while verifying the ghost cache
+    // addition, unrelated to it: block_serviced_from_llc is sized by
+    // num_blocks (sub-blocks per line, e.g. 1 at plain 64B) in
+    // Cache<T>::try_hit(), but way_idx here is a way index (up to
+    // num_ways-1=31 for a 32-way set) - an index-space mismatch that reads
+    // out of bounds for any hit at a way other than 0. packet->serviced_from_llc
+    // (the scalar aggregate) is the safe, semantically equivalent substitute -
+    // it's exactly what fill_update()'s own outer gate already uses for the
+    // same "has this line been serviced from LLC" check.
+    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
     if (low_priority[way_idx] && is_hub_node) {
         low_priority[way_idx] = false;
@@ -85,15 +94,26 @@ void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
 
 void PHRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     auto is_hub_node = (packet->block_serviced_from_llc[block_idx] >= hub_threshold);
-    record_heuristic(is_hub_node, packet->is_hub_node);
+    auto final_is_hub = is_hub_node || packet->from_ghost_cache;
+    record_heuristic(final_is_hub, packet->is_hub_node);
     // Diagnostic only, doesn't affect replacement: when the heuristic
     // correctly/incorrectly says non-hub, log l1_hits/footprint_count so we
     // can compare the FN distribution against the TN distribution - if
     // they match, that profile can't be discriminating anything.
-    if (!is_hub_node) {
+    if (!final_is_hub) {
         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
     }
-    if (packet->serviced_from_llc > 0) {
+    if (packet->from_ghost_cache) {
+        // Independent of the serviced_from_llc gate below: a ghost-cache
+        // hit is direct, deterministic proof this exact line was evicted
+        // too early moments ago, not a noisy local proxy subject to the
+        // class-overlap problems every other local signal had (see
+        // notes/phru_hub_heuristic_quality.md). packet->from_ghost_cache is
+        // always false unless --use-ghost-cache is passed, so this branch
+        // is dead weight (zero behavior change) for every prior comparison.
+        counter[way_idx] = mru_counter;
+        low_priority[way_idx] = false;
+    } else if (packet->serviced_from_llc > 0) {
         if (is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
