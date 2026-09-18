@@ -6,6 +6,7 @@
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include "performance_model.h"
+#include "ghost_cache.h"
 
 const uint64_t CACHELINE_SIZE = 64;
 
@@ -64,6 +65,12 @@ namespace cachesim {
     extern double WINDOW_Z_THRESHOLD;
 
     extern PerformanceModel performanceModel;
+
+    extern bool USE_GHOST_CACHE;
+    extern uint64_t GHOST_CACHE_SIZE;
+    extern GhostCache ghostCache;
+    extern bool GHOST_CACHE_DEBUG;
+    extern uint64_t GHOST_CACHE_MIN_SERVICED;
 };
 
 enum class InsertionPolicy {
@@ -91,6 +98,7 @@ struct Packet {
     std::vector<uint64_t> block_degrees;
     float avg_degree=0.0f;
     std::vector<uint64_t> block_serviced_from_llc;
+    bool from_ghost_cache = false;
 
     Packet() {
         clear_pc();
@@ -118,6 +126,7 @@ struct Packet {
         block_degrees.clear();
         avg_degree = 0.0f;
         block_serviced_from_llc.clear();
+        from_ghost_cache = false;
     }
 
     void clear_pc() {
@@ -169,6 +178,7 @@ struct Packet {
         block_degrees = packet.block_degrees;
         avg_degree = packet.avg_degree;
         block_serviced_from_llc = packet.block_serviced_from_llc;
+        from_ghost_cache = packet.from_ghost_cache;
 
         return *this;
     }

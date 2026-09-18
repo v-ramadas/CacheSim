@@ -70,7 +70,11 @@ void PHRUpp::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_cou
 }
 
 void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
+    // See PHRU::hit_update() - pre-existing OOB bug, unrelated to the
+    // ghost cache work, found via ASAN: block_serviced_from_llc is sized by
+    // num_blocks, not num_ways, but way_idx here is a way index.
+    // packet->serviced_from_llc (scalar) is the safe substitute.
+    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
     if (low_priority[way_idx] && is_hub_node) {
         low_priority[way_idx] = false;
@@ -85,15 +89,23 @@ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
 
 void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     auto is_hub_node = (packet->block_serviced_from_llc[block_idx] >= hub_threshold);
-    record_heuristic(is_hub_node, packet->is_hub_node);
+    auto final_is_hub = is_hub_node || packet->from_ghost_cache;
+    record_heuristic(final_is_hub, packet->is_hub_node);
     // Diagnostic only, doesn't affect replacement: when the heuristic
     // correctly/incorrectly says non-hub, log l1_hits/footprint_count so we
     // can compare the FN distribution against the TN distribution - if
     // they match, that profile can't be discriminating anything.
-    if (!is_hub_node) {
+    if (!final_is_hub) {
         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
     }
-    if (packet->serviced_from_llc > 0) {
+    if (packet->from_ghost_cache) {
+        // See PHRU::fill_update() for rationale - a ghost-cache hit is
+        // direct, deterministic proof this line was evicted too early, so it
+        // bypasses the serviced_from_llc gate below rather than being
+        // subject to it. Always false unless --use-ghost-cache is passed.
+        counter[way_idx] = mru_counter;
+        low_priority[way_idx] = false;
+    } else if (packet->serviced_from_llc > 0) {
         if (is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;

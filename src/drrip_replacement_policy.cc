@@ -18,7 +18,14 @@ void DRRIP::hit_update(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
 void DRRIP::update_bip(uint64_t way_idx, PacketPtr packet) {
-    if (packet->serviced_from_llc == true) {
+    // A ghost cache hit is direct, deterministic proof this exact line was
+    // evicted too early moments ago - treat it the same as a confirmed-
+    // reuse (serviced_from_llc) fill: near-immediate RRPV, bypassing BIP's
+    // usual mostly-distant insertion. Always false unless --use-ghost-cache
+    // is passed.
+    if (packet->from_ghost_cache) {
+        counter[way_idx] = 0;
+    } else if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {
         counter[way_idx] = maxRRPV - 1;
@@ -31,7 +38,9 @@ void DRRIP::update_bip(uint64_t way_idx, PacketPtr packet) {
 }
 
 void DRRIP::update_srrip(uint64_t way_idx, PacketPtr packet) {
-    if (packet->serviced_from_llc == true) {
+    if (packet->from_ghost_cache) {
+        counter[way_idx] = 0;
+    } else if (packet->serviced_from_llc == true) {
         counter[way_idx] = 0;
     } else {
         counter[way_idx] = maxRRPV - 1;

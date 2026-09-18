@@ -257,6 +257,23 @@ void Set::handle_evict(PacketPtr packet) {
         //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
         cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
 
+        // Capture the evicted line's address before invalidate_way() clears
+        // it, so a fast re-miss on this same address can be caught as a
+        // "ghost cache hit" (see inc/ghost_cache.h). LLC only (level 1) -
+        // PHRU/PHRUpp are LLC-level policies, and L1D evictions aren't what
+        // this is meant to catch. Only store lines with
+        // serviced_from_llc[way_idx] > GHOST_CACHE_MIN_SERVICED - i.e. this
+        // exact line has already round-tripped through LLC more than that
+        // many times, not just the bare minimum. Measured on as-Skitter:
+        // ~77% of evictions that qualified under a threshold of 0 were
+        // exactly 1, the weakest possible signal, and raising the
+        // threshold to 1 helped PHRU substantially (fixed a persistent 8B
+        // regression) but hurt HRU slightly - the two policies want
+        // different bars here, hence CLI-tunable rather than hardcoded.
+        if (cachesim::USE_GHOST_CACHE && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > cachesim::GHOST_CACHE_MIN_SERVICED) {
+            cachesim::ghostCache.insert(ways[way_idx], serviced_from_llc[way_idx]);
+        }
+
         invalidate_way(way_idx);
         num_blocks_evicted++;
         //cache->update_data_var_evictions(packet->pc,

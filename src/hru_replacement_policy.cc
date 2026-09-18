@@ -7,8 +7,8 @@ void HRU::init_counter(PacketPtr /*packet*/) {
     mru_counter+=num_ways;
 }
 
-void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {   
-    if (low_priority[way_idx] && packet->is_hub_node) {
+void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+    if (low_priority[way_idx] && (packet->is_hub_node || packet->from_ghost_cache)) {
         low_priority[way_idx] = false;
     }
 
@@ -26,7 +26,16 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
 }
 
 void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->serviced_from_llc > 0) {
+    if (packet->from_ghost_cache) {
+        // Bypasses the serviced_from_llc gate below, same rationale as
+        // PHRU/PHRUpp (see notes/phru_hub_heuristic_quality.md): a ghost-
+        // cache hit is direct, deterministic proof this exact line was
+        // evicted too early moments ago, not a noisy local proxy. Always
+        // false unless --use-ghost-cache is passed, so this branch is dead
+        // weight (zero behavior change) when the flag is off.
+        counter[way_idx] = mru_counter;
+        low_priority[way_idx] = false;
+    } else if (packet->serviced_from_llc > 0) {
         //auto counter_value = packet->block_serviced_from_llc[block_idx];
         if (packet->is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;

@@ -9,8 +9,8 @@ void HRUpp::init_counter(PacketPtr /*packet*/) {
     mru_counter+=num_ways;
 }
 
-void HRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {   
-    if (low_priority[way_idx] && packet->is_hub_node) {
+void HRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
+    if (low_priority[way_idx] && (packet->is_hub_node || packet->from_ghost_cache)) {
         low_priority[way_idx] = false;
     }
 
@@ -28,7 +28,10 @@ void HRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
 }
 
 void HRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
-    if (packet->serviced_from_llc > 0) {
+    if (packet->from_ghost_cache) {
+        counter[way_idx] = mru_counter;
+        low_priority[way_idx] = false;
+    } else if (packet->serviced_from_llc > 0) {
         //auto counter_value = packet->block_serviced_from_llc[block_idx];
         if (packet->is_hub_node && was_accessed) {
             counter[way_idx] = mru_counter;

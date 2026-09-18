@@ -24,8 +24,14 @@ void SRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
 }
 
 void SRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
-    
-    if (packet->serviced_from_llc > 0) {
+
+    if (packet->from_ghost_cache) {
+        // A ghost cache hit is direct, deterministic proof this exact line
+        // was evicted too early moments ago - treat it the same as a
+        // confirmed-reuse (serviced_from_llc) fill: near-immediate RRPV.
+        // Always false unless --use-ghost-cache is passed.
+        counter[way_idx] = 0;
+    } else if (packet->serviced_from_llc > 0) {
         counter[way_idx] = 0;
     } else {
         counter[way_idx] = denseRRPV - 1;

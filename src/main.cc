@@ -48,6 +48,12 @@ double cachesim::WINDOW_Z_THRESHOLD = 2.5;
 
 PerformanceModel cachesim::performanceModel;
 
+bool cachesim::USE_GHOST_CACHE = false;
+uint64_t cachesim::GHOST_CACHE_SIZE = 32;
+GhostCache cachesim::ghostCache;
+bool cachesim::GHOST_CACHE_DEBUG = false;
+uint64_t cachesim::GHOST_CACHE_MIN_SERVICED = 1;
+
 enum class TraceFormat {
     CHAMPSIM,
     ADDRESSES,
@@ -122,9 +128,25 @@ int main(int argc, char** argv) {
     app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
     app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
     app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
+    app.add_flag("--use-ghost-cache", cachesim::USE_GHOST_CACHE, "Enable a small ghost cache that catches lines evicted from the LLC, so PHRU/PHRUpp can detect a line evicted too early via a fast re-miss instead of relying only on block_serviced_from_llc");
+    app.add_option("--ghost-cache-size", cachesim::GHOST_CACHE_SIZE, "Ghost cache capacity in entries (only used if --use-ghost-cache is set)");
+    app.add_flag("--debug-ghost-cache", cachesim::GHOST_CACHE_DEBUG, "Print a line for every ghost cache insert/lookup/eviction (only used if --use-ghost-cache is set)");
+    app.add_option("--ghost-cache-min-serviced", cachesim::GHOST_CACHE_MIN_SERVICED, "A line is only inserted into the ghost cache on LLC eviction if serviced_from_llc exceeds this (only used if --use-ghost-cache is set); default 1 (i.e. requires serviced_from_llc > 1)");
 
 
     CLI11_PARSE(app, argc, argv);
+
+    if (cachesim::USE_GHOST_CACHE) {
+        // A ghost cache entry is one address tag at the LLC's CURRENT block
+        // size. At 8B blocks, the same cacheline needs 8 tag slots instead
+        // of 1 to cover the same look-back window in terms of actual
+        // cachelines - scale capacity by CACHELINE_SIZE/BLOCK_SIZE so
+        // --ghost-cache-size keeps meaning "cachelines tracked" regardless
+        // of block size.
+        uint64_t scale_factor = CACHELINE_SIZE / cachesim::BLOCK_SIZE;
+        cachesim::ghostCache.resize(cachesim::GHOST_CACHE_SIZE * scale_factor);
+        cachesim::ghostCache.debug = cachesim::GHOST_CACHE_DEBUG;
+    }
 
     switch(replacement_policy) {
         case ReplacementPolicy::LRU:
@@ -209,7 +231,12 @@ int main(int argc, char** argv) {
         PHRU::print_heuristic_stats();
     if (replacement_policy == ReplacementPolicy::PHRUpp)
         PHRUpp::print_heuristic_stats();
-    
+    if (cachesim::USE_GHOST_CACHE)
+        fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
+            cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,
+            cachesim::ghostCache.debug_lookup_count, cachesim::ghostCache.debug_hit_count,
+            cachesim::ghostCache.debug_eviction_count, cachesim::ghostCache.debug_insert_rejected_count);
+
     cache.clear();
 #ifdef MULTI_LEVEL
     delete predictor;

@@ -548,8 +548,14 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     if (cachesim::SET_DUELING) {
         if (cache[num_levels-1]->should_breakdown()) {
             cache[num_levels-1]->breakdown(cachesim::BLOCK_SIZE);
+            if (cachesim::USE_GHOST_CACHE) {
+                cachesim::ghostCache.breakdown(CACHELINE_SIZE, cachesim::BLOCK_SIZE);
+            }
         } else if (cache[num_levels-1]->should_merge()) {
             cache[num_levels-1]->merge(CACHELINE_SIZE);
+            if (cachesim::USE_GHOST_CACHE) {
+                cachesim::ghostCache.merge(cachesim::BLOCK_SIZE, CACHELINE_SIZE);
+            }
         }
     }
 

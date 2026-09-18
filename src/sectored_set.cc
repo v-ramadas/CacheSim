@@ -156,6 +156,27 @@ void SectoredSet::handle_fill(PacketPtr packet) {
                 way_sector->block_serviced_from_llc[sector_idx] = packet->block_serviced_from_llc[sector_idx];
             }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
+
+            // Ghost cache check on the actual sub-block address being
+            // installed here, right as this line is filled into L1D on a
+            // miss - not later, against whatever unrelated address L1D
+            // happens to evict during the backfill loop into the LLC. A hit
+            // here is direct proof this exact line was evicted from the LLC
+            // too early. Incrementing block_serviced_from_llc directly on
+            // the persisted way_sector state (rather than the packet) means
+            // it survives untouched until this line is itself evicted from
+            // L1D and its data flows back into the LLC via handle_evict()
+            // below, at which point Set::handle_fill() picks it up.
+            if (cachesim::USE_GHOST_CACHE) {
+                uint64_t requested_llc_block = align_address(block_address, cachesim::BLOCK_SIZE);
+                if (cachesim::ghostCache.contains_and_remove(requested_llc_block)) {
+                    packet->from_ghost_cache = true;
+                    way_sector->block_serviced_from_llc[sector_idx]++;
+                    if ((serviced_from_llc[way_idx] == 0)) {
+                        serviced_from_llc[way_idx]++;
+                    }
+                }
+            }
         }
         auto was_accessed = (((packet->footprint >> sector_idx*bits_per_block)&bitmask) == bitmask);
         was_accessed |= (align_address(packet->address, block_size) == block_address);
