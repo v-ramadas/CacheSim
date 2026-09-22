@@ -32,7 +32,7 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
         is_sectored(is_sectored),
         insertion_policy(policy)
 {
-    PSEL = cachesim::PSEL_MAX;
+    PSEL = cachesim::PSEL_THRESHOLD;
     auto iso_area_num_ways = get_iso_area_cache(num_sets, num_ways, block_size);
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
@@ -1005,26 +1005,23 @@ void Cache<T>::record_leader_access(SetDuelingType type, bool hit) {
 // duel_locked == false is what triggers merge() back to 64B.
 template<typename T>
 void Cache<T>::update_dueling_confidence() {
-    if (cachesim::instCount - conf_last_check < cachesim::CONF_EPOCH)
-        return;
-    conf_last_check = cachesim::instCount;
-
     if (cachesim::DUELING_MODE == DuelingMode::PSEL) {
-        if (psel_switches_this_epoch == 0 && psel_changes_this_epoch > 0) {
-            if (psel_quiet_streak < cachesim::CONF_MAX)
-                psel_quiet_streak++;
+        if (cachesim::instCount >= cachesim::DUELING_PERIOD) {
+            if (PSEL < cachesim::PSEL_THRESHOLD) {
+                duel_locked = true;
+            } else {
+                duel_locked = false;
+            }
         } else {
-            psel_quiet_streak = 0;
-        }
-        psel_switches_last_epoch = psel_switches_this_epoch;
-        psel_switches_this_epoch = 0;
-        psel_changes_this_epoch = 0;
-
-        if (psel_quiet_streak >= cachesim::CONF_MAX) {
-            duel_locked = (PSEL < cachesim::PSEL_THRESHOLD);
+            duel_locked = false;
         }
         return;
     }
+
+    //ZTEST CONFIDENCE
+    if (cachesim::instCount - conf_last_check < cachesim::CONF_EPOCH)
+        return;
+    conf_last_check = cachesim::instCount;
 
     bool use_ratio = (cachesim::DUELING_MODE == DuelingMode::ZTEST_RATIO);
 

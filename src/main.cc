@@ -24,16 +24,16 @@ uint64_t cachesim::END_DEBUG = 10000000;
 bool performance::DETAILED_DRAM = false;
 
 bool cachesim::SET_DUELING = false;
-int cachesim::NUM_DUELS = 1;
-uint64_t cachesim::PSEL_MAX = 64;
-uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 2;
-uint64_t cachesim::DUELING_PERIOD = 10000000;
+int cachesim::NUM_DUELS = 64;
+uint64_t cachesim::PSEL_MAX = 4096;
+uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 1;
+uint64_t cachesim::DUELING_PERIOD = 1000000;
 
-DuelingMode cachesim::DUELING_MODE = DuelingMode::ZTEST;
+DuelingMode cachesim::DUELING_MODE = DuelingMode::PSEL;
 bool cachesim::LOG_DUELING_METRICS = false;
 
-uint64_t cachesim::CONF_EPOCH = 200000;
-uint64_t cachesim::CONF_MAX = 8;
+uint64_t cachesim::CONF_EPOCH = 10000;
+uint64_t cachesim::CONF_MAX = 1;
 uint64_t cachesim::CONF_MARGIN = cachesim::PSEL_THRESHOLD;
 double cachesim::Z_THRESHOLD = 2.0;
 

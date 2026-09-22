@@ -15,7 +15,7 @@ class HRRIP : public BasePolicy {
     HRRIP(): maxRRPV(3) {}
 
     HRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
-        maxRRPV(std::bit_floor(_num_ways)-1) {
+        maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, maxRRPV);
