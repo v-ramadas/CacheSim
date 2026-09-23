@@ -3,6 +3,7 @@
 #include "cachesim.h"
 #include "performance_model.h"
 #include "msl/bits.h"
+#include "trace_file.h"
 #include <cassert>
 #include <random>
 #include <algorithm>
@@ -719,7 +720,7 @@ void access_single_level(std::vector<BaseCache*> &cache,
 
 void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
     while (num_iters > 0) {
-        std::ifstream file(filename);
+        TraceFile file(filename);
 
         if (!file.is_open()) {
             std::cerr << "Error: Could not open the file!" << std::endl;
@@ -727,7 +728,7 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
         }
 
         std::string line;
-        while (std::getline(file, line)) {
+        while (file.getline(line)) {
             uint64_t pc = 0;
             uint64_t address = 0;
             uint64_t next_reuse = UINT64_MAX;
@@ -765,7 +766,6 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
                 }
             }
         }
-        file.close();
         --num_iters;
     }
     return;
@@ -773,7 +773,7 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
 
 void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
     while (num_iters > 0) {
-        std::ifstream file(filename);
+        TraceFile file(filename);
 
         if (!file.is_open()) {
             std::cerr << "Error: Could not open the file!" << std::endl;
@@ -781,7 +781,7 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
         }
 
         std::string line;
-        while (std::getline(file, line)) {
+        while (file.getline(line)) {
             uint64_t pc = 0;
             uint64_t address = 0;
             uint64_t next_reuse = UINT64_MAX;
@@ -818,7 +818,6 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
                 }
             }
         }
-        file.close();
         --num_iters;
     }
     return;
