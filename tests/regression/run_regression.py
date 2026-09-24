@@ -105,7 +105,7 @@ def build_binary():
 
 
 def run_one(trace, extra_args):
-    trace_path = TRACE_DIR / f"{trace}.random.log"
+    trace_path = TRACE_DIR / f"{trace}.random.xz"
     cmd = [str(BINARY), "--trace", str(trace_path)] + BASE_ARGS + extra_args
     result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800)
     mpkis = MPKI_RE.findall(result.stdout)
