@@ -75,6 +75,7 @@ def cfg_64b(policy):
 BASELINE_RERUN_CONFIGS = {
     "hru_8b_no_dueling": cfg_no_dueling("hru"),
     "phru_8b_no_dueling": cfg_no_dueling("phru"),
+    "hub_oracle_8b_no_dueling": cfg_no_dueling("hub_oracle"),
 }
 
 DUELING_CONFIGS = {
@@ -82,6 +83,8 @@ DUELING_CONFIGS = {
     "hru_8b_ztest": cfg_dueling("hru", "ztest"),
     "phru_8b_psel": cfg_dueling("phru", "psel"),
     "phru_8b_ztest": cfg_dueling("phru", "ztest"),
+    "hub_oracle_8b_psel": cfg_dueling("hub_oracle", "psel"),
+    "hub_oracle_8b_ztest": cfg_dueling("hub_oracle", "ztest"),
 }
 
 PERFORMANCE_POLICIES = ["hru", "hrupp", "phru", "phrupp"]
@@ -174,7 +177,7 @@ def speedup(reference_cycles, candidate_cycles):
 
 
 def mode_baseline(golden, traces, do_update):
-    print("=== baseline regression: HRU-8B, PHRU-8B (no dueling) ===")
+    print("=== baseline regression: HRU-8B, PHRU-8B, hub_oracle-8B (no dueling) ===")
     print("(lru_64b / srrip_64b are read-only reference values - not rerun)")
     any_fail = False
     for name, args in BASELINE_RERUN_CONFIGS.items():
@@ -197,7 +200,7 @@ def mode_baseline(golden, traces, do_update):
 
 
 def mode_dueling(golden, traces, do_update):
-    print("=== set-dueling regression: HRU-8B, PHRU-8B x {psel, ztest} ===")
+    print("=== set-dueling regression: HRU-8B, PHRU-8B, hub_oracle-8B x {psel, ztest} ===")
     any_fail = False
     for name, args in DUELING_CONFIGS.items():
         print(f"\n-- {name} --")

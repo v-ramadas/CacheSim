@@ -9,7 +9,7 @@
 #                    (e.g. as-Skitter) resolved to <trace-dir>/<name>.<order>.log
 #   --block-size N   LLC block size in bytes              (default: 8)
 #   --policy P       LLC replacement policy               (default: hru)
-#                    lru hru hrupp phru phrupp srrip drrip prrip ship belady hrrip hawkeye
+#                    lru hru hrupp phru phrupp hub_oracle srrip drrip prrip ship belady hrrip hawkeye
 #   --mode M         none | ztest | ztest-ratio | psel    (default: ztest)
 #                    none = baseline run without set dueling
 #   --sets N         LLC sets                             (default: 1024)

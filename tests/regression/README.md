@@ -12,11 +12,11 @@ all 9.
 
 ## Modes
 
-**`baseline`** - reruns HRU-8B and PHRU-8B (no set-dueling), exact-match diffs
+**`baseline`** - reruns HRU-8B, PHRU-8B and hub_oracle-8B (no set-dueling), exact-match diffs
 against `golden_values.json`'s `static_baselines`. `lru_64b` and `srrip_64b`
 are pure reference data in that file and are never rerun by this script.
 
-**`dueling`** - reruns HRU-8B and PHRU-8B under both the `psel` and `ztest`
+**`dueling`** - reruns HRU-8B, PHRU-8B and hub_oracle-8B under both the `psel` and `ztest`
 presets (exact flags below), exact-match diffs against `dueling_baselines`.
 
 **`performance`** - reruns HRU-8B, HRUpp-8B, PHRU-8B, PHRUpp-8B (dueling
@@ -71,11 +71,13 @@ testing of this codebase.
     "lru_64b": {"<trace>": {"mpki": ..., "cycles": ...}},
     "srrip_64b": {...},
     "hru_8b_no_dueling": {...},
-    "phru_8b_no_dueling": {...}
+    "phru_8b_no_dueling": {...},
+    "hub_oracle_8b_no_dueling": {...}
   },
   "dueling_baselines": {
     "hru_8b_psel": {...}, "hru_8b_ztest": {...},
-    "phru_8b_psel": {...}, "phru_8b_ztest": {...}
+    "phru_8b_psel": {...}, "phru_8b_ztest": {...},
+    "hub_oracle_8b_psel": {...}, "hub_oracle_8b_ztest": {...}
   },
   "performance_history": {
     "hru_8b_psel": {...}, "hrupp_8b_psel": {...},
