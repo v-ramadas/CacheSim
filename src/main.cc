@@ -88,6 +88,7 @@ int main(int argc, char** argv) {
         {"hrupp", ReplacementPolicy::HRUpp},
         {"phru", ReplacementPolicy::PHRU},
         {"phrupp", ReplacementPolicy::PHRUpp},
+        {"hub_oracle", ReplacementPolicy::HubOracle},
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
         {"prrip", ReplacementPolicy::PRRIP},
@@ -166,6 +167,7 @@ int main(int argc, char** argv) {
             cachesim::dropBlocks = true;
             break;
         case ReplacementPolicy::PHRU:
+        case ReplacementPolicy::HubOracle:
             cachesim::dropBlocks = true;
             cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
