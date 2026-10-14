@@ -1,0 +1,15 @@
+# Build outputs
+/bin/
+/obj/
+/condor/bin/
+/condor/basic_perf_model_bin/
+
+# Simulation data and results
+/results/
+/traces/
+/plots/
+/condor/results/
+
+# Python caches
+__pycache__/
+*.pyc
