@@ -14,7 +14,7 @@ class HRRIP : public BasePolicy {
     public:
     HRRIP(): maxRRPV(3) {}
 
-    HRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    HRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level):
         maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;

@@ -154,7 +154,7 @@ class Hawkeye : public BasePolicy {
     std::vector<bool> low_priority;
     public:
     Hawkeye() {}
-    Hawkeye(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    Hawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         maxRRPV = 7;

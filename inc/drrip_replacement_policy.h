@@ -23,7 +23,7 @@ class DRRIP : public BasePolicy {
 
     public:
     DRRIP() : maxRRPV(3) {}
-    DRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) :
+    DRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) :
         maxRRPV(std::bit_floor(_num_ways)-1) {
         set_idx = _set_idx;
         num_ways = _num_ways;

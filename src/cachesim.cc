@@ -13,7 +13,7 @@ template<typename T>
 Cache<T>::Cache():
         NAME("DefaultCache"),
         num_sets(1024),
-        level(0),
+        level(CacheLevel::L1D),
         is_sectored(false),
         insertion_policy(InsertionPolicy::EXCLUSIVE) {
    PSEL = 0;
@@ -25,7 +25,7 @@ Cache<T>::Cache():
 }
 
 template<typename T>
-Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, uint64_t level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy):
+Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, CacheLevel level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy):
         NAME(name),
         num_sets(_num_sets),
         num_ways(_num_ways),
@@ -45,7 +45,7 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
 
     if (is_sectored) {
         for (uint64_t i = 0; i < num_sets; ++i) {
-            assert(level == 0);
+            assert(level == CacheLevel::L1D);
             sets[i] = std::make_unique<T>(this, num_ways, block_size, i, repl_policy, level);
         }
     } else {
@@ -206,9 +206,9 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
 }
 
 template<typename T>
-bool Cache<T>::can_insert_at_level(int level) {
+bool Cache<T>::can_insert_at_level(CacheLevel level) {
     if (insertion_policy == InsertionPolicy::EXCLUSIVE) {
-        return level == 0;
+        return level == CacheLevel::L1D;
     } else {
         return true;
     }
@@ -265,7 +265,7 @@ bool Cache<T>::try_hit(PacketPtr packet) {
 }
 
 template<typename T>
-void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level) {
+void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet) {
 //    if (fill_packet->block_accesses.size() == 0) {
 //        fill_packet->block_accesses.resize(8, 0);
 //    }
@@ -322,7 +322,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
 }
 
 template<typename T>
-void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level) {
+void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet) {
 //    if (fill_packet->block_accesses.size() == 0) {
 //        fill_packet->block_accesses.resize(8, 0);
 //    }
@@ -597,7 +597,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             *fill_packet = *invalidation_packet;
             fill_packet->footprint |= invalidation_packet->footprint;
             fill_packet->serviced_from_llc += 1;
-            cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
+            cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
         } else {
             cache[1]->handle_invalidate(invalidation_packet);
             if (invalidation_packet->blocks.size() != 0)
@@ -609,7 +609,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
-            cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
+            cache[0]->handle_fill_line(fill_packet, eviction_packet);
         }
 
         auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(eviction_packet->address));
@@ -645,7 +645,7 @@ void access_multi_level(std::vector<BaseCache*> &cache,
                 }
                 fill_packet->next_reuse = eviction_packet->next_reuse;
                 eviction_packet->clear();
-                cache[i]->handle_fill_blocks(fill_packet, eviction_packet, 1);
+                cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
 
                 if (eviction_packet->blocks.size() > 0) {
                     predictor->update_eviction(eviction_packet);
@@ -712,7 +712,7 @@ void access_single_level(std::vector<BaseCache*> &cache,
 
     bool hit = cache[0]->try_hit(access_packet);
     if (!hit) {
-        cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
+        cache[0]->handle_fill_line(fill_packet, eviction_packet);
     }
     return;
 }

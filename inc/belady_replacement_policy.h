@@ -9,7 +9,7 @@ class Belady : public BasePolicy {
     public:
     Belady() {}
 
-    Belady(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    Belady(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, UINT64_MAX);

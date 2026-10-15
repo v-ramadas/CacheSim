@@ -197,8 +197,8 @@ int main(int argc, char** argv) {
 #ifdef MULTI_LEVEL
     cache.resize(2);
     //cache[0] = new Cache<Set>("L1D", 128, 16, cachesim::BLOCK_SIZE, 0, false, ReplacementPolicy::LRU, insertion_policy);
-    cache[0] = new Cache<SectoredSet>("L1D", 128, 16, 8, 0, true, ReplacementPolicy::LRU, insertion_policy);
-    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, 1, false, replacement_policy, insertion_policy);
+    cache[0] = new Cache<SectoredSet>("L1D", 128, 16, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy);
+    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy);
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
     if (cachesim::useMemSignature)
@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
         predictor->set_pc_signature();
 #else
     cache.resize(1);
-    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, 0, false, replacement_policy, insertion_policy);
+    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::L1D, false, replacement_policy, insertion_policy);
 #endif
 
     std::map<uint64_t, uint64_t> page_count;

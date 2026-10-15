@@ -50,7 +50,7 @@ class Set {
     uint64_t set_idx = 1;
     uint64_t num_blocks;
     uint64_t num_lines;
-    uint64_t level = 0;
+    CacheLevel level = CacheLevel::L1D;
 
     uint64_t bits_per_block;
     uint64_t bitmask;
@@ -76,7 +76,7 @@ class Set {
 
     public:
     Set() {}
-    Set(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, uint64_t _level) {
+    Set(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, CacheLevel _level) {
         cache = p;
         num_ways = _num_ways;
         original_num_ways = _num_ways;
@@ -195,7 +195,7 @@ class SectoredSet: public Set {
 
     public:
     SectoredSet() {}
-    SectoredSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, uint64_t _level) {
+    SectoredSet(BaseCache* p, uint64_t _num_ways, uint64_t blk_size, uint64_t _set_idx, ReplacementPolicy policy, CacheLevel _level) {
         cache = p;
         num_ways = _num_ways;
         block_size = blk_size;
@@ -257,8 +257,8 @@ class BaseCache {
     virtual ~BaseCache() = default;
     virtual uint64_t get_set_idx(uint64_t address) const = 0;
     virtual bool try_hit(PacketPtr packet) = 0;
-    virtual void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
-    virtual void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0) = 0;
+    virtual void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet) = 0;
+    virtual void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet) = 0;
     virtual void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) = 0;
     virtual void handle_invalidate(PacketPtr packet) = 0;
     virtual void populate_line(PacketPtr packet) = 0;
@@ -266,7 +266,8 @@ class BaseCache {
     virtual void breakdown(uint64_t block_size) = 0;
     virtual void merge(uint64_t block_size) = 0;
 
-    virtual bool can_insert_at_level(int level) = 0;
+    virtual bool can_insert_at_level(CacheLevel level) = 0;
+    virtual CacheLevel get_level() const = 0;
     virtual void incr_psel() = 0;
     virtual void decr_psel() = 0;
     virtual void record_leader_access(SetDuelingType type, bool hit) = 0;
@@ -319,7 +320,7 @@ class Cache: public BaseCache {
     uint64_t num_sets;
     uint64_t num_ways;
     uint64_t total_accesses = 0;
-    uint64_t level = 0;
+    CacheLevel level = CacheLevel::L1D;
     std::unordered_map<uint64_t, std::unique_ptr<T>> sets;
     const bool is_sectored;
     const InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
@@ -586,13 +587,13 @@ class Cache: public BaseCache {
     public:
     Cache();
 
-    Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, uint64_t level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy=InsertionPolicy::EXCLUSIVE);
+    Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64_t block_size, CacheLevel level, bool is_sectored, ReplacementPolicy repl_policy, InsertionPolicy policy=InsertionPolicy::EXCLUSIVE);
 
     std::string get_name() const {return NAME;}
     uint64_t get_set_idx(uint64_t address) const;
     bool try_hit(PacketPtr packet);
-    void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
-    void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet, int level = 0);
+    void handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_packet);
+    void handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet);
     void handle_evict(PacketPtr access_packet, PacketPtr eviction_packet);
     void handle_invalidate(PacketPtr packet);
     void populate_line(PacketPtr packet);
@@ -601,7 +602,8 @@ class Cache: public BaseCache {
     void merge(uint64_t block_size);
 
     bool is_eviction_needed(PacketPtr packet) const;
-    bool can_insert_at_level(int level);
+    bool can_insert_at_level(CacheLevel level);
+    CacheLevel get_level() const { return level; }
 
     void print_mpki_curve(uint64_t inst_count);
     void print_stats(uint64_t inst_count, std::string tracename);

@@ -13,7 +13,7 @@ class SHIP : public BasePolicy {
     public:
     SHIP(): maxRRPV(3) {}
 
-    SHIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    SHIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level):
         maxRRPV(_num_ways-1) {
 //        maxRRPV(3) {
         set_idx = _set_idx;

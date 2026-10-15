@@ -14,7 +14,7 @@ class SRRIP : public BasePolicy {
     public:
     SRRIP(): maxRRPV(3) {}
 
-    SRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    SRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level):
         maxRRPV(3) {
         set_idx = _set_idx;
         num_ways = _num_ways;

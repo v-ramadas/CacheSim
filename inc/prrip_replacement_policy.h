@@ -15,7 +15,7 @@ class PRRIP : public BasePolicy {
     public:
     PRRIP(): maxRRPV(3) {}
 
-    PRRIP(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level):
+    PRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level):
         maxRRPV(std::bit_floor(_num_ways)-1) {
 //        maxRRPV(3) {
         set_idx = _set_idx;

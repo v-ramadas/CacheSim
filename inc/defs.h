@@ -45,7 +45,7 @@ enum class ReplacementPolicy {
     HubOracle,
 };
 
-inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, uint64_t level) {
+inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, CacheLevel level) {
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);

@@ -76,7 +76,7 @@ bool Set::try_hit(PacketPtr packet) {
     cache->record_leader_access(get_dueling_type(), hit);
 
     if (hit) {
-        if (level == 0 || cache->get_insertion_policy() != InsertionPolicy::EXCLUSIVE)
+        if (level == CacheLevel::L1D || cache->get_insertion_policy() != InsertionPolicy::EXCLUSIVE)
             repl_counter->init_counter(packet);
         for (auto way_idx: way_idx_list) {
             if (!packet->is_read) {
@@ -131,7 +131,7 @@ void Set::handle_fill(PacketPtr packet) {
 
     for (const auto block_address: packet->blocks) {
         bool was_accessed;
-        if (level == 0) {
+        if (level == CacheLevel::L1D) {
             was_accessed = (block_address == align_address(packet->address, block_size)); 
         } else {
             was_accessed = ((packet->footprint >> (block_idx*bits_per_block)&bitmask) == bitmask);
@@ -270,7 +270,7 @@ void Set::handle_evict(PacketPtr packet) {
         // threshold to 1 helped PHRU substantially (fixed a persistent 8B
         // regression) but hurt HRU slightly - the two policies want
         // different bars here, hence CLI-tunable rather than hardcoded.
-        if (cachesim::USE_GHOST_CACHE && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > cachesim::GHOST_CACHE_MIN_SERVICED) {
+        if (cachesim::USE_GHOST_CACHE && level == CacheLevel::LLC && valid[way_idx] && serviced_from_llc[way_idx] > cachesim::GHOST_CACHE_MIN_SERVICED) {
             cachesim::ghostCache.insert(ways[way_idx], serviced_from_llc[way_idx]);
         }
 

@@ -15,7 +15,7 @@ class BasePolicy {
     uint64_t set_idx;
     uint64_t num_ways;
     uint64_t reserved_ways;
-    uint64_t level;
+    CacheLevel level;
     uint64_t global_clock;
 
     public:

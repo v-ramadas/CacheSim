@@ -45,7 +45,7 @@ class PHRU : public BasePolicy {
     static void print_heuristic_stats();
 
     PHRU() {}
-    PHRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    PHRU(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, max_counter);

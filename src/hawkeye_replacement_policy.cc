@@ -9,7 +9,7 @@ void Hawkeye::init_counter(PacketPtr /*packet*/) {
 }
 
 void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
-    if (level == 0) {
+    if (level == CacheLevel::L1D) {
         uint64_t paddr = (packet->address >> 6) << 6;
 
         //If we are sampling, OPTgen will only see accesses from sampled sets

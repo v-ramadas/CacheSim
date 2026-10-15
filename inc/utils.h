@@ -78,6 +78,26 @@ enum class InsertionPolicy {
     INCLUSIVE,
 };
 
+// Position of a cache in the hierarchy. The LLC is always CacheLevel::LLC,
+// whether or not the optional L2 is present.
+enum class CacheLevel {
+    L1D,
+    L2,
+    LLC,
+};
+
+inline const char* to_string(CacheLevel level) {
+    switch (level) {
+        case CacheLevel::L1D: return "L1D";
+        case CacheLevel::L2:  return "L2";
+        case CacheLevel::LLC: return "LLC";
+    }
+    return "?";
+}
+
+// Lets fmt print a CacheLevel with "{}".
+inline const char* format_as(CacheLevel level) { return to_string(level); }
+
 struct Packet {
     uint64_t pc;
     uint64_t address;

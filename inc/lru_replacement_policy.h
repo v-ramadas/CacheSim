@@ -10,7 +10,7 @@ class LRU : public BasePolicy {
     std::vector<bool> low_priority;
     public:
     LRU() {}
-    LRU(uint64_t _set_idx, uint64_t _num_ways, uint64_t _level) {
+    LRU(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
         counter.resize(num_ways, max_counter);

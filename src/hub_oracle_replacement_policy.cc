@@ -37,7 +37,7 @@ void HubOracle::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr pack
     hub |= packet->from_ghost_cache;
     counter[way_idx] = hub ? mru_counter : lru_counter;
     low_priority[way_idx] = !hub;
-    if (level == 1) {
+    if (level == CacheLevel::LLC) {
         fills++;
         if (hub) (packet->serviced_from_llc > 0 ? pins_reused : pins_first)++;
     }
