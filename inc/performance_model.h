@@ -61,6 +61,8 @@ class PerformanceModel {
         l1d_max_tag_check,
         l1d_max_fill,
 
+        l2_latency,
+
         llc_frequency,
         llc_rq_size,
         llc_wq_size,
@@ -138,6 +140,7 @@ class PerformanceModel {
         {"llc_pq_size", Params::llc_pq_size},
         {"llc_mshr_size", Params::llc_mshr_size},
         {"llc_latency", Params::llc_latency},
+        {"l2_latency", Params::l2_latency},
         {"llc_max_tag_check", Params::llc_max_tag_check},
         {"llc_max_fill", Params::llc_max_fill},
 
@@ -189,6 +192,8 @@ class PerformanceModel {
     static void processCPU(const uint64_t numInstructions = 1);
 
     static void processL1D(uint64_t address, bool is_hit, bool is_fill);
+
+    static void processL2(uint64_t address, bool is_hit, bool is_fill);
 
     static void processLLC(uint64_t address, bool is_hit, bool is_fill);
 

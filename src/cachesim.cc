@@ -44,8 +44,9 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
     //uint64_t num_set_chunks = num_sets/(2*cachesim::NUM_DUELS);
 
     if (is_sectored) {
+        // Sectored caches: the L1D and the optional L2.
+        assert(level != CacheLevel::LLC);
         for (uint64_t i = 0; i < num_sets; ++i) {
-            assert(level == CacheLevel::L1D);
             sets[i] = std::make_unique<T>(this, num_ways, block_size, i, repl_policy, level);
         }
     } else {
@@ -131,6 +132,7 @@ template<typename T>
 void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     auto mpki = (((float)(get_misses()))/instCount)*1000;
     auto miss_rate = ((float)(get_misses()))/(get_hits() + get_misses());
+    fmt::print("Cache {}\n", NAME);
     fmt::print(" Trace File {}, Instruction count: {} cache size: {} KB\n", tracename, (float)(instCount),
             num_sets*num_ways*get_block_size(0)/1024);
     fmt::print("hits: {} miss: {} accesses: {} read_hits: {} read_misses: {} write_hits: {} write_misses: {}\n",
@@ -596,16 +598,24 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             cache[hit_at_level]->handle_invalidate(invalidation_packet);
             *fill_packet = *invalidation_packet;
             fill_packet->footprint |= invalidation_packet->footprint;
-            fill_packet->serviced_from_llc += 1;
+            // serviced_from_llc counts LLC round trips only, not L2 hits.
+            if (cache[hit_at_level]->get_level() == CacheLevel::LLC)
+                fill_packet->serviced_from_llc += 1;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
         } else {
-            cache[1]->handle_invalidate(invalidation_packet);
-            if (invalidation_packet->blocks.size() != 0)
-                *fill_packet = *invalidation_packet;
-
-            cache[0]->handle_invalidate(invalidation_packet);
-            if (invalidation_packet->blocks.size() != 0)
-                *fill_packet = *invalidation_packet;
+            // Pull any partial copy of the line out of every level, LLC first
+            // and L1D last, so the line is refilled into L1D whole. A miss in a
+            // sectored cache clears the packet, so restore the line's address
+            // and size before each level.
+            const uint64_t line_address = invalidation_packet->address;
+            const uint64_t line_size = invalidation_packet->size;
+            for (int i = num_levels - 1; i >= 0; i--) {
+                invalidation_packet->address = line_address;
+                invalidation_packet->size = line_size;
+                cache[i]->handle_invalidate(invalidation_packet);
+                if (invalidation_packet->blocks.size() != 0)
+                    *fill_packet = *invalidation_packet;
+            }
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
@@ -624,8 +634,14 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
             fill_packet->l1_hits = eviction_packet->l1_hits;
             if (fill_packet->l1_hits == 0) fill_packet->l1_hits = 1;
-            // Train on data movement from LLC -> L1D
-            if (eviction_packet->blocks.size() > 0) {
+            if (eviction_packet->blocks.size() > 0 && cache[i]->get_level() != CacheLevel::LLC) {
+                // L1D victim into the L2: move it as is. The predictor only
+                // trains on, and predicts for, fills into the LLC.
+                *fill_packet = *eviction_packet;
+                eviction_packet->clear();
+                cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
+            } else if (eviction_packet->blocks.size() > 0) {
+                // Train on data movement from LLC -> L1D
                 predictor->update_footprint(eviction_packet);
                 predictor->update_access(fill_packet);
                 if (cachesim::instCount >= cachesim::WARMUP_INSTRUCTIONS) {
@@ -653,37 +669,28 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             } else {
                 break;
             }
-            eviction_packet->clear();
-            eviction_packet->clear_pc();
+            // eviction_packet now holds this level's victim, which the next
+            // iteration fills into the level below - do not clear it here.
             fill_packet->clear();
             fill_packet->clear_pc();
             prev_cache_block_size = curr_cache_block_size;
         }
     }
 
-    switch(hit_at_level) {
-        case 0:
-            // L1 hit - We assume the CPU has an IPC of 1 on cache hit
-            // and is already accounted for
-            //PerformanceModel::processL1D(fill_packet->address, true, false);
-            break;
-        case 1:
-            // L1 miss
-            //PerformanceModel::processL1D(fill_packet->address, false, false);
+    // L1D hit: we assume the CPU has an IPC of 1 on cache hit, already
+    // accounted for in processCPU. Otherwise charge each level the access
+    // reached: L2 (if present), then LLC, then memory.
+    if (hit_at_level != 0) {
+        const bool served_by_l2 = hit_at_level < num_levels && cache[hit_at_level]->get_level() == CacheLevel::L2;
+        const bool served_by_llc = hit_at_level < num_levels && cache[hit_at_level]->get_level() == CacheLevel::LLC;
+        if (num_levels > 2)
+            PerformanceModel::processL2(fill_packet->address, served_by_l2, false);
+        if (served_by_llc) {
             PerformanceModel::processLLC(fill_packet->address, true, false);
-            // L1 fill
-            //PerformanceModel::processL1D(fill_packet->address, false, true);
-            break;
-        default:
-            // L1 miss
-            //PerformanceModel::processL1D(fill_packet->address, false, false);
-            // LLC miss
+        } else if (!served_by_l2) {
             PerformanceModel::processLLC(fill_packet->address, false, false);
-            // Memory access
             PerformanceModel::processMemory(fill_packet->address);
-            // L1 fill
-            //PerformanceModel::processL1D(fill_packet->address, false, true);
-            break;
+        }
     }
 }
 #else

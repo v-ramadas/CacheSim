@@ -124,6 +124,20 @@ void PerformanceModel::processL1D(uint64_t /*address*/, bool is_hit, bool is_fil
     }
 }
 
+// Optional L2 (--l2). l2_latency defaults to 10 cycles when the config file
+// does not set it, so existing configs keep working.
+void PerformanceModel::processL2(uint64_t /*address*/, bool is_hit, bool is_fill) {
+    uint64_t latency = getParam("l2_latency");
+    if (latency == 0) latency = 10;
+    if (is_fill) {
+        numCycles += (latency+1)/2;
+    } else if (is_hit) {
+        numCycles += (latency-1)/2;
+    } else {
+        numCycles += (latency-1)/2;
+    }
+}
+
 void PerformanceModel::processLLC(uint64_t /*address*/, bool is_hit, bool is_fill) {
     if (is_fill) {
         numCycles += (getParam("llc_latency")+1)/2;

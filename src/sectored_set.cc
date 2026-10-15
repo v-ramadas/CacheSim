@@ -94,11 +94,17 @@ bool SectoredSet::try_hit(PacketPtr packet) {
         if (next_reuse[way_idx] != UINT64_MAX) next_reuse[way_idx] = packet->next_reuse;
 
         for (auto sector_idx: sector_idx_list) {
+            // dirty[] and degree[] are per way. The L1D has always indexed them
+            // by sector (a long-standing bug that touches ways 0-7 instead of
+            // the hit way); it is kept there so results match the golden
+            // values. Other levels (the L2) index the hit way, which also
+            // stays in bounds when the L2 has fewer than 8 ways.
+            uint64_t idx = (level == CacheLevel::L1D) ? sector_idx : (uint64_t)way_idx;
             if (!packet->is_read) {
-                dirty[sector_idx] = true;
+                dirty[idx] = true;
             }
-            if (degree[sector_idx] < packet->degree)
-                degree[sector_idx] = packet->degree;
+            if (degree[idx] < packet->degree)
+                degree[idx] = packet->degree;
 
         }
         auto word_idx = (packet->address - packet->aligned_address) >> 3;
@@ -167,7 +173,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
             // it survives untouched until this line is itself evicted from
             // L1D and its data flows back into the LLC via handle_evict()
             // below, at which point Set::handle_fill() picks it up.
-            if (cachesim::USE_GHOST_CACHE) {
+            if (cachesim::USE_GHOST_CACHE && level == CacheLevel::L1D) {
                 uint64_t requested_llc_block = align_address(block_address, cachesim::BLOCK_SIZE);
                 if (cachesim::ghostCache.contains_and_remove(requested_llc_block)) {
                     packet->from_ghost_cache = true;
@@ -179,7 +185,10 @@ void SectoredSet::handle_fill(PacketPtr packet) {
             }
         }
         auto was_accessed = (((packet->footprint >> sector_idx*bits_per_block)&bitmask) == bitmask);
-        was_accessed |= (align_address(packet->address, block_size) == block_address);
+        // Only an L1D fill is a demand access; an L2 fill is an L1D victim,
+        // whose footprint already says which sectors were used.
+        if (level == CacheLevel::L1D)
+            was_accessed |= (align_address(packet->address, block_size) == block_address);
         for (auto word_idx = sector_idx; word_idx < sector_idx + bits_per_block; word_idx++) {
             if (was_accessed) {
                 set_footprint(way_idx, word_idx, true);

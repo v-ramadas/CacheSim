@@ -71,6 +71,15 @@ namespace cachesim {
     extern GhostCache ghostCache;
     extern bool GHOST_CACHE_DEBUG;
     extern uint64_t GHOST_CACHE_MIN_SERVICED;
+
+    // L1D geometry (--l1-sets / --l1-ways; each way is a 64B line with 8B sectors).
+    extern uint64_t L1_NUM_SETS;
+    extern uint64_t L1_NUM_WAYS;
+
+    // Optional sectored L2 between L1D and LLC (--l2).
+    extern bool L2_ENABLED;
+    extern uint64_t L2_NUM_SETS;
+    extern uint64_t L2_NUM_WAYS;
 };
 
 enum class InsertionPolicy {

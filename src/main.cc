@@ -53,6 +53,11 @@ uint64_t cachesim::GHOST_CACHE_SIZE = 32;
 GhostCache cachesim::ghostCache;
 bool cachesim::GHOST_CACHE_DEBUG = false;
 uint64_t cachesim::GHOST_CACHE_MIN_SERVICED = 1;
+uint64_t cachesim::L1_NUM_SETS = 128;
+uint64_t cachesim::L1_NUM_WAYS = 16;
+bool cachesim::L2_ENABLED = false;
+uint64_t cachesim::L2_NUM_SETS = 1024;
+uint64_t cachesim::L2_NUM_WAYS = 16;
 
 enum class TraceFormat {
     CHAMPSIM,
@@ -133,6 +138,11 @@ int main(int argc, char** argv) {
     app.add_option("--ghost-cache-size", cachesim::GHOST_CACHE_SIZE, "Ghost cache capacity in entries (only used if --use-ghost-cache is set)");
     app.add_flag("--debug-ghost-cache", cachesim::GHOST_CACHE_DEBUG, "Print a line for every ghost cache insert/lookup/eviction (only used if --use-ghost-cache is set)");
     app.add_option("--ghost-cache-min-serviced", cachesim::GHOST_CACHE_MIN_SERVICED, "A line is only inserted into the ghost cache on LLC eviction if serviced_from_llc exceeds this (only used if --use-ghost-cache is set); default 1 (i.e. requires serviced_from_llc > 1)");
+    app.add_option("--l1-sets", cachesim::L1_NUM_SETS, "L1D sets (default 128)");
+    app.add_option("--l1-ways", cachesim::L1_NUM_WAYS, "L1D ways, each a 64B line with 8B sectors (default 16 -> 128KB; it prints as sets x ways x 8B)");
+    app.add_flag("--l2", cachesim::L2_ENABLED, "Add a sectored L2 (64B lines, 8B sectors, LRU) between L1D and LLC; exclusive like the rest of the hierarchy");
+    app.add_option("--l2-sets", cachesim::L2_NUM_SETS, "L2 sets (only used with --l2; default 1024)");
+    app.add_option("--l2-ways", cachesim::L2_NUM_WAYS, "L2 ways, each a 64B line (only used with --l2; default 16 -> 1MB)");
 
 
     CLI11_PARSE(app, argc, argv);
@@ -195,10 +205,12 @@ int main(int argc, char** argv) {
     std::vector<BaseCache*> cache;
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
-    cache.resize(2);
     //cache[0] = new Cache<Set>("L1D", 128, 16, cachesim::BLOCK_SIZE, 0, false, ReplacementPolicy::LRU, insertion_policy);
-    cache[0] = new Cache<SectoredSet>("L1D", 128, 16, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy);
-    cache[1] = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy);
+    cache.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
+    if (cachesim::L2_ENABLED) {
+        cache.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
+    }
+    cache.push_back(new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy));
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
     if (cachesim::useMemSignature)
@@ -223,7 +235,12 @@ int main(int argc, char** argv) {
         useChampsimTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
     }
 
-    for (auto cache_inst: cache) {
+    // Print L1D, then the LLC, then any middle level (L2), so the LLC stays the
+    // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC.
+    std::vector<BaseCache*> print_order{cache.front()};
+    if (cache.size() > 1) print_order.push_back(cache.back());
+    for (size_t i = 1; i + 1 < cache.size(); ++i) print_order.push_back(cache[i]);
+    for (auto cache_inst: print_order) {
         cache_inst->print_stats(cachesim::instCount, tracename);
         delete cache_inst;
     }
