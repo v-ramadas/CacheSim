@@ -481,10 +481,23 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             continue;
         }
         auto set_idx = get_set_idx(fill_packet->address);
-        auto ways = get_ways(set_idx);
+        const auto& ways = get_ways(set_idx);
         //auto was_accessed = (fill_packet->footprint >> idx) & 0x1;
-        auto try_hit = std::find(ways.begin(), ways.end(), *it);
         auto block_size = sets[set_idx]->get_block_size();
+        // Presence check. Set (LLC) matches on its per-way tags; an address that
+        // isn't block-aligned never equalled a stored (aligned) address, so it
+        // stays a miss. SectoredSet (L1D/L2) keeps the address lookup.
+        uint64_t found_way = ways.size();
+        if constexpr (std::is_same_v<T, Set>) {
+            if (align_address(*it, block_size) == *it)
+                found_way = sets[set_idx]->find_way(*it);
+#ifdef TAG_CHECK
+            assert(found_way == (uint64_t)std::distance(ways.begin(), std::find(ways.begin(), ways.end(), *it)));
+#endif
+        } else {
+            found_way = std::distance(ways.begin(), std::find(ways.begin(), ways.end(), *it));
+        }
+        auto try_hit = ways.begin() + found_way;
         auto dropBlock = false;
         if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
             dropBlock = true;

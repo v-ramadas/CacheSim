@@ -33,6 +33,12 @@ class Set {
     uint64_t num_ways;
     uint64_t original_num_ways = 0;
     std::vector<uint64_t> ways;
+    // Per-way tag: the address bits above the set index, plus the sector bits
+    // when block_size < 64 - i.e. the 64 - log2(block_size) - log2(num_sets)
+    // bits get_total_cache_size() charges. Kept in lockstep with ways (set via
+    // set_way_address()); lookups match on tags. INVALID_TAG for empty ways.
+    static constexpr uint64_t INVALID_TAG = UINT64_MAX;
+    std::vector<uint64_t> tags;
     std::unique_ptr<BasePolicy> repl_counter;
     std::vector<bool> valid;
     std::vector<uint64_t> serviced_from_llc;
@@ -88,6 +94,7 @@ class Set {
         bits_per_block = block_size/8;
         bitmask = (1ULL << bits_per_block) - 1;
         ways.resize(num_ways, UINT64_MAX);
+        tags.resize(num_ways, INVALID_TAG);
         repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
@@ -105,6 +112,10 @@ class Set {
 
     ~Set() {
     }
+
+    uint64_t make_tag(uint64_t address) const;
+    void set_way_address(uint64_t way_idx, uint64_t address);
+    uint64_t find_way(uint64_t aligned_address) const;  // tags.size() if absent
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
     void fill_packet(PacketPtr packet, uint64_t way_idx);

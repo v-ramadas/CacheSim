@@ -16,6 +16,39 @@ void Set::set_footprint(uint64_t way_idx, uint64_t word_idx, bool accessed) {
     return;
 }
 
+uint64_t Set::make_tag(uint64_t address) const {
+    if (address == UINT64_MAX)
+        return INVALID_TAG;
+    uint64_t index_shift = champsim::msl::lg2(CACHELINE_SIZE) + champsim::msl::lg2(cache->get_num_sets());
+    uint64_t sector_bits = champsim::msl::lg2(CACHELINE_SIZE) - champsim::msl::lg2(block_size);
+    uint64_t sector = (address >> champsim::msl::lg2(block_size)) & ((1ULL << sector_bits) - 1);
+    return ((address >> index_shift) << sector_bits) | sector;
+}
+
+void Set::set_way_address(uint64_t way_idx, uint64_t address) {
+    // A tag only identifies a block within its own set, and only at block
+    // granularity - both hold for every address a Set stores today.
+    assert(address == UINT64_MAX || align_address(address, block_size) == address);
+    assert(address == UINT64_MAX ||
+           ((address >> champsim::msl::lg2(CACHELINE_SIZE)) & (cache->get_num_sets() - 1)) == set_idx);
+    ways[way_idx] = address;
+    tags[way_idx] = make_tag(address);
+}
+
+uint64_t Set::find_way(uint64_t aligned_address) const {
+    auto tag = make_tag(aligned_address);
+    if (tag == INVALID_TAG)
+        return tags.size();
+    auto way = std::find(tags.begin(), tags.end(), tag);
+    uint64_t way_idx = std::distance(tags.begin(), way);
+#ifdef TAG_CHECK
+    // Verification build: tag lookup must find exactly what an address lookup finds.
+    auto by_addr = std::distance(ways.begin(), std::find(ways.begin(), ways.end(), aligned_address));
+    assert((uint64_t)by_addr == way_idx);
+#endif
+    return way_idx;
+}
+
 void Set::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
@@ -34,7 +67,7 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
 }
 
 void Set::invalidate_way(uint64_t way_idx) {
-    ways[way_idx] = UINT64_MAX;
+    set_way_address(way_idx, UINT64_MAX);
     valid[way_idx] = false;
     dirty[way_idx] = false;
 
@@ -54,10 +87,9 @@ bool Set::try_hit(PacketPtr packet) {
     std::vector<uint64_t> way_idx_list;
     for (const auto block: packet->blocks) {
         auto aligned_address = align_address(block, block_size);
-        auto way = std::find(ways.begin(), ways.end(), aligned_address);
-        auto way_idx = std::distance(ways.begin(), way);
+        auto way_idx = find_way(aligned_address);
 
-        bool block_hit = (way != ways.end());// && (valid[way_idx] == true);
+        bool block_hit = (way_idx < tags.size());// && (valid[way_idx] == true);
         hit &= block_hit;
 
         //if (cachesim::DEBUG || cachesim::LLC_DEBUG)
@@ -94,7 +126,7 @@ bool Set::try_hit(PacketPtr packet) {
             way_hits[way_idx]++;
             degree[way_idx] = std::max(degree[way_idx], packet->degree);
 
-            if (ways[way_idx] == align_address(packet->address, block_size)) {
+            if (tags[way_idx] == make_tag(align_address(packet->address, block_size))) {
                 serviced_from_llc[way_idx]++;
                 //cache->update_data_var_hub_hits((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
             }
@@ -152,7 +184,7 @@ void Set::handle_fill(PacketPtr packet) {
 
         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
         if (block_address != UINT64_MAX) {
-            ways[way_idx] = block_address;
+            set_way_address(way_idx, block_address);
         }
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
@@ -223,7 +255,7 @@ void Set::handle_evict(PacketPtr packet) {
                     dist_way_idx = repl_counter->get_reserved_eviction_candidate(false);
 
                 }
-                ways[dist_way_idx] = ways[way_idx];
+                set_way_address(dist_way_idx, ways[way_idx]);
                 pc[dist_way_idx] = pc[way_idx];
                 valid[dist_way_idx] = true;
                 serviced_from_llc[dist_way_idx] = serviced_from_llc[way_idx];
@@ -291,10 +323,13 @@ void Set::handle_evict(PacketPtr packet) {
 }
 
 void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
-    auto try_hit = std::find(ways.begin(), ways.end(), packet->address);
+    // ways only ever hold block-aligned addresses, so an unaligned (or invalid)
+    // packet->address never matched the old exact-address lookup; keep that.
+    uint64_t way_idx = tags.size();
+    if (packet->address != UINT64_MAX && align_address(packet->address, block_size) == packet->address)
+        way_idx = find_way(packet->address);
     uint64_t inv_address = UINT64_MAX;
-    if (try_hit != ways.end()) {
-        auto way_idx = std::distance(ways.begin(), try_hit);
+    if (way_idx < tags.size()) {
         //serviced_from_llc[way_idx]++;
         inv_address = ways[way_idx];
         //auto previous_footprint = packet->footprint;
@@ -409,6 +444,7 @@ void Set::set_breakdown(uint64_t new_block_size) {
         repl_counter->evict(way_idx);
         if (iso_area_new_num_ways != new_num_ways) {
             contract(ways, way_idx, 1);
+            contract(tags, way_idx, 1);
             contract(valid, way_idx, 1);
             contract(serviced_from_llc, way_idx, 1);
             contract(is_hub_node, way_idx, 1);
@@ -454,6 +490,12 @@ void Set::set_breakdown(uint64_t new_block_size) {
     num_lines = num_ways/num_blocks;
     bits_per_block = block_size/8;
     bitmask = (1ULL << bits_per_block) - 1;
+
+    // Tags depend on block_size (sector bits), so rebuild them from the
+    // broken-down ways now that block_size is the new one.
+    tags.resize(num_ways);
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        tags[way_idx] = make_tag(ways[way_idx]);
 }
 
 // Inverse of set_breakdown: merge small blocks back into fewer, larger ones.
@@ -483,6 +525,7 @@ void Set::set_merge(uint64_t new_block_size) {
     }
 
     ways.assign(new_num_ways, UINT64_MAX);
+    tags.assign(new_num_ways, INVALID_TAG);
     valid.assign(new_num_ways, false);
     serviced_from_llc.assign(new_num_ways, 0);
     is_hub_node.assign(new_num_ways, false);
