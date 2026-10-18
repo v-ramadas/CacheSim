@@ -118,7 +118,10 @@ void PHRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, b
             counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
         } else if (is_hub_node && !was_accessed) {
-            counter[way_idx] = mru_counter;
+            // A hub block that wasn't accessed goes one access step below MRU
+            // (mru_counter grows by num_ways per access), clamped so early
+            // fills don't underflow below lru_counter.
+            counter[way_idx] = (mru_counter >= lru_counter + num_ways) ? mru_counter - num_ways : lru_counter;
             low_priority[way_idx] = false;
         } else if (was_accessed) {
             counter[way_idx] = lru_counter;

@@ -110,7 +110,8 @@ void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet,
             counter[way_idx] = mru_counter;
             low_priority[way_idx] = false;
         } else if (is_hub_node && !was_accessed) {
-            counter[way_idx] = mru_counter;
+            // Same as PHRU: one access step below MRU, clamped at lru_counter.
+            counter[way_idx] = (mru_counter >= lru_counter + num_ways) ? mru_counter - num_ways : lru_counter;
             low_priority[way_idx] = false;
         } else if (was_accessed) {
             counter[way_idx] = lru_counter;
