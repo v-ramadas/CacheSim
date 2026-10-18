@@ -129,8 +129,11 @@ inline float get_total_cache_size(uint64_t num_sets, uint64_t num_ways, uint64_t
     uint64_t total_blocks = num_sets * num_ways;
     uint64_t total_tag_bits = total_blocks * tag_bits_per_block;
 
+    // Sectored with 8B sectors: one valid bit per 8B unit (8 per 64B line, 1 per 8B block).
+    total_tag_bits += total_blocks * (block_size / 8);
+
     // Convert tag storage from bits to bytes (rounding up if necessary, though it usually divides evenly)
-    float tag_size = (total_tag_bits + 7) / 8; 
+    float tag_size = (total_tag_bits + 7) / 8;
 
     //fmt::print("Cache Size Calculator. Num Sets {} Num Ways {} Block Size {} Data Cache Size {:4f}MB Tag Storage {:4f}MB Total Size {:4f}MB\n",
     //        num_sets, num_ways, block_size, bytes_to_mb(data_size), bytes_to_mb(tag_size), bytes_to_mb(data_size + tag_size));
@@ -151,6 +154,27 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
         if (!cachesim::isoArea) {
             get_total_cache_size(num_sets, reference_ways * (CACHELINE_SIZE/block_size), block_size, false);
             return (reference_ways * (CACHELINE_SIZE/block_size));
+        }
+        if (cachesim::TAG_BDI_BASES > 0) {
+            // Base+Delta tag compression (capacity only, --tag-bdi-bases B
+            // --tag-bdi-delta d): per set, B base line tags of
+            // 64 - log2(64) - log2(num_sets) bits; per block, valid (1) + base
+            // id (ceil log2 B) + signed delta (d) + sector (log2(64/block_size))
+            // tag bits instead of a full 64 - log2(block_size) - log2(num_sets).
+            uint64_t sets_bits = (uint64_t)std::log2(num_sets);
+            uint64_t id_bits = 0;
+            while ((1ULL << id_bits) < cachesim::TAG_BDI_BASES) id_bits++;
+            uint64_t sector_bits = (uint64_t)std::log2(CACHELINE_SIZE / block_size);
+            uint64_t base_bits = cachesim::TAG_BDI_BASES * (64 - (uint64_t)std::log2(CACHELINE_SIZE) - sets_bits);
+            uint64_t block_bits = block_size * 8 + 1 + id_bits + cachesim::TAG_BDI_DELTA + sector_bits;
+            // target_budget_bytes already includes the baseline's 8 sector-valid
+            // bits per 64B way (get_total_cache_size); block_bits includes this
+            // scheme's 1 valid bit per 8B block.
+            uint64_t budget_bits_per_set = (uint64_t)(target_budget_bytes * 8) / num_sets;
+            assert(budget_bits_per_set > base_bits);
+            uint64_t ways = (budget_bits_per_set - base_bits) / block_bits;
+            // Same rounding as the uncompressed search below, so both modes compare like for like.
+            return ((ways + 8) / 8) * 8;
         }
         uint64_t current_ways = 1;
         float new_size;

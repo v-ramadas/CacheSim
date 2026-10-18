@@ -80,6 +80,13 @@ namespace cachesim {
     extern bool L2_ENABLED;
     extern uint64_t L2_NUM_SETS;
     extern uint64_t L2_NUM_WAYS;
+
+    // Base+Delta tag compression, step 1 = capacity only (--tag-bdi-bases B,
+    // --tag-bdi-delta d): get_iso_area_cache() sizes 8B sets as if each block
+    // stored a (base id, d-bit delta, sector) tag against B per-set base tags.
+    // 0 bases = off (default, unchanged behaviour).
+    extern uint64_t TAG_BDI_BASES;
+    extern uint64_t TAG_BDI_DELTA;
 };
 
 enum class InsertionPolicy {
