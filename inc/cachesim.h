@@ -643,6 +643,10 @@ class Cache: public BaseCache {
         // the statistics have reverted to favoring it.
         if (!is_broken_down)
             return false;
+#ifdef NO_MERGE
+        // Experiment build: once broken down, stay broken down.
+        return false;
+#endif
         return !duel_locked;
     }
 
