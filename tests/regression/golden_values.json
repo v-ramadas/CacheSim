@@ -127,40 +127,40 @@
     },
     "phru_8b_no_dueling": {
       "as-Skitter": {
-        "mpki": 38.851341,
-        "cycles": 1742617742
+        "mpki": 38.849491,
+        "cycles": 1742546768
       },
       "web-BerkStan": {
-        "mpki": 29.098145,
-        "cycles": 481377024
+        "mpki": 29.085571,
+        "cycles": 481209952
       },
       "sx-stackoverflow": {
-        "mpki": 25.173746,
-        "cycles": 1916557140
+        "mpki": 25.172777,
+        "cycles": 1916500023
       },
       "cit-Patents": {
-        "mpki": 53.927601,
-        "cycles": 2118339969
+        "mpki": 53.927574,
+        "cycles": 2118338499
       },
       "com-LiveJournal": {
-        "mpki": 60.425259,
-        "cycles": 7827236042
+        "mpki": 60.425331,
+        "cycles": 7827245643
       },
       "com-Youtube": {
-        "mpki": 27.428656,
-        "cycles": 410654536
+        "mpki": 27.428684,
+        "cycles": 410655401
       },
       "soc-LiveJournal1": {
-        "mpki": 60.865982,
-        "cycles": 7924375437
+        "mpki": 60.866219,
+        "cycles": 7924403205
       },
       "web-Google": {
-        "mpki": 38.338264,
-        "cycles": 455411104
+        "mpki": 38.333534,
+        "cycles": 455363735
       },
       "wiki-topcats": {
-        "mpki": 53.135056,
-        "cycles": 2892984058
+        "mpki": 53.125076,
+        "cycles": 2892507945
       }
     },
     "hrupp_8b_no_dueling": {
@@ -203,40 +203,40 @@
     },
     "phrupp_8b_no_dueling": {
       "as-Skitter": {
-        "mpki": 31.282862,
-        "cycles": 1455003961
+        "mpki": 31.282143,
+        "cycles": 1454975582
       },
       "web-BerkStan": {
-        "mpki": 15.121137,
-        "cycles": 295835863
+        "mpki": 15.119325,
+        "cycles": 295811967
       },
       "sx-stackoverflow": {
-        "mpki": 19.82139,
-        "cycles": 1598842040
+        "mpki": 19.821169,
+        "cycles": 1598828286
       },
       "cit-Patents": {
-        "mpki": 48.807541,
-        "cycles": 1939803446
+        "mpki": 48.806881,
+        "cycles": 1939780828
       },
       "com-LiveJournal": {
-        "mpki": 53.377338,
-        "cycles": 7015619098
+        "mpki": 53.376919,
+        "cycles": 7015570925
       },
       "com-Youtube": {
-        "mpki": 21.409288,
-        "cycles": 337772954
+        "mpki": 21.409267,
+        "cycles": 337772201
       },
       "soc-LiveJournal1": {
-        "mpki": 54.269264,
-        "cycles": 7159610995
+        "mpki": 54.269115,
+        "cycles": 7159594177
       },
       "web-Google": {
-        "mpki": 24.723852,
-        "cycles": 318350907
+        "mpki": 24.725916,
+        "cycles": 318371648
       },
       "wiki-topcats": {
-        "mpki": 43.440994,
-        "cycles": 2430200306
+        "mpki": 43.427582,
+        "cycles": 2429560749
       }
     },
     "hub_oracle_8b_no_dueling": {
@@ -281,20 +281,20 @@
   "dueling_baselines": {
     "hru_8b_psel": {
       "as-Skitter": {
-        "mpki": 37.220867,
-        "cycles": 1680311055
+        "mpki": 36.279896,
+        "cycles": 1644618148
       },
       "web-BerkStan": {
         "mpki": 17.991753,
         "cycles": 333572130
       },
       "sx-stackoverflow": {
-        "mpki": 26.195749,
-        "cycles": 1976894473
+        "mpki": 24.143385,
+        "cycles": 1855187218
       },
       "cit-Patents": {
-        "mpki": 53.255821,
-        "cycles": 2094802466
+        "mpki": 53.158882,
+        "cycles": 2091425331
       }
     },
     "hru_8b_ztest": {
@@ -311,44 +311,44 @@
         "cycles": 1977864246
       },
       "cit-Patents": {
-        "mpki": 53.187256,
-        "cycles": 2092413834
+        "mpki": 53.554184,
+        "cycles": 2105213371
       }
     },
     "phru_8b_psel": {
       "as-Skitter": {
-        "mpki": 38.087231,
-        "cycles": 1712991946
+        "mpki": 38.085533,
+        "cycles": 1712927637
       },
       "web-BerkStan": {
-        "mpki": 18.756872,
-        "cycles": 343726756
+        "mpki": 18.754881,
+        "cycles": 343699962
       },
       "sx-stackoverflow": {
-        "mpki": 27.460176,
-        "cycles": 2052102725
+        "mpki": 26.236261,
+        "cycles": 1979541977
       },
       "cit-Patents": {
-        "mpki": 53.438599,
-        "cycles": 2101139256
+        "mpki": 53.438347,
+        "cycles": 2101131176
       }
     },
     "phru_8b_ztest": {
       "as-Skitter": {
-        "mpki": 38.087231,
-        "cycles": 1712991946
+        "mpki": 38.085533,
+        "cycles": 1712927637
       },
       "web-BerkStan": {
-        "mpki": 18.756872,
-        "cycles": 343726756
+        "mpki": 18.754881,
+        "cycles": 343699962
       },
       "sx-stackoverflow": {
-        "mpki": 27.423574,
-        "cycles": 2049934814
+        "mpki": 27.407761,
+        "cycles": 2048997297
       },
       "cit-Patents": {
-        "mpki": 54.154655,
-        "cycles": 2126154935
+        "mpki": 53.765099,
+        "cycles": 2112527440
       }
     },
     "hub_oracle_8b_psel": {
