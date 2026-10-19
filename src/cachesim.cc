@@ -143,6 +143,17 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     fmt::print("MPKI {:10f}\n", mpki);
     fmt::print("PSEL {}\n", get_psel());
     fmt::print("Num Cycles {}\n", PerformanceModel::getCycles());
+    if constexpr (std::is_same_v<T, Set>) {
+        if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea) {
+            uint64_t enc = 0, ovf = 0;
+            for (const auto& [idx, s] : sets) s->bdi_resident(enc, ovf);
+            auto fills = Set::bdi_stat_encoded + Set::bdi_stat_overflow;
+            fmt::print("Tag BDI bases {} delta {}: fills encoded {} overflow {} ({:.4f}% of fills) | base installs {} frees {} | resident 8B blocks encoded {} overflow {} ({:.4f}%)\n",
+                cachesim::TAG_BDI_BASES, cachesim::TAG_BDI_DELTA, Set::bdi_stat_encoded, Set::bdi_stat_overflow,
+                fills ? 100.0 * Set::bdi_stat_overflow / fills : 0.0, Set::bdi_stat_installs, Set::bdi_stat_frees,
+                enc, ovf, (enc + ovf) ? 100.0 * ovf / (enc + ovf) : 0.0);
+        }
+    }
     if (get_evictions() > 0) {
         fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/(get_evictions()*(get_block_size(0)/8)));
     } else {

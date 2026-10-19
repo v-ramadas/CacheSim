@@ -39,6 +39,18 @@ class Set {
     // set_way_address()); lookups match on tags. INVALID_TAG for empty ways.
     static constexpr uint64_t INVALID_TAG = UINT64_MAX;
     std::vector<uint64_t> tags;
+    // Base+Delta tag encoding (--tag-bdi-bases B, iso-area 8B sets only). Per
+    // set: up to B base line tags (bdi_bases, INVALID_TAG = free slot) and how
+    // many ways use each (bdi_refs). Per way: base id, signed delta and sector,
+    // so that tag = ((bdi_bases[id] + delta) << sector_bits) | sector. A block
+    // whose line tag fits no base while all B slots are in use keeps its full
+    // tag ("overflow", bdi_base = -1): this step stores and looks up tags in
+    // compressed form but does not yet constrain admission.
+    std::vector<uint64_t> bdi_bases;
+    std::vector<uint32_t> bdi_refs;
+    std::vector<int32_t> bdi_base;
+    std::vector<int64_t> bdi_delta;
+    std::vector<uint8_t> bdi_sector;
     std::unique_ptr<BasePolicy> repl_counter;
     std::vector<bool> valid;
     std::vector<uint64_t> serviced_from_llc;
@@ -95,6 +107,7 @@ class Set {
         bitmask = (1ULL << bits_per_block) - 1;
         ways.resize(num_ways, UINT64_MAX);
         tags.resize(num_ways, INVALID_TAG);
+        bdi_reset();
         repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
@@ -116,6 +129,22 @@ class Set {
     uint64_t make_tag(uint64_t address) const;
     void set_way_address(uint64_t way_idx, uint64_t address);
     uint64_t find_way(uint64_t aligned_address) const;  // tags.size() if absent
+
+    // Base+Delta tag encoding (see bdi_bases above).
+    bool bdi_active() const {
+        return cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea && block_size < CACHELINE_SIZE;
+    }
+    uint64_t sector_bits() const;
+    void bdi_reset();                          // all ways unencoded, all base slots free
+    void bdi_release(uint64_t way_idx);        // drop way's base reference
+    void bdi_encode(uint64_t way_idx, bool count);
+    void bdi_rebuild();                        // re-encode every way (after breakdown)
+    uint64_t find_way_bdi(uint64_t tag) const; // lookup through the bases
+    void bdi_resident(uint64_t& encoded, uint64_t& overflow) const;
+    inline static uint64_t bdi_stat_encoded = 0;
+    inline static uint64_t bdi_stat_overflow = 0;
+    inline static uint64_t bdi_stat_installs = 0;
+    inline static uint64_t bdi_stat_frees = 0;
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
     void fill_packet(PacketPtr packet, uint64_t way_idx);

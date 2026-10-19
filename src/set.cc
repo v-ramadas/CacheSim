@@ -31,22 +31,137 @@ void Set::set_way_address(uint64_t way_idx, uint64_t address) {
     assert(address == UINT64_MAX || align_address(address, block_size) == address);
     assert(address == UINT64_MAX ||
            ((address >> champsim::msl::lg2(CACHELINE_SIZE)) & (cache->get_num_sets() - 1)) == set_idx);
+    bdi_release(way_idx);
     ways[way_idx] = address;
     tags[way_idx] = make_tag(address);
+    if (bdi_active() && tags[way_idx] != INVALID_TAG)
+        bdi_encode(way_idx, true);
 }
 
 uint64_t Set::find_way(uint64_t aligned_address) const {
     auto tag = make_tag(aligned_address);
     if (tag == INVALID_TAG)
         return tags.size();
-    auto way = std::find(tags.begin(), tags.end(), tag);
-    uint64_t way_idx = std::distance(tags.begin(), way);
+    uint64_t way_idx;
+    if (bdi_active()) {
+        way_idx = find_way_bdi(tag);
+    } else {
+        way_idx = std::distance(tags.begin(), std::find(tags.begin(), tags.end(), tag));
+    }
 #ifdef TAG_CHECK
-    // Verification build: tag lookup must find exactly what an address lookup finds.
+    // Verification build: the lookup must find exactly what a full-tag lookup
+    // and an address lookup find.
+    auto by_tag = std::distance(tags.begin(), std::find(tags.begin(), tags.end(), tag));
     auto by_addr = std::distance(ways.begin(), std::find(ways.begin(), ways.end(), aligned_address));
+    assert((uint64_t)by_tag == way_idx);
     assert((uint64_t)by_addr == way_idx);
 #endif
     return way_idx;
+}
+
+uint64_t Set::sector_bits() const {
+    return champsim::msl::lg2(CACHELINE_SIZE) - champsim::msl::lg2(block_size);
+}
+
+static bool bdi_fits(int64_t delta) {
+    int64_t half = 1LL << (cachesim::TAG_BDI_DELTA - 1);
+    return delta >= -half && delta < half;
+}
+
+void Set::bdi_reset() {
+    bdi_bases.assign(cachesim::TAG_BDI_BASES, INVALID_TAG);
+    bdi_refs.assign(cachesim::TAG_BDI_BASES, 0);
+    bdi_base.assign(num_ways, -1);
+    bdi_delta.assign(num_ways, 0);
+    bdi_sector.assign(num_ways, 0);
+}
+
+void Set::bdi_release(uint64_t way_idx) {
+    if (way_idx >= bdi_base.size() || bdi_base[way_idx] < 0)
+        return;
+    auto k = bdi_base[way_idx];
+    assert(bdi_refs[k] > 0);
+    if (--bdi_refs[k] == 0) {
+        bdi_bases[k] = INVALID_TAG;
+        bdi_stat_frees++;
+    }
+    bdi_base[way_idx] = -1;
+}
+
+// Encode way_idx's tag against this set's bases: first base whose signed
+// TAG_BDI_DELTA-bit window holds the line tag; else install the line tag in a
+// free slot; else overflow (kept with its full tag, bdi_base = -1).
+void Set::bdi_encode(uint64_t way_idx, bool count) {
+    assert(bdi_base[way_idx] < 0 && tags[way_idx] != INVALID_TAG);
+    uint64_t line = tags[way_idx] >> sector_bits();
+    int32_t k = -1;
+    for (size_t i = 0; i < bdi_bases.size() && k < 0; i++)
+        if (bdi_bases[i] != INVALID_TAG && bdi_fits((int64_t)(line - bdi_bases[i])))
+            k = (int32_t)i;
+    if (k < 0) {
+        for (size_t i = 0; i < bdi_bases.size() && k < 0; i++)
+            if (bdi_bases[i] == INVALID_TAG) {
+                k = (int32_t)i;
+                bdi_bases[i] = line;
+                bdi_stat_installs++;   // always: every install is later matched by a free
+            }
+    }
+    if (k < 0) {
+        if (count) bdi_stat_overflow++;
+        return;
+    }
+    bdi_base[way_idx] = k;
+    bdi_delta[way_idx] = (int64_t)(line - bdi_bases[k]);
+    bdi_sector[way_idx] = (uint8_t)(tags[way_idx] & ((1ULL << sector_bits()) - 1));
+    bdi_refs[k]++;
+    if (count) bdi_stat_encoded++;
+#ifdef TAG_CHECK
+    assert((((bdi_bases[k] + (uint64_t)bdi_delta[way_idx]) << sector_bits()) | bdi_sector[way_idx]) == tags[way_idx]);
+#endif
+}
+
+void Set::bdi_rebuild() {
+    bdi_reset();
+    if (!bdi_active())
+        return;
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        if (tags[way_idx] != INVALID_TAG)
+            bdi_encode(way_idx, false);
+}
+
+// Hardware view: subtract the incoming line tag from every base in parallel,
+// keep the bases whose delta fits, then match (base id, delta, sector) across
+// the ways; overflow ways are matched on their full tag. Returns the lowest
+// matching way, like the plain tag search.
+uint64_t Set::find_way_bdi(uint64_t tag) const {
+    uint64_t line = tag >> sector_bits();
+    uint8_t sector = (uint8_t)(tag & ((1ULL << sector_bits()) - 1));
+    int64_t deltas[64];
+    bool fits[64];
+    assert(bdi_bases.size() <= 64);
+    for (size_t k = 0; k < bdi_bases.size(); k++) {
+        deltas[k] = (int64_t)(line - bdi_bases[k]);
+        fits[k] = bdi_bases[k] != INVALID_TAG && bdi_fits(deltas[k]);
+    }
+    for (uint64_t way_idx = 0; way_idx < tags.size(); way_idx++) {
+        auto k = bdi_base[way_idx];
+        if (k >= 0) {
+            if (fits[k] && bdi_delta[way_idx] == deltas[k] && bdi_sector[way_idx] == sector)
+                return way_idx;
+        } else if (tags[way_idx] == tag) {
+            return way_idx;
+        }
+    }
+    return tags.size();
+}
+
+void Set::bdi_resident(uint64_t& encoded, uint64_t& overflow) const {
+    if (!bdi_active())   // 64B sets (leaders, merged followers) have no bases
+        return;
+    for (uint64_t way_idx = 0; way_idx < tags.size(); way_idx++) {
+        if (tags[way_idx] == INVALID_TAG) continue;
+        if (bdi_base[way_idx] >= 0) encoded++; else overflow++;
+    }
 }
 
 void Set::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
@@ -496,6 +611,7 @@ void Set::set_breakdown(uint64_t new_block_size) {
     tags.resize(num_ways);
     for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
         tags[way_idx] = make_tag(ways[way_idx]);
+    bdi_rebuild();
 }
 
 // Inverse of set_breakdown: merge small blocks back into fewer, larger ones.
@@ -546,4 +662,5 @@ void Set::set_merge(uint64_t new_block_size) {
     num_lines = num_ways/num_blocks;
     bits_per_block = block_size/8;
     bitmask = (1ULL << bits_per_block) - 1;
+    bdi_reset();
 }
