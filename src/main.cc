@@ -56,8 +56,8 @@ uint64_t cachesim::GHOST_CACHE_MIN_SERVICED = 1;
 uint64_t cachesim::L1_NUM_SETS = 128;
 uint64_t cachesim::L1_NUM_WAYS = 16;
 bool cachesim::L2_ENABLED = false;
-uint64_t cachesim::TAG_BDI_BASES = 0;
-uint64_t cachesim::TAG_BDI_DELTA = 8;
+uint64_t cachesim::TAG_BDI_BASES = 8;
+uint64_t cachesim::TAG_BDI_DELTA = 10;
 bool cachesim::TAG_BDI_UNCONSTRAINED = false;
 bool cachesim::DEBUG_TAG_BDI = false;
 uint64_t cachesim::L2_NUM_SETS = 1024;
@@ -147,8 +147,8 @@ int main(int argc, char** argv) {
     app.add_flag("--l2", cachesim::L2_ENABLED, "Add a sectored L2 (64B lines, 8B sectors, LRU) between L1D and LLC; exclusive like the rest of the hierarchy");
     app.add_option("--l2-sets", cachesim::L2_NUM_SETS, "L2 sets (only used with --l2; default 1024)");
     app.add_option("--l2-ways", cachesim::L2_NUM_WAYS, "L2 ways, each a 64B line (only used with --l2; default 16 -> 1MB)");
-    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets (HRU/PHRU/hub_oracle)");
-    app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 8)");
+    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets (HRU/PHRU/hub_oracle)");
+    app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
 

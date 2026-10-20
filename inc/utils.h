@@ -84,7 +84,8 @@ namespace cachesim {
     // Base+Delta LLC tag compression (--tag-bdi-bases B, --tag-bdi-delta d):
     // get_iso_area_cache() sizes 8B sets as if each block stored a (base id,
     // d-bit delta, sector) tag against B per-set base tags, and Set stores and
-    // looks up tags in that form. 0 bases = off (default).
+    // looks up tags in that form. Default B=8, d=10; --tag-bdi-bases 0 turns it
+    // off (uncompressed tags).
     extern uint64_t TAG_BDI_BASES;
     extern uint64_t TAG_BDI_DELTA;
     // Step 2 behaviour (no admission constraint: a tag that fits no base is
