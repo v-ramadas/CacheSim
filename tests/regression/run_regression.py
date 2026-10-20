@@ -72,10 +72,17 @@ def cfg_64b(policy):
     return ["--cache-block-size", "64", "--replacement-policy", policy]
 
 
+# Base+Delta LLC tag compression is on by default (B=8, d=10); the
+# "_uncompressed" entries pin the uncompressed (full-tag) behaviour too.
+UNCOMPRESSED = ["--tag-bdi-bases", "0"]
+
 BASELINE_RERUN_CONFIGS = {
     "hru_8b_no_dueling": cfg_no_dueling("hru"),
     "phru_8b_no_dueling": cfg_no_dueling("phru"),
     "hub_oracle_8b_no_dueling": cfg_no_dueling("hub_oracle"),
+    "hru_8b_no_dueling_uncompressed": cfg_no_dueling("hru") + UNCOMPRESSED,
+    "phru_8b_no_dueling_uncompressed": cfg_no_dueling("phru") + UNCOMPRESSED,
+    "hub_oracle_8b_no_dueling_uncompressed": cfg_no_dueling("hub_oracle") + UNCOMPRESSED,
 }
 
 DUELING_CONFIGS = {
@@ -85,6 +92,12 @@ DUELING_CONFIGS = {
     "phru_8b_ztest": cfg_dueling("phru", "ztest"),
     "hub_oracle_8b_psel": cfg_dueling("hub_oracle", "psel"),
     "hub_oracle_8b_ztest": cfg_dueling("hub_oracle", "ztest"),
+    "hru_8b_psel_uncompressed": cfg_dueling("hru", "psel") + UNCOMPRESSED,
+    "hru_8b_ztest_uncompressed": cfg_dueling("hru", "ztest") + UNCOMPRESSED,
+    "phru_8b_psel_uncompressed": cfg_dueling("phru", "psel") + UNCOMPRESSED,
+    "phru_8b_ztest_uncompressed": cfg_dueling("phru", "ztest") + UNCOMPRESSED,
+    "hub_oracle_8b_psel_uncompressed": cfg_dueling("hub_oracle", "psel") + UNCOMPRESSED,
+    "hub_oracle_8b_ztest_uncompressed": cfg_dueling("hub_oracle", "ztest") + UNCOMPRESSED,
 }
 
 PERFORMANCE_POLICIES = ["hru", "hrupp", "phru", "phrupp"]
