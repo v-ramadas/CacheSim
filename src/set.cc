@@ -81,6 +81,9 @@ void Set::bdi_release(uint64_t way_idx) {
         return;
     auto k = bdi_base[way_idx];
     assert(bdi_refs[k] > 0);
+    if (cachesim::DEBUG_TAG_BDI)
+        fmt::print("[{}] BDI release  set {} way {:3} addr {:#x} base {} refs {} -> {}{}\n", cachesim::instCount, set_idx, way_idx,
+            ways[way_idx], k, bdi_refs[k], bdi_refs[k] - 1, bdi_refs[k] == 1 ? " (base freed)" : "");
     if (--bdi_refs[k] == 0) {
         bdi_bases[k] = INVALID_TAG;
         bdi_stat_frees++;
@@ -104,6 +107,9 @@ void Set::bdi_encode(uint64_t way_idx, bool count) {
                 k = (int32_t)i;
                 bdi_bases[i] = line;
                 bdi_stat_installs++;   // always: every install is later matched by a free
+                if (cachesim::DEBUG_TAG_BDI)
+                    fmt::print("[{}] BDI install  set {} base {} = line {:#x} (window {:#x}..{:#x})\n", cachesim::instCount, set_idx, i, line,
+                        line - (1ULL << (cachesim::TAG_BDI_DELTA - 1)), line + (1ULL << (cachesim::TAG_BDI_DELTA - 1)) - 1);
             }
     }
     if (k < 0) {
@@ -118,6 +124,10 @@ void Set::bdi_encode(uint64_t way_idx, bool count) {
     bdi_sector[way_idx] = (uint8_t)(tags[way_idx] & ((1ULL << sector_bits()) - 1));
     bdi_refs[k]++;
     if (count) bdi_stat_encoded++;
+    if (cachesim::DEBUG_TAG_BDI)
+        fmt::print("[{}] BDI encode   set {} way {:3} addr {:#x} tag {:#x} = line {:#x} sector {} -> base {} ({:#x}) delta {:+} refs {}\n",
+            cachesim::instCount, set_idx, way_idx, ways[way_idx], tags[way_idx], line, (unsigned)bdi_sector[way_idx],
+            k, bdi_bases[k], bdi_delta[way_idx], bdi_refs[k]);
 #ifdef TAG_CHECK
     assert((((bdi_bases[k] + (uint64_t)bdi_delta[way_idx]) << sector_bits()) | bdi_sector[way_idx]) == tags[way_idx]);
 #endif
@@ -156,6 +166,17 @@ uint64_t Set::find_way_bdi(uint64_t tag) const {
             found = way_idx;
         }
     }
+    if (cachesim::DEBUG_TAG_BDI) {
+        std::string cand;
+        for (size_t k = 0; k < bdi_bases.size(); k++)
+            if (fits[k]) cand += fmt::format(" b{}:{:+}", k, deltas[k]);
+        if (found < tags.size())
+            fmt::print("[{}] BDI lookup   set {} tag {:#x} = line {:#x} sector {} | fitting bases{} -> HIT way {} (base {} delta {:+})\n",
+                cachesim::instCount, set_idx, tag, line, (unsigned)sector, cand.empty() ? " none" : cand, found, bdi_base[found], bdi_delta[found]);
+        else
+            fmt::print("[{}] BDI lookup   set {} tag {:#x} = line {:#x} sector {} | fitting bases{} -> MISS\n",
+                cachesim::instCount, set_idx, tag, line, (unsigned)sector, cand.empty() ? " none" : cand);
+    }
     return found;
 }
 
@@ -176,6 +197,9 @@ uint64_t Set::bdi_reserve(PacketPtr fill_packet, uint64_t& used_words) {
     // frees the slot, so the fill's first block installs the new base.
     bdi_stat_replacements++;
     uint64_t evicted = 0;
+    if (cachesim::DEBUG_TAG_BDI)
+        fmt::print("[{}] BDI replace  set {} line {:#x} fits no base: replacing base {} ({:#x}, {} users)\n",
+            cachesim::instCount, set_idx, line, victim, bdi_bases[victim], bdi_refs[victim]);
     for (uint64_t way_idx = 0; way_idx < num_ways && bdi_bases[victim] != INVALID_TAG; way_idx++) {
         if (bdi_base[way_idx] != victim) continue;
         Packet scratch;   // own packet: a whole base can exceed the 64-bit footprint of one

@@ -90,6 +90,8 @@ namespace cachesim {
     // Step 2 behaviour (no admission constraint: a tag that fits no base is
     // kept in full) instead of step 3's base replacement.
     extern bool TAG_BDI_UNCONSTRAINED;
+    // Print every Base+Delta encode / lookup / release / base replacement.
+    extern bool DEBUG_TAG_BDI;
 };
 
 enum class InsertionPolicy {
