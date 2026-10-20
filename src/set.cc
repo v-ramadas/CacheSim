@@ -683,17 +683,14 @@ void Set::set_breakdown(uint64_t new_block_size) {
     tags.resize(num_ways);
     for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
         tags[way_idx] = make_tag(ways[way_idx]);
-    // With Base+Delta tags (admission constraint on), breaking down starts the
-    // set empty, as merge already does. Do not re-encode first: the broken-down
-    // lines can span more address regions than there are bases, which the
-    // constraint forbids. Unconstrained mode keeps and re-encodes them.
-    if (bdi_active() && !cachesim::TAG_BDI_UNCONSTRAINED) {
-        bdi_reset();             // per-way state sized for the new way count, nothing encoded
-        invalidate_all_ways();
-        bdi_reset();
-    } else {
-        bdi_rebuild();
-    }
+    // Breaking down starts the set empty, as merge already does: the 8B copies
+    // of the old 64B lines are mostly never-used sectors carrying their line's
+    // replacement state, and keeping them measurably hurt. Not re-encoding
+    // first also matters with Base+Delta tags: the old lines can span more
+    // address regions than there are bases.
+    bdi_reset();             // per-way state sized for the new way count, nothing encoded
+    invalidate_all_ways();
+    bdi_reset();
 }
 
 // Inverse of set_breakdown: merge small blocks back into fewer, larger ones.
