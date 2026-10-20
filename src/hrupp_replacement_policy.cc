@@ -169,6 +169,9 @@ void HRUpp::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
     breakdown(low_priority, num_ways, scale_factor, false);
 
     num_ways = new_num_ways;
+    // As in HRU: new LRU-end fills must not rank below blocks left over from
+    // before the breakdown.
+    lru_counter = mru_counter;
 }
 
 template<typename VecType>
