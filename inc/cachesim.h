@@ -141,10 +141,20 @@ class Set {
     void bdi_rebuild();                        // re-encode every way (after breakdown)
     uint64_t find_way_bdi(uint64_t tag) const; // lookup through the bases
     void bdi_resident(uint64_t& encoded, uint64_t& overflow) const;
+    // Admission constraint (on unless --tag-bdi-unconstrained): before a fill,
+    // make sure its line tag fits a base or a base slot is free; otherwise
+    // evict every way of the base with the fewest users. Returns the number of
+    // blocks evicted and adds their used footprint words to used_words.
+    uint64_t bdi_reserve(PacketPtr fill_packet, uint64_t& used_words);
+    void invalidate_all_ways();
     inline static uint64_t bdi_stat_encoded = 0;
     inline static uint64_t bdi_stat_overflow = 0;
     inline static uint64_t bdi_stat_installs = 0;
     inline static uint64_t bdi_stat_frees = 0;
+    inline static uint64_t bdi_stat_replacements = 0;
+    inline static uint64_t bdi_stat_replaced_blocks = 0;
+
+    void evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks_evicted, uint64_t num_blocks_to_evict);
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
     void fill_packet(PacketPtr packet, uint64_t way_idx);

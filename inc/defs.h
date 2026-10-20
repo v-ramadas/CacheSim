@@ -173,8 +173,9 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
             uint64_t budget_bits_per_set = (uint64_t)(target_budget_bytes * 8) / num_sets;
             assert(budget_bits_per_set > base_bits);
             uint64_t ways = (budget_bits_per_set - base_bits) / block_bits;
-            // Same rounding as the uncompressed search below, so both modes compare like for like.
-            return ((ways + 8) / 8) * 8;
+            // Round down to a multiple of 8 (a whole number of 64B lines), so the
+            // compressed set never exceeds the budget.
+            return (ways / 8) * 8;
         }
         uint64_t current_ways = 1;
         float new_size;

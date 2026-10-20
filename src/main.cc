@@ -58,6 +58,7 @@ uint64_t cachesim::L1_NUM_WAYS = 16;
 bool cachesim::L2_ENABLED = false;
 uint64_t cachesim::TAG_BDI_BASES = 0;
 uint64_t cachesim::TAG_BDI_DELTA = 8;
+bool cachesim::TAG_BDI_UNCONSTRAINED = false;
 uint64_t cachesim::L2_NUM_SETS = 1024;
 uint64_t cachesim::L2_NUM_WAYS = 16;
 
@@ -145,8 +146,9 @@ int main(int argc, char** argv) {
     app.add_flag("--l2", cachesim::L2_ENABLED, "Add a sectored L2 (64B lines, 8B sectors, LRU) between L1D and LLC; exclusive like the rest of the hierarchy");
     app.add_option("--l2-sets", cachesim::L2_NUM_SETS, "L2 sets (only used with --l2; default 1024)");
     app.add_option("--l2-ways", cachesim::L2_NUM_WAYS, "L2 ways, each a 64B line (only used with --l2; default 16 -> 1MB)");
-    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta tag compression, capacity only: per-set base tags B (0 = off, default). Sizes iso-area 8B sets as if each block stored a (base id, delta, sector) tag");
-    app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits d per block (default 8; only used with --tag-bdi-bases)");
+    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets (HRU/PHRU/hub_oracle)");
+    app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 8)");
+    app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
 
 
     CLI11_PARSE(app, argc, argv);
@@ -201,8 +203,8 @@ int main(int argc, char** argv) {
     }
 
     if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea) {
-        fmt::print("Tag BDI (capacity only): bases {} delta {} bits -> {}B LLC sets get {} ways (uncompressed iso-area would give {})\n",
-            cachesim::TAG_BDI_BASES, cachesim::TAG_BDI_DELTA, cachesim::BLOCK_SIZE,
+        fmt::print("Tag BDI ({}): bases {} delta {} bits -> {}B LLC sets get {} ways (uncompressed iso-area would give {})\n",
+            cachesim::TAG_BDI_UNCONSTRAINED ? "unconstrained" : "base replacement", cachesim::TAG_BDI_BASES, cachesim::TAG_BDI_DELTA, cachesim::BLOCK_SIZE,
             get_iso_area_cache(llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE),
             [&]{ auto b = cachesim::TAG_BDI_BASES; cachesim::TAG_BDI_BASES = 0; auto w = get_iso_area_cache(llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE); cachesim::TAG_BDI_BASES = b; return w; }());
     }

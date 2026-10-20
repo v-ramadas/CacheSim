@@ -148,9 +148,11 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
             uint64_t enc = 0, ovf = 0;
             for (const auto& [idx, s] : sets) s->bdi_resident(enc, ovf);
             auto fills = Set::bdi_stat_encoded + Set::bdi_stat_overflow;
-            fmt::print("Tag BDI bases {} delta {}: fills encoded {} overflow {} ({:.4f}% of fills) | base installs {} frees {} | resident 8B blocks encoded {} overflow {} ({:.4f}%)\n",
+            fmt::print("Tag BDI bases {} delta {}: fills encoded {} overflow {} ({:.4f}% of fills) | base installs {} frees {} | base replacements {} blocks evicted by them {} ({:.4f}% of fills) | resident 8B blocks encoded {} overflow {} ({:.4f}%)\n",
                 cachesim::TAG_BDI_BASES, cachesim::TAG_BDI_DELTA, Set::bdi_stat_encoded, Set::bdi_stat_overflow,
                 fills ? 100.0 * Set::bdi_stat_overflow / fills : 0.0, Set::bdi_stat_installs, Set::bdi_stat_frees,
+                Set::bdi_stat_replacements, Set::bdi_stat_replaced_blocks,
+                fills ? 100.0 * Set::bdi_stat_replaced_blocks / fills : 0.0,
                 enc, ovf, (enc + ovf) ? 100.0 * ovf / (enc + ovf) : 0.0);
         }
     }
@@ -312,6 +314,13 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
+    if constexpr (std::is_same_v<T, Set>) {
+        // Base+Delta tags: free a base for this line first if none fits; the
+        // regular victim selection below then evicts only what is still needed.
+        uint64_t used_words = 0;
+        evictions += sets[set_idx]->bdi_reserve(fill_packet, used_words);
+        num_blocks_used += used_words;
+    }
     sets[set_idx]->handle_evict(eviction_packet);
     if (eviction_packet->blocks.size() == 0) {
         eviction_packet->address = UINT64_MAX;

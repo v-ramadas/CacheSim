@@ -108,6 +108,9 @@ void Set::bdi_encode(uint64_t way_idx, bool count) {
     }
     if (k < 0) {
         if (count) bdi_stat_overflow++;
+        // With the admission constraint, bdi_reserve() guarantees a base fits
+        // or a slot is free before every fill.
+        assert(cachesim::TAG_BDI_UNCONSTRAINED);
         return;
     }
     bdi_base[way_idx] = k;
@@ -143,16 +146,54 @@ uint64_t Set::find_way_bdi(uint64_t tag) const {
         deltas[k] = (int64_t)(line - bdi_bases[k]);
         fits[k] = bdi_bases[k] != INVALID_TAG && bdi_fits(deltas[k]);
     }
-    for (uint64_t way_idx = 0; way_idx < tags.size(); way_idx++) {
+    uint64_t found = tags.size();
+    for (uint64_t way_idx = 0; way_idx < tags.size() && found == tags.size(); way_idx++) {
         auto k = bdi_base[way_idx];
         if (k >= 0) {
             if (fits[k] && bdi_delta[way_idx] == deltas[k] && bdi_sector[way_idx] == sector)
-                return way_idx;
+                found = way_idx;
         } else if (tags[way_idx] == tag) {
-            return way_idx;
+            found = way_idx;
         }
     }
-    return tags.size();
+    return found;
+}
+
+uint64_t Set::bdi_reserve(PacketPtr fill_packet, uint64_t& used_words) {
+    if (!bdi_active() || cachesim::TAG_BDI_UNCONSTRAINED || fill_packet->address == UINT64_MAX)
+        return 0;
+    // A fill packet carries the blocks of one 64B line, so one line tag.
+    uint64_t line = make_tag(align_address(fill_packet->address, block_size)) >> sector_bits();
+    int32_t victim = -1;
+    for (size_t k = 0; k < bdi_bases.size(); k++) {
+        if (bdi_bases[k] == INVALID_TAG || bdi_fits((int64_t)(line - bdi_bases[k])))
+            return 0;   // fits a base, or a free slot will take it
+        if (victim < 0 || bdi_refs[k] < bdi_refs[victim])
+            victim = (int32_t)k;
+    }
+    // No base fits and no slot is free: replace the base with the fewest users
+    // (lowest slot on a tie) by evicting all of its ways. The last release
+    // frees the slot, so the fill's first block installs the new base.
+    bdi_stat_replacements++;
+    uint64_t evicted = 0;
+    for (uint64_t way_idx = 0; way_idx < num_ways && bdi_bases[victim] != INVALID_TAG; way_idx++) {
+        if (bdi_base[way_idx] != victim) continue;
+        Packet scratch;   // own packet: a whole base can exceed the 64-bit footprint of one
+        evict_way_into(&scratch, way_idx, 0, 1);
+        used_words += count_footprint(scratch.footprint);
+        evicted++;
+    }
+    assert(bdi_bases[victim] == INVALID_TAG);
+    bdi_stat_replaced_blocks += evicted;
+    return evicted;
+}
+
+void Set::invalidate_all_ways() {
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
+        invalidate_way(way_idx);
+        for (uint64_t word_idx = 0; word_idx < block_size / 8; word_idx++)
+            set_footprint(way_idx, word_idx, false);
+    }
 }
 
 void Set::bdi_resident(uint64_t& encoded, uint64_t& overflow) const {
@@ -331,6 +372,83 @@ void Set::handle_fill(PacketPtr packet) {
 
 
 
+// One victim way leaves the set: footprint packed into packet at position
+// num_blocks_evicted, metadata merged into packet, ghost cache / stats
+// updated, way invalidated. Shared by handle_evict() and base replacement.
+void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks_evicted, uint64_t num_blocks_to_evict) {
+    if (dirty[way_idx]) {
+        dirty[way_idx] = false;
+    }
+
+    if (valid[way_idx]) {
+        packet->blocks.push_back(ways[way_idx]);
+    }
+
+    if (repl_counter->get_reserved_ways() != 0) {
+        if (get_footprint(way_idx, 0) == 1 && is_hub_node[way_idx]) {
+            auto num_reserved_ways = repl_counter->get_reserved_ways();
+            auto way = std::find(valid.begin()+num_ways-num_reserved_ways, valid.end(), false);
+            uint64_t dist_way_idx = num_ways-num_reserved_ways;
+            if (way != valid.end()) {
+                dist_way_idx = std::distance(valid.begin(), way);
+            } else {
+                dist_way_idx = repl_counter->get_reserved_eviction_candidate(false);
+
+            }
+            set_way_address(dist_way_idx, ways[way_idx]);
+            pc[dist_way_idx] = pc[way_idx];
+            valid[dist_way_idx] = true;
+            serviced_from_llc[dist_way_idx] = serviced_from_llc[way_idx];
+            is_hub_node[dist_way_idx] = is_hub_node[way_idx];
+            way_hits[dist_way_idx] = way_hits[way_idx];
+            set_footprint(dist_way_idx, 0, true);
+            Packet pkt;
+            pkt.serviced_from_llc = serviced_from_llc[dist_way_idx];
+            pkt.is_hub_node = is_hub_node[way_idx];
+            repl_counter->fill_update(dist_way_idx, 0, &pkt, true);
+        }
+    }
+
+    for (uint64_t i = 0; i < block_size/8; ++i) {
+        packet->footprint |= get_footprint(way_idx, i) << (i + num_blocks_evicted*(block_size/8));
+        if (cachesim::DEBUG || cachesim::LLC_DEBUG)
+            fmt::print("{}: Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} num_blocks_to_evict {} packet footprint {:#x} word_idx {} get_footprint {} serviced_from_llc {} num_blocks_evicted {} degree {} avg_degree {:4f} repl_counter {}\n",
+                cachesim::instCount, level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
+                pc[way_idx], num_blocks_to_evict, packet->footprint,
+                i, get_footprint(way_idx, i), serviced_from_llc[way_idx], num_blocks_evicted,
+                degree[way_idx], avg_degree[way_idx], repl_counter->get_counter_value(way_idx));
+
+        set_footprint(way_idx, i, false);
+        //set_block_accesses(way_idx, i, 0);
+    }
+
+    //fmt::print("PC {} way {}\n", pc[way_idx], way_idx);
+    fill_packet(packet, way_idx);
+
+    //if (degree[way_idx] != 0)
+    //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
+    cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+
+    // Capture the evicted line's address before invalidate_way() clears
+    // it, so a fast re-miss on this same address can be caught as a
+    // "ghost cache hit" (see inc/ghost_cache.h). LLC only (level 1) -
+    // PHRU/PHRUpp are LLC-level policies, and L1D evictions aren't what
+    // this is meant to catch. Only store lines with
+    // serviced_from_llc[way_idx] > GHOST_CACHE_MIN_SERVICED - i.e. this
+    // exact line has already round-tripped through LLC more than that
+    // many times, not just the bare minimum. Measured on as-Skitter:
+    // ~77% of evictions that qualified under a threshold of 0 were
+    // exactly 1, the weakest possible signal, and raising the
+    // threshold to 1 helped PHRU substantially (fixed a persistent 8B
+    // regression) but hurt HRU slightly - the two policies want
+    // different bars here, hence CLI-tunable rather than hardcoded.
+    if (cachesim::USE_GHOST_CACHE && level == CacheLevel::LLC && valid[way_idx] && serviced_from_llc[way_idx] > cachesim::GHOST_CACHE_MIN_SERVICED) {
+        cachesim::ghostCache.insert(ways[way_idx], serviced_from_llc[way_idx]);
+    }
+
+    invalidate_way(way_idx);
+}
+
 void Set::handle_evict(PacketPtr packet) {
     uint64_t num_blocks_evicted = 0;
     auto num_invalid_blocks = get_num_invalid();
@@ -351,77 +469,7 @@ void Set::handle_evict(PacketPtr packet) {
         uint64_t way_idx = num_ways;
         way_idx = repl_counter->get_eviction_candidate(packet->degree < (uint64_t)packet->avg_degree);
 
-        if (dirty[way_idx]) {
-            dirty[way_idx] = false;
-        }
-
-        if (valid[way_idx]) {
-            packet->blocks.push_back(ways[way_idx]);
-        }
-
-        if (repl_counter->get_reserved_ways() != 0) {
-            if (get_footprint(way_idx, 0) == 1 && is_hub_node[way_idx]) {
-                auto num_reserved_ways = repl_counter->get_reserved_ways();
-                auto way = std::find(valid.begin()+num_ways-num_reserved_ways, valid.end(), false);
-                uint64_t dist_way_idx = num_ways-num_reserved_ways;
-                if (way != valid.end()) {
-                    dist_way_idx = std::distance(valid.begin(), way);
-                } else {
-                    dist_way_idx = repl_counter->get_reserved_eviction_candidate(false);
-
-                }
-                set_way_address(dist_way_idx, ways[way_idx]);
-                pc[dist_way_idx] = pc[way_idx];
-                valid[dist_way_idx] = true;
-                serviced_from_llc[dist_way_idx] = serviced_from_llc[way_idx];
-                is_hub_node[dist_way_idx] = is_hub_node[way_idx];
-                way_hits[dist_way_idx] = way_hits[way_idx];
-                set_footprint(dist_way_idx, 0, true);
-                Packet pkt;
-                pkt.serviced_from_llc = serviced_from_llc[dist_way_idx];
-                pkt.is_hub_node = is_hub_node[way_idx];
-                repl_counter->fill_update(dist_way_idx, 0, &pkt, true);
-            }
-        }
-
-        for (uint64_t i = 0; i < block_size/8; ++i) {
-            packet->footprint |= get_footprint(way_idx, i) << (i + num_blocks_evicted*(block_size/8));
-            if (cachesim::DEBUG || cachesim::LLC_DEBUG)
-                fmt::print("{}: Level {} Evicted set {} way {} address {:#x} dirty {} valid {} repl_counter {} pc {:#x} num_blocks_to_evict {} packet footprint {:#x} word_idx {} get_footprint {} serviced_from_llc {} num_blocks_evicted {} degree {} avg_degree {:4f} repl_counter {}\n",
-                    cachesim::instCount, level, set_idx, way_idx, ways[way_idx], (uint32_t)dirty[way_idx], (uint32_t)valid[way_idx], repl_counter->get_counter_value(way_idx),
-                    pc[way_idx], num_blocks_to_evict, packet->footprint,
-                    i, get_footprint(way_idx, i), serviced_from_llc[way_idx], num_blocks_evicted,
-                    degree[way_idx], avg_degree[way_idx], repl_counter->get_counter_value(way_idx));
-
-            set_footprint(way_idx, i, false);
-            //set_block_accesses(way_idx, i, 0);
-        }
-
-        //fmt::print("PC {} way {}\n", pc[way_idx], way_idx);
-        fill_packet(packet, way_idx);
-
-        //if (degree[way_idx] != 0)
-        //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
-        cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
-
-        // Capture the evicted line's address before invalidate_way() clears
-        // it, so a fast re-miss on this same address can be caught as a
-        // "ghost cache hit" (see inc/ghost_cache.h). LLC only (level 1) -
-        // PHRU/PHRUpp are LLC-level policies, and L1D evictions aren't what
-        // this is meant to catch. Only store lines with
-        // serviced_from_llc[way_idx] > GHOST_CACHE_MIN_SERVICED - i.e. this
-        // exact line has already round-tripped through LLC more than that
-        // many times, not just the bare minimum. Measured on as-Skitter:
-        // ~77% of evictions that qualified under a threshold of 0 were
-        // exactly 1, the weakest possible signal, and raising the
-        // threshold to 1 helped PHRU substantially (fixed a persistent 8B
-        // regression) but hurt HRU slightly - the two policies want
-        // different bars here, hence CLI-tunable rather than hardcoded.
-        if (cachesim::USE_GHOST_CACHE && level == CacheLevel::LLC && valid[way_idx] && serviced_from_llc[way_idx] > cachesim::GHOST_CACHE_MIN_SERVICED) {
-            cachesim::ghostCache.insert(ways[way_idx], serviced_from_llc[way_idx]);
-        }
-
-        invalidate_way(way_idx);
+        evict_way_into(packet, way_idx, num_blocks_evicted, num_blocks_to_evict);
         num_blocks_evicted++;
         //cache->update_data_var_evictions(packet->pc,
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -611,7 +659,17 @@ void Set::set_breakdown(uint64_t new_block_size) {
     tags.resize(num_ways);
     for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
         tags[way_idx] = make_tag(ways[way_idx]);
-    bdi_rebuild();
+    // With Base+Delta tags (admission constraint on), breaking down starts the
+    // set empty, as merge already does. Do not re-encode first: the broken-down
+    // lines can span more address regions than there are bases, which the
+    // constraint forbids. Unconstrained mode keeps and re-encodes them.
+    if (bdi_active() && !cachesim::TAG_BDI_UNCONSTRAINED) {
+        bdi_reset();             // per-way state sized for the new way count, nothing encoded
+        invalidate_all_ways();
+        bdi_reset();
+    } else {
+        bdi_rebuild();
+    }
 }
 
 // Inverse of set_breakdown: merge small blocks back into fewer, larger ones.
