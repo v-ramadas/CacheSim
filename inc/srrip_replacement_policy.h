@@ -5,6 +5,7 @@
 #include <climits>
 
 class SRRIP : public BasePolicy {
+    protected:
     const uint64_t maxRRPV;;
     uint64_t denseRRPV;
     uint64_t sparseRRPV;

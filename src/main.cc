@@ -104,7 +104,8 @@ int main(int argc, char** argv) {
         {"ship", ReplacementPolicy::SHIP},
         {"belady", ReplacementPolicy::Belady},
         {"hrrip", ReplacementPolicy::HRRIP},
-        {"hawkeye", ReplacementPolicy::Hawkeye}
+        {"hawkeye", ReplacementPolicy::Hawkeye},
+        {"grasp", ReplacementPolicy::GRASP}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -193,6 +194,7 @@ int main(int argc, char** argv) {
             cachesim::SET_DUELING = false;
             break;
         case ReplacementPolicy::Hawkeye:
+        case ReplacementPolicy::GRASP:
             cachesim::SET_DUELING = false;
             break;
         default:
@@ -225,6 +227,8 @@ int main(int argc, char** argv) {
     if (cachesim::L2_ENABLED) {
         cache.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
     }
+    GRASP::trace_path = tracename;
+    GRASP::llc_bytes = llc_num_sets * llc_num_ways * CACHELINE_SIZE;
     cache.push_back(new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy));
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
@@ -265,6 +269,8 @@ int main(int argc, char** argv) {
         PHRU::print_heuristic_stats();
     if (replacement_policy == ReplacementPolicy::PHRUpp)
         PHRUpp::print_heuristic_stats();
+    if (replacement_policy == ReplacementPolicy::GRASP)
+        GRASP::print_stats();
     if (cachesim::USE_GHOST_CACHE)
         fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
             cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,

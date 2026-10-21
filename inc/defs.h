@@ -27,6 +27,7 @@
 #include "belady_replacement_policy.h"
 #include "hrrip_replacement_policy.h"
 #include "hawkeye_replacement_policy.h"
+#include "grasp_replacement_policy.h"
 #include "hub_oracle_replacement_policy.h"
 
 enum class ReplacementPolicy {
@@ -42,6 +43,7 @@ enum class ReplacementPolicy {
     Belady,
     HRRIP,
     Hawkeye,
+    GRASP,
     HubOracle,
 };
 
@@ -71,6 +73,8 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new HRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::Hawkeye:
             return new Hawkeye(set_idx, num_ways, level);
+        case ReplacementPolicy::GRASP:
+            return new GRASP(set_idx, num_ways, level);
         case ReplacementPolicy::HubOracle:
             return new HubOracle(set_idx, num_ways, level);
 
