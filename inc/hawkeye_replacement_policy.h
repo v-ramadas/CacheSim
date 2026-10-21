@@ -9,8 +9,10 @@
 #define MAX_SHCT 31
 #define SHCT_SIZE_BITS 11
 #define SHCT_SIZE (1 << SHCT_SIZE_BITS)
-#define OPTGEN_VECTOR_SIZE 128
-#define TIMER_SIZE 1024;
+// OPTgen history: OPTGEN_QUANTA_PER_WAY x associativity time quanta (the paper's
+// 8x; 128 for a 16-way set). The set timer wraps at TIMER_TO_VECTOR x that.
+#define OPTGEN_QUANTA_PER_WAY 8
+#define TIMER_TO_VECTOR 8
 struct AddrInfo {
     uint64_t addr;
     uint32_t last_quanta;
@@ -47,12 +49,13 @@ struct OPTgen {
 
     uint64_t CACHE_SIZE;
 
-    void init(uint64_t size) {
+    // vector_size: time quanta of history.
+    void init(uint64_t size, uint64_t vector_size) {
         num_cache = 0;
         num_dont_cache = 0;
         access = 0;
         CACHE_SIZE = size;
-        liveness_history.resize(OPTGEN_VECTOR_SIZE, 0);
+        liveness_history.resize(vector_size, 0);
     }
 
     void add_access(uint64_t curr_quanta) {
@@ -138,6 +141,7 @@ class HawkeyePCPredictor {
 };
 
 class Hawkeye : public BasePolicy {
+    protected:
     uint64_t maxRRPV;
     uint64_t mytimer;
     OPTgen optgen;
@@ -152,18 +156,43 @@ class Hawkeye : public BasePolicy {
 
     inline static HawkeyePCPredictor* predictor;
     std::vector<bool> low_priority;
+
+    // Block size this policy's sets hold (LLC: --cache-block-size; L1D: 64B).
+    // The sampler / OPTgen are keyed on blocks of this size.
+    uint64_t block_size;
+    uint64_t block_shift() const { return (uint64_t)log2(block_size); }
+
+    // OPTgen history and timer, sized from the set's associativity in 64B
+    // lines (OPTGEN_QUANTA_PER_WAY x ways, timer TIMER_TO_VECTOR x that). The
+    // window is the same at any block size: num_ways counts blocks, so it is
+    // scaled back to 64B ways.
+    uint64_t optgen_vector_size;
+    uint64_t timer_size;
+
+    // Extension hooks (no-ops here, so Hawkeye itself is unchanged); HubHawkeye
+    // overrides them. paddr is the block address the way holds.
+    // OPTgen's label for a sampled block, at the point the PC is trained.
+    virtual void train_sampled(uint64_t /*paddr*/, bool /*friendly*/) {}
+    // Final insertion prediction given the PC's (SHCT) prediction.
+    virtual bool predict(uint64_t /*way_idx*/, uint64_t /*block_idx*/, uint64_t /*paddr*/, PacketPtr /*packet*/, bool pc_prediction) { return pc_prediction; }
+    // A cache-friendly line was evicted as the LRU victim (all sets).
+    virtual void lru_evicted(uint64_t /*way_idx*/) {}
+
     public:
     Hawkeye() {}
     Hawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        maxRRPV = 7;
+        maxRRPV = 3;
         counter.resize(num_ways, maxRRPV);
         signatures.resize(num_ways, 0);
         level = _level;
+        block_size = (_level == CacheLevel::LLC) ? cachesim::BLOCK_SIZE : CACHELINE_SIZE;
         reserved_ways = 0;
         mytimer = 0;
-        optgen.init(num_ways - 2);
+        optgen_vector_size = OPTGEN_QUANTA_PER_WAY * num_ways * block_size / CACHELINE_SIZE;
+        timer_size = TIMER_TO_VECTOR * optgen_vector_size;
+        optgen.init(num_ways - 2, optgen_vector_size);
 
         sampled_cache_size = 2800;
         sampler_ways = 8;

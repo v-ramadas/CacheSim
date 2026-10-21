@@ -105,6 +105,7 @@ int main(int argc, char** argv) {
         {"belady", ReplacementPolicy::Belady},
         {"hrrip", ReplacementPolicy::HRRIP},
         {"hawkeye", ReplacementPolicy::Hawkeye},
+        {"hub_hawkeye", ReplacementPolicy::HubHawkeye},
         {"grasp", ReplacementPolicy::GRASP}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
@@ -194,6 +195,7 @@ int main(int argc, char** argv) {
             cachesim::SET_DUELING = false;
             break;
         case ReplacementPolicy::Hawkeye:
+        case ReplacementPolicy::HubHawkeye:
         case ReplacementPolicy::GRASP:
             cachesim::SET_DUELING = false;
             break;
@@ -269,6 +271,8 @@ int main(int argc, char** argv) {
         PHRU::print_heuristic_stats();
     if (replacement_policy == ReplacementPolicy::PHRUpp)
         PHRUpp::print_heuristic_stats();
+    if (replacement_policy == ReplacementPolicy::HubHawkeye)
+        HubHawkeye::print_stats();
     if (replacement_policy == ReplacementPolicy::GRASP)
         GRASP::print_stats();
     if (cachesim::USE_GHOST_CACHE)

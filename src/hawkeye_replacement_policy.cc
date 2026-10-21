@@ -15,7 +15,7 @@ void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
         //If we are sampling, OPTgen will only see accesses from sampled sets
         if(is_sampled_set(set_idx)) {
         //The current timestep 
-            uint64_t curr_quanta = mytimer % OPTGEN_VECTOR_SIZE;
+            uint64_t curr_quanta = mytimer % optgen_vector_size;
             
             uint32_t sampler_set = (paddr >> 6) % sampler_sets; 
             uint64_t sampler_tag = HawkeyePCPredictor::CRC(paddr >> 12) % 256;
@@ -26,9 +26,9 @@ void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
             if((addr_history[sampler_set].find(sampler_tag) != addr_history[sampler_set].end())) {
                 unsigned int curr_timer = mytimer;
                 if(curr_timer < addr_history[sampler_set][sampler_tag].last_quanta)
-                   curr_timer = curr_timer + TIMER_SIZE;
-                //bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > OPTGEN_VECTOR_SIZE);
-                //uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
+                   curr_timer = curr_timer + timer_size;
+                //bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > optgen_vector_size);
+                //uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % optgen_vector_size;
                 //and for prefetch hits, we train the last prefetch trigger PC
                 predictor->increment(addr_history[sampler_set][sampler_tag].PC);
                 //Some maintenance operations for OPTgen
@@ -54,14 +54,20 @@ void Hawkeye::hit_update(PacketPtr packet, uint64_t way_idx) {
             addr_history[sampler_set][sampler_tag].update(mytimer, packet->pc, new_prediction);
             addr_history[sampler_set][sampler_tag].lru = 0;
             //Increment the set timer
-            mytimer = (mytimer+1) % TIMER_SIZE;
+            mytimer = (mytimer+1) % timer_size;
         }
         counter[way_idx] = 0;
     }
 }
 
-void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
-    uint64_t paddr = (packet->address >> 6) << 6;
+void Hawkeye::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool /*was_accessed*/) {
+    // BLOCK: key the sampler on this way's block. A fill carries one 64B line;
+    // with smaller blocks this way receives packet->blocks[block_idx]. At 64B
+    // this is (address >> 6) << 6, as before.
+    uint64_t shift = block_shift();
+    uint64_t paddr = (packet->address >> shift) << shift;
+    if (block_size < CACHELINE_SIZE && block_idx < packet->blocks.size() && packet->blocks[block_idx] != UINT64_MAX)
+        paddr = packet->blocks[block_idx];
 
     //Ignore writebacks
     //if (!packet->is_read) {
@@ -72,10 +78,11 @@ void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr pa
     //If we are sampling, OPTgen will only see accesses from sampled sets
     if(is_sampled_set(set_idx)) {
         //The current timestep 
-        uint64_t curr_quanta = mytimer % OPTGEN_VECTOR_SIZE;
+        uint64_t curr_quanta = mytimer % optgen_vector_size;
 
-        uint32_t sampler_set = (paddr >> 6) % sampler_sets; 
-        uint64_t sampler_tag = HawkeyePCPredictor::CRC(paddr >> 12) % 256;
+        // BLOCK: block index instead of line index (64B: paddr >> 6, CRC(paddr >> 12)).
+        uint32_t sampler_set = (paddr >> shift) % sampler_sets; 
+        uint64_t sampler_tag = HawkeyePCPredictor::CRC(paddr >> (shift + 6)) % 256;
         assert(sampler_set < sampler_sets);
 
         // This line has been used before. Since the right end of a usage interval is always 
@@ -83,14 +90,16 @@ void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr pa
         if((addr_history[sampler_set].find(sampler_tag) != addr_history[sampler_set].end())) {
             unsigned int curr_timer = mytimer;
             if(curr_timer < addr_history[sampler_set][sampler_tag].last_quanta)
-               curr_timer = curr_timer + TIMER_SIZE;
-            bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > OPTGEN_VECTOR_SIZE);
-            uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % OPTGEN_VECTOR_SIZE;
+               curr_timer = curr_timer + timer_size;
+            bool wrap =  ((curr_timer - addr_history[sampler_set][sampler_tag].last_quanta) > optgen_vector_size);
+            uint64_t last_quanta = addr_history[sampler_set][sampler_tag].last_quanta % optgen_vector_size;
             //and for prefetch hits, we train the last prefetch trigger PC
             if(packet->serviced_from_llc > 0 || ( !wrap && optgen.should_cache(curr_quanta, last_quanta))) {
                 predictor->increment(addr_history[sampler_set][sampler_tag].PC);
+                train_sampled(addr_history[sampler_set][sampler_tag].addr, true);
             } else {
                 predictor->decrement(addr_history[sampler_set][sampler_tag].PC);
+                train_sampled(addr_history[sampler_set][sampler_tag].addr, false);
             }
             //Some maintenance operations for OPTgen
             optgen.add_access(curr_quanta);
@@ -114,12 +123,15 @@ void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr pa
         // Update the sampler with the timestamp, PC and our prediction
         // For prefetches, the PC will represent the trigger PC
         addr_history[sampler_set][sampler_tag].update(mytimer, packet->pc, new_prediction);
+        addr_history[sampler_set][sampler_tag].addr = paddr;   // BLOCK: for train_sampled()
         addr_history[sampler_set][sampler_tag].lru = 0;
         //Increment the set timer
-        mytimer = (mytimer+1) % TIMER_SIZE;
+        mytimer = (mytimer+1) % timer_size;
     }
 
     bool new_prediction = predictor->get_prediction (packet->pc);
+
+    new_prediction = predict(way_idx, block_idx, paddr, packet, new_prediction);
 
     signatures[way_idx] = packet->pc;
 
@@ -147,8 +159,9 @@ void Hawkeye::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr pa
 uint64_t Hawkeye::get_eviction_candidate(bool /*is_low_priority = false*/) {
     // look for the maxRRPV line
     for (uint64_t idx = 0; idx < num_ways; idx++) {
-        if (counter[idx] == maxRRPV)
+        if (counter[idx] == maxRRPV) {
             return idx;
+        }
     }
 
     //If we cannot find a cache-averse line, we evict the oldest cache-friendly line
@@ -170,6 +183,7 @@ uint64_t Hawkeye::get_eviction_candidate(bool /*is_low_priority = false*/) {
     {
         predictor->decrement(signatures[lru_victim]);
     }
+    lru_evicted(lru_victim);
     return lru_victim;
 
     // WE SHOULD NOT REACH HERE
@@ -257,6 +271,7 @@ void Hawkeye::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
     breakdown(signatures, num_ways, scale_factor, false);
 
     num_ways = new_num_ways;
+    block_size = new_block_size;
 }
 
 template<typename VecType>
@@ -273,12 +288,13 @@ void Hawkeye::set_contract(uint64_t way_idx, uint64_t size) {
     num_ways -= size;
 }
 
-void Hawkeye::set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t new_num_ways) {
+void Hawkeye::set_merge(uint64_t /*old_block_size*/, uint64_t new_block_size, uint64_t new_num_ways) {
     // No sound way to merge per-way RRPV/signature state across a group of
     // small blocks, so reset it for the new (larger-block) geometry instead,
     // same defaults as a fresh construction.
     counter.assign(new_num_ways, maxRRPV);
     signatures.assign(new_num_ways, 0);
     num_ways = new_num_ways;
+    block_size = new_block_size;
 }
 
