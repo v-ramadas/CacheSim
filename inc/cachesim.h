@@ -147,6 +147,15 @@ class Set {
     // blocks evicted and adds their used footprint words to used_words.
     uint64_t bdi_reserve(PacketPtr fill_packet, uint64_t& used_words);
     void invalidate_all_ways();
+    // Line-lifetime utilization (LLC only): 8B pieces leaving the hierarchy -
+    // evicted to memory, dropped at fill, or discarded by a breakdown/merge -
+    // and how many of them were touched. A piece's footprint bit is ORed over
+    // all its L1<->LLC trips, so each piece is counted once per lifetime.
+    inline static uint64_t life_pieces = 0;
+    inline static uint64_t life_touched = 0;
+    void retire_way(uint64_t way_idx);
+    // End-of-run LLC contents in 8B units: capacity, valid, touched.
+    void count_resident(uint64_t& capacity, uint64_t& valid_pieces, uint64_t& touched) const;
     inline static uint64_t bdi_stat_encoded = 0;
     inline static uint64_t bdi_stat_overflow = 0;
     inline static uint64_t bdi_stat_installs = 0;
@@ -384,6 +393,7 @@ class Cache: public BaseCache {
     uint64_t evictions = 0;
     uint64_t invalidations = 0;
     uint64_t num_blocks_used = 0;
+    uint64_t evicted_words = 0;   // 8B words in the evicted/invalidated blocks (Utilization denominator)
     std::vector<uint64_t> partial_misses;
     uint64_t PSEL;
     bool is_broken_down = false;

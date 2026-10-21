@@ -156,10 +156,23 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
                 enc, ovf, (enc + ovf) ? 100.0 * ovf / (enc + ovf) : 0.0);
         }
     }
-    if (get_evictions() > 0) {
-        fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/(get_evictions()*(get_block_size(0)/8)));
+    // Per residency at this level: touched 8B words over all 8B words of the
+    // blocks evicted or invalidated (moved up) from this level.
+    if (evicted_words > 0) {
+        fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/evicted_words);
     } else {
         fmt::print("Utilization undefined (No evictions)\n");
+    }
+    if constexpr (std::is_same_v<T, Set>) {
+        if (level == CacheLevel::LLC) {
+            fmt::print("Line lifetime utilization {:4f} | touched {} of {} 8B pieces that left the hierarchy\n",
+                Set::life_pieces ? 100.0 * Set::life_touched / Set::life_pieces : 0.0, Set::life_touched, Set::life_pieces);
+            uint64_t capacity = 0, valid_pieces = 0, touched = 0;
+            for (const auto& [idx, s] : sets) s->count_resident(capacity, valid_pieces, touched);
+            fmt::print("LLC touched capacity at end {:4f} | touched {} valid {} capacity {} 8B pieces ({:4f}% valid)\n",
+                capacity ? 100.0 * touched / capacity : 0.0, touched, valid_pieces, capacity,
+                capacity ? 100.0 * valid_pieces / capacity : 0.0);
+        }
     }
 //    fmt::print("Partial Misses ");
 //    auto partial_misses = get_partial_misses();
@@ -318,7 +331,9 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
         // Base+Delta tags: free a base for this line first if none fits; the
         // regular victim selection below then evicts only what is still needed.
         uint64_t used_words = 0;
-        evictions += sets[set_idx]->bdi_reserve(fill_packet, used_words);
+        auto bdi_evicted = sets[set_idx]->bdi_reserve(fill_packet, used_words);
+        evictions += bdi_evicted;
+        evicted_words += bdi_evicted * (sets[set_idx]->get_block_size() / 8);
         num_blocks_used += used_words;
     }
     sets[set_idx]->handle_evict(eviction_packet);
@@ -333,6 +348,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
+    evicted_words += eviction_packet->blocks.size() * (sets[set_idx]->get_block_size() / 8);
     sets[set_idx]->handle_fill(fill_packet);
 
     idx++;
@@ -366,6 +382,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     sets[set_idx]->handle_evict(eviction_packet);
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();
+    evicted_words += eviction_packet->blocks.size() * (sets[set_idx]->get_block_size() / 8);
     if (eviction_packet->blocks.size() == 0) {
         eviction_packet->address = UINT64_MAX;
     } else {
@@ -388,7 +405,10 @@ void Cache<T>::handle_evict(PacketPtr access_packet, PacketPtr eviction_packet) 
     auto set_idx = get_set_idx(access_packet->address);
     sets[set_idx]->handle_evict(eviction_packet);
     num_blocks_used += count_footprint(eviction_packet->footprint);
-    if (eviction_packet->blocks.size() != 0) evictions++;
+    if (eviction_packet->blocks.size() != 0) {
+        evictions++;
+        evicted_words += eviction_packet->blocks.size() * (sets[set_idx]->get_block_size() / 8);
+    }
     return;
 }
 
@@ -431,8 +451,10 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
         //update_data_var_invalidations(packet->pc,
         //    count_footprint(packet->footprint));
 
-    evictions+=std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
+    auto invalidated = std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
+    evictions += invalidated;
+    evicted_words += invalidated * (block_size / 8);
 }
 
 template<typename T>
@@ -533,6 +555,10 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
             fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
         } else if (dropBlock){
+            if (level == CacheLevel::LLC) {   // never inserted: its line lifetime ends here
+                Set::life_pieces++;
+                Set::life_touched += (fill_packet->footprint >> ((*it % CACHELINE_SIZE) / 8)) & 1;
+            }
             auto index = std::distance(fill_packet->blocks.begin(), it);
             fill_packet->blocks.erase(it);
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
@@ -642,13 +668,16 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             // and size before each level.
             const uint64_t line_address = invalidation_packet->address;
             const uint64_t line_size = invalidation_packet->size;
+            uint64_t line_footprint = 0;   // touched sectors of every partial copy
             for (int i = num_levels - 1; i >= 0; i--) {
                 invalidation_packet->address = line_address;
                 invalidation_packet->size = line_size;
                 cache[i]->handle_invalidate(invalidation_packet);
+                line_footprint |= invalidation_packet->footprint;
                 if (invalidation_packet->blocks.size() != 0)
                     *fill_packet = *invalidation_packet;
             }
+            fill_packet->footprint |= line_footprint;
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;

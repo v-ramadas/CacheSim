@@ -377,10 +377,13 @@ void Set::handle_fill(PacketPtr packet) {
             degree[way_idx] = packet->block_degrees[block_idx];
         avg_degree[way_idx] = packet->avg_degree;
 
-        for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++) {
-            bool was_accessed = ((packet->footprint >> (word_idx*bits_per_block)&bitmask) == bitmask);
-            if (was_accessed) {
-                set_footprint(way_idx, word_idx, true);
+        // The packet footprint has one bit per 8B sector of the line; this
+        // block covers sectors (block_address % 64)/8 .. + bits_per_block - 1.
+        if (block_address != UINT64_MAX) {
+            uint64_t first_sector = (block_address % CACHELINE_SIZE) / 8;
+            for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++) {
+                if ((packet->footprint >> (first_sector + word_idx)) & 1)
+                    set_footprint(way_idx, word_idx, true);
             }
         }
 
@@ -399,7 +402,27 @@ void Set::handle_fill(PacketPtr packet) {
 // One victim way leaves the set: footprint packed into packet at position
 // num_blocks_evicted, metadata merged into packet, ghost cache / stats
 // updated, way invalidated. Shared by handle_evict() and base replacement.
+void Set::retire_way(uint64_t way_idx) {
+    if (level != CacheLevel::LLC || !valid[way_idx])
+        return;
+    for (uint64_t word_idx = 0; word_idx < block_size/8; word_idx++) {
+        life_pieces++;
+        life_touched += get_footprint(way_idx, word_idx);
+    }
+}
+
+void Set::count_resident(uint64_t& capacity, uint64_t& valid_pieces, uint64_t& touched) const {
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
+        capacity += block_size/8;
+        if (!valid[way_idx]) continue;
+        valid_pieces += block_size/8;
+        for (uint64_t word_idx = 0; word_idx < block_size/8; word_idx++)
+            touched += footprint[way_idx*(block_size/8) + word_idx];
+    }
+}
+
 void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks_evicted, uint64_t num_blocks_to_evict) {
+    retire_way(way_idx);   // an LLC victim leaves the hierarchy
     if (dirty[way_idx]) {
         dirty[way_idx] = false;
     }
@@ -520,11 +543,13 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         //serviced_from_llc[way_idx]++;
         inv_address = ways[way_idx];
         //auto previous_footprint = packet->footprint;
-        packet->footprint |= (bitmask*get_footprint(way_idx, 0)) << (block_num*bits_per_block);
+        for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
+            packet->footprint |= (uint64_t)get_footprint(way_idx, word_idx) << (block_num*bits_per_block + word_idx);
 
         fill_packet(packet, way_idx);
         invalidate_way(way_idx);
-        set_footprint(way_idx, 0, false);
+        for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
+            set_footprint(way_idx, word_idx, false);
 
         //cache->update_data_var_invalidations(packet->pc,
         //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
@@ -576,6 +601,8 @@ void Set::contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blo
 
 void Set::set_breakdown(uint64_t new_block_size) {
     assert(new_block_size < block_size);
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        retire_way(way_idx);   // the set is emptied below
 
     // Second, evict ways if iso area set needs to convert ways to tags
     uint64_t scale_factor = block_size/new_block_size;
@@ -716,6 +743,7 @@ void Set::set_merge(uint64_t new_block_size) {
     uint64_t new_num_ways = original_num_ways;
 
     for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++) {
+        retire_way(way_idx);   // merge discards every block
         repl_counter->evict(way_idx);
     }
 
@@ -726,7 +754,7 @@ void Set::set_merge(uint64_t new_block_size) {
     is_hub_node.assign(new_num_ways, false);
     distance_counts.assign(new_num_ways, 0);
     dirty.assign(new_num_ways, false);
-    footprint.assign(new_num_ways, false);
+    footprint.assign(new_num_ways * new_block_size / 8, false);   // block_size/8 words per way
     pc.assign(new_num_ways, UINT64_MAX);
     next_reuse.assign(new_num_ways, 0);
     way_hits.assign(new_num_ways, 0);

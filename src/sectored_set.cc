@@ -280,7 +280,8 @@ void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
     if (hit) {
         auto way_idx = std::distance(ways.begin(), try_hit);
         for (uint64_t sector_idx = 0; sector_idx < num_blocks; sector_idx++) {
-            packet->footprint |= (bitmask*get_footprint(way_idx, sector_idx)) << (block_num*bits_per_block);
+            // one bit per sector, at the sector's own position in the line
+            packet->footprint |= (uint64_t)get_footprint(way_idx, sector_idx) << (block_num*bits_per_block + sector_idx);
             set_footprint(way_idx, sector_idx, false);
         }
         fill_packet(packet, way_idx);
