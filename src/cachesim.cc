@@ -21,7 +21,7 @@ Cache<T>::Cache():
    for (uint64_t i = 0; i < num_sets; ++i) {
        sets[i] = std::make_unique<T>(this, num_ways, 64, i, ReplacementPolicy::LRU, level);
    }
-   partial_misses.resize(CACHELINE_SIZE/64+1, 0);
+   partial_misses.resize(CACHELINE_SIZE/8+1, 0);   // index = blocks of the line present on a miss (0..8)
 }
 
 template<typename T>
@@ -91,7 +91,7 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
 
     }
 
-    partial_misses.resize(CACHELINE_SIZE/block_size+1, 0);
+    partial_misses.resize(CACHELINE_SIZE/8+1, 0);   // index = blocks of the line present on a miss (0..8)
 }
 
 
@@ -157,11 +157,14 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
         }
     }
     // Per residency at this level: touched 8B words over all 8B words of the
-    // blocks evicted or invalidated (moved up) from this level.
-    if (evicted_words > 0) {
-        fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/evicted_words);
-    } else {
-        fmt::print("Utilization undefined (No evictions)\n");
+    // blocks evicted or invalidated (moved up) from this level. Not printed
+    // for the LLC, where Line lifetime utilization below replaces it.
+    if (level != CacheLevel::LLC) {
+        if (evicted_words > 0) {
+            fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/evicted_words);
+        } else {
+            fmt::print("Utilization undefined (No evictions)\n");
+        }
     }
     if constexpr (std::is_same_v<T, Set>) {
         if (level == CacheLevel::LLC) {
@@ -169,68 +172,23 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
                 Set::life_pieces ? 100.0 * Set::life_touched / Set::life_pieces : 0.0, Set::life_touched, Set::life_pieces);
             uint64_t capacity = 0, valid_pieces = 0, touched = 0;
             for (const auto& [idx, s] : sets) s->count_resident(capacity, valid_pieces, touched);
+            if (!Set::reuse_residents_recorded) {   // lifetimes still open at the end count as ending now
+                for (const auto& [idx, s] : sets) s->record_reuse_residents();
+                Set::reuse_residents_recorded = true;
+            }
             fmt::print("LLC touched capacity at end {:4f} | touched {} valid {} capacity {} 8B pieces ({:4f}% valid)\n",
                 capacity ? 100.0 * touched / capacity : 0.0, touched, valid_pieces, capacity,
                 capacity ? 100.0 * valid_pieces / capacity : 0.0);
         }
     }
-//    fmt::print("Partial Misses ");
-//    auto partial_misses = get_partial_misses();
-//    for (long unsigned idx = 0; idx < partial_misses.size(); idx++) {
-//        fmt::print("{}:{} ", idx, partial_misses[idx]);
-//    }
-//    fmt::print("\n");
-//
-//    for (auto& [pc, misses]: data_var_misses) {
-//        fmt::print("PC {:#x} Misses {}\n", pc, misses);
-//    }
-//
-//    for (auto& [pc, hits]: data_var_hits) {
-//        fmt::print("PC {:#x} Hits {}\n", pc, hits);
-//    }
-//
-//    for (auto& [pc, hist]: data_var_invalidations) {
-//        for (auto& [footprint, count]: hist)
-//            fmt::print("PC {:#x} Density {} Invalidations {}\n", pc, footprint, count);
-//;
-//    }
-//
-//    for (auto& [pc, hist]: data_var_evictions) {
-//        for (auto& [footprint, count]: hist)
-//            fmt::print("PC {:#x} Density {} Evictions {}\n", pc, footprint, count);
-//    }
-
-    if (cachesim::GEN_STATS) {
-//        for (auto& [is_hub, map]: data_var_hub_hits) {
-//            for (auto& [reuse, count]: map)
-//                fmt::print("hub_hits: Hub {} Serviced From LLC {} Count {}\n", (is_hub? "True": "False"), reuse, count);
-//        }
-
-        for (auto& [is_hub, map]: data_var_hub_evictions) {
-            for (auto& [reuse, count]: map)
-                fmt::print("hub_evictions: Hub {} Serviced From LLC {} Count {}\n", (is_hub? "True": "False"), reuse, count);
-        }
-
-        for (auto& [is_hub, map]: data_var_eviction_reuse) {
-            for (auto& [reuse, count]: map)
-                fmt::print("eviction_reuse: Hub {} Next Reuse {:#x} Count {}\n", (is_hub? "True": "False"), reuse, count);
-        }
-
-        for (auto& [fill_pc, map]: data_var_pc_evictions1) {
-            for (auto& [eviction_pc, count]: map)
-                fmt::print("Eviction Candidate: Fill PC {} Eviction PC {} Count {}\n", fill_pc, eviction_pc, count);
-        }
-        for (auto& [fill_pc, map]: data_var_pc_evictions2) {
-            for (auto& [eviction_pc, count]: map)
-                fmt::print("Eviction Candidate: Fill PC {} Hub {} Count {}\n", fill_pc, (eviction_pc? "True": "False"), count);
-        }
-        for (auto& [fill_pc, map]: data_var_pc_evictions3) {
-            for (auto& [eviction_pc, degree]: map)
-                fmt::print("Eviction Candidate: Fill PC {} Eviction PC {} Degree {}\n", fill_pc, eviction_pc, (float)(degree)/data_var_pc_evictions1[fill_pc][eviction_pc]);
-        }
-
-
+    // Misses by how many 8B-or-larger blocks of the requested 64B line were
+    // already present at this level (64B LLC: always 0).
+    fmt::print("Partial Misses (blocks of the 64B line present on a miss) ");
+    auto partial_misses = get_partial_misses();
+    for (long unsigned idx = 0; idx < partial_misses.size(); idx++) {
+        fmt::print("{}:{} ", idx, partial_misses[idx]);
     }
+    fmt::print("\n");
 }
 
 template<typename T>
@@ -269,19 +227,12 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         hits++;
         if (packet->is_read) read_hits++;
         else write_hits++;
-        update_data_var_hits(packet->pc);
     } else {
         misses++;
         if (packet->is_read) read_misses++;
         else write_misses++;
     }
 
-    if (!hit) {
-        if (data_var_misses.find(packet->pc) == data_var_misses.end())
-            data_var_misses[packet->pc] = 1;
-        else
-            data_var_misses[packet->pc]++;
-    }
 
 //    if (!is_sectored && cachesim::instCount % 500000 == 0) {
 //        fmt::print("Inst {} MPKI {:4f}\n",
@@ -448,8 +399,6 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
     num_blocks_used += count_footprint(invalidate_packet.footprint);
 //        fmt::print("Aligned Address {:#x} Footprint {:#x}\n", aligned_address, packet->footprint);
 
-        //update_data_var_invalidations(packet->pc,
-        //    count_footprint(packet->footprint));
 
     auto invalidated = std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
@@ -556,6 +505,9 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
         } else if (dropBlock){
             if (level == CacheLevel::LLC) {   // never inserted: its line lifetime ends here
+                auto index = std::distance(fill_packet->blocks.begin(), it);
+                Set::record_reuse(fill_packet->block_degrees[index], fill_packet->avg_degree,
+                                  fill_packet->block_serviced_from_llc[index]);
                 Set::life_pieces++;
                 Set::life_touched += (fill_packet->footprint >> ((*it % CACHELINE_SIZE) / 8)) & 1;
             }

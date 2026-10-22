@@ -267,6 +267,8 @@ int main(int argc, char** argv) {
     }
     if (cachesim::GEN_STATS)
         predictor->print_stats();
+    if (replacement_policy == ReplacementPolicy::HRU)
+        Set::print_reuse_by_degree("HRU");
     if (replacement_policy == ReplacementPolicy::PHRU)
         PHRU::print_heuristic_stats();
     if (replacement_policy == ReplacementPolicy::PHRUpp)

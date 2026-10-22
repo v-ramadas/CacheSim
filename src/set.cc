@@ -308,13 +308,17 @@ bool Set::try_hit(PacketPtr packet) {
 
             if (tags[way_idx] == make_tag(align_address(packet->address, block_size))) {
                 serviced_from_llc[way_idx]++;
-                //cache->update_data_var_hub_hits((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
             }
         }
 
         hits++;
     } else {
-        cache->incr_partial_misses(packet->blocks.size() - way_idx_list.size());
+        // Miss: how many blocks of the requested 64B line this set still holds
+        // (all of a line's blocks map to the same set). Always 0 at 64B.
+        uint64_t line = align_address(packet->address, CACHELINE_SIZE), present = 0;
+        for (uint64_t b = 0; b < CACHELINE_SIZE / block_size; b++)
+            present += find_way(line + b * block_size) < tags.size();
+        cache->incr_partial_misses(present);
         switch(get_dueling_type()) {
             case SetDuelingType::Leader64:
                 cache->decr_psel();
@@ -402,9 +406,56 @@ void Set::handle_fill(PacketPtr packet) {
 // One victim way leaves the set: footprint packed into packet at position
 // num_blocks_evicted, metadata merged into packet, ghost cache / stats
 // updated, way invalidated. Shared by handle_evict() and base replacement.
+void Set::record_reuse(uint64_t degree, float avg_degree, uint64_t llc_hits) {
+    int d = degree == 0 ? 0 : std::min<int>(REUSE_DEG_BUCKETS - 1, 1 + (63 - __builtin_clzll(degree)));
+    int r = llc_hits < 4 ? (int)llc_hits : std::min<int>(REUSE_BUCKETS - 1, 1 + (63 - __builtin_clzll(llc_hits)));
+    reuse_hist[d][r]++;
+    reuse_hits_by_deg[d] += llc_hits;
+    int c = degree == 0 ? 2 : (degree > (uint64_t)avg_degree ? 1 : 0);
+    reuse_blocks[c]++;
+    reuse_reused[c] += llc_hits > 0;
+    reuse_hits[c] += llc_hits;
+}
+
+void Set::record_reuse_residents() const {
+    if (level != CacheLevel::LLC) return;
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        if (valid[way_idx])
+            record_reuse(degree[way_idx], avg_degree[way_idx], serviced_from_llc[way_idx]);
+}
+
+void Set::print_reuse_by_degree(const char* name) {
+    static const char* reuse_label[REUSE_BUCKETS] = {"0", "1", "2", "3", "4-7", "8-15", "16-31", "32+"};
+    fmt::print("{} LLC reuse by degree (one record per block lifetime; reuse = times serviced from LLC) columns:", name);
+    for (auto l : reuse_label) fmt::print(" {}", l);
+    fmt::print("\n");
+    for (int d = 0; d < REUSE_DEG_BUCKETS; d++) {
+        uint64_t n = 0;
+        for (int r = 0; r < REUSE_BUCKETS; r++) n += reuse_hist[d][r];
+        if (n == 0) continue;
+        std::string range = d == 0 ? "unlabelled" : d == REUSE_DEG_BUCKETS - 1 ? fmt::format("[{},inf)", 1ULL << (d - 1))
+                                                  : fmt::format("[{},{})", 1ULL << (d - 1), 1ULL << d);
+        fmt::print("{} reuse degree {} blocks {} mean_reuse {:.3f} reused {:.4f} |", name, range, n,
+                   (double)reuse_hits_by_deg[d] / n, 1.0 - (double)reuse_hist[d][0] / n);
+        for (int r = 0; r < REUSE_BUCKETS; r++) fmt::print(" {}", reuse_hist[d][r]);
+        fmt::print("\n");
+    }
+    static const char* cls[3] = {"non-hub", "hub", "unlabelled"};
+    uint64_t all_hits = reuse_hits[0] + reuse_hits[1] + reuse_hits[2];
+    for (int c = 0; c < 3; c++)
+        fmt::print("{} reuse {}: blocks {} reused(>=1) {} ({:.4f}) mean_reuse {:.3f} share_of_llc_hits {:.4f}\n", name, cls[c],
+                   reuse_blocks[c], reuse_reused[c], reuse_blocks[c] ? (double)reuse_reused[c] / reuse_blocks[c] : 0.0,
+                   reuse_blocks[c] ? (double)reuse_hits[c] / reuse_blocks[c] : 0.0, all_hits ? (double)reuse_hits[c] / all_hits : 0.0);
+    // PHRU's rule, scored over labelled blocks: predict hub if reused at least once.
+    uint64_t tp = reuse_reused[1], fp = reuse_reused[0], fn = reuse_blocks[1] - reuse_reused[1];
+    fmt::print("{} reuse rule 'reused >= 1 => hub' (labelled blocks): precision {:.4f} recall {:.4f}\n", name,
+               tp + fp ? (double)tp / (tp + fp) : 0.0, tp + fn ? (double)tp / (tp + fn) : 0.0);
+}
+
 void Set::retire_way(uint64_t way_idx) {
     if (level != CacheLevel::LLC || !valid[way_idx])
         return;
+    record_reuse(degree[way_idx], avg_degree[way_idx], serviced_from_llc[way_idx]);
     for (uint64_t word_idx = 0; word_idx < block_size/8; word_idx++) {
         life_pieces++;
         life_touched += get_footprint(way_idx, word_idx);
@@ -472,9 +523,6 @@ void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks
     //fmt::print("PC {} way {}\n", pc[way_idx], way_idx);
     fill_packet(packet, way_idx);
 
-    //if (degree[way_idx] != 0)
-    //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
-    cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
 
     // Capture the evicted line's address before invalidate_way() clears
     // it, so a fast re-miss on this same address can be caught as a
@@ -518,8 +566,6 @@ void Set::handle_evict(PacketPtr packet) {
 
         evict_way_into(packet, way_idx, num_blocks_evicted, num_blocks_to_evict);
         num_blocks_evicted++;
-        //cache->update_data_var_evictions(packet->pc,
-        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
     }
 
@@ -551,8 +597,6 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
             set_footprint(way_idx, word_idx, false);
 
-        //cache->update_data_var_invalidations(packet->pc,
-        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
         if (cachesim::DEBUG || cachesim::LLC_DEBUG) {
             fmt::print("{}: Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} because of line promotion to higher level\n", 
                     cachesim::instCount, level, packet->address, set_idx, way_idx, packet->footprint);

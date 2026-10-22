@@ -84,7 +84,15 @@ bool SectoredSet::try_hit(PacketPtr packet) {
                     __func__, level, packet->pc, packet->aligned_address, packet->address, set_idx, way_idx, packet->size, packet->degree, packet->avg_degree);
     }
 
-    cache->incr_partial_misses(packet->blocks.size() - sector_idx_list.size());
+    // Miss: how many sectors of the requested 64B line are valid here
+    // (0 when the line itself is absent).
+    if (!hit) {
+        uint64_t present = 0;
+        if (way != ways.end())
+            present = std::count_if(way_sector->sectors.begin(), way_sector->sectors.end(),
+                                    [](uint64_t a) { return a != UINT64_MAX; });
+        cache->incr_partial_misses(present);
+    }
     accesses++;
 
     if (hit) {
@@ -265,8 +273,6 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 
     invalidate_way(way_idx);
 
-    //cache->update_data_var_evictions(packet->pc, count_footprint(packet->footprint));
-
     if (cachesim::DEBUG || cachesim::L1_DEBUG)
         fmt::print("Level {} Num invalid blocks {} evicted line footprint {:#x} serviced_from_llc {}\n",
             level, num_invalid_blocks, packet->footprint, packet->serviced_from_llc);
@@ -287,8 +293,6 @@ void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         fill_packet(packet, way_idx);
         way_sectors[way_idx].invalidate();
         invalidate_way(way_idx);
-        //cache->update_data_var_invalidations(packet->pc,
-        //    count_footprint(packet->footprint)-count_footprint(previous_footprint));
 
         if (cachesim::DEBUG || cachesim::L1_DEBUG) {
             fmt::print("Level {} Invalidated address {:#x} @ set {} way {} footprint {:#x} serviced_from_llc {} because of line promotion to higher level\n", level, packet->address, set_idx, way_idx, packet->footprint, packet->serviced_from_llc);

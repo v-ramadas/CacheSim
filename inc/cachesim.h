@@ -154,6 +154,20 @@ class Set {
     inline static uint64_t life_pieces = 0;
     inline static uint64_t life_touched = 0;
     void retire_way(uint64_t way_idx);
+    // Reuse by degree (LLC only): one record per block when its lifetime ends
+    // (evicted, dropped at fill, or resident at end of run). Reuse = times it
+    // was serviced from the LLC. Degree rows are power-of-two buckets
+    // (0 = unlabelled, then [1,2), [2,4), ..., [2^20, inf)); reuse columns
+    // are 0, 1, 2, 3, 4-7, 8-15, 16-31, 32+.
+    static constexpr int REUSE_DEG_BUCKETS = 22, REUSE_BUCKETS = 8;
+    inline static uint64_t reuse_hist[REUSE_DEG_BUCKETS][REUSE_BUCKETS] = {};
+    inline static uint64_t reuse_hits_by_deg[REUSE_DEG_BUCKETS] = {};
+    // [0] non-hub, [1] hub (degree > avg_degree, as is_hub_node), [2] unlabelled
+    inline static uint64_t reuse_blocks[3] = {}, reuse_reused[3] = {}, reuse_hits[3] = {};
+    inline static bool reuse_residents_recorded = false;
+    static void record_reuse(uint64_t degree, float avg_degree, uint64_t llc_hits);
+    void record_reuse_residents() const;
+    static void print_reuse_by_degree(const char* name);
     // End-of-run LLC contents in 8B units: capacity, valid, touched.
     void count_resident(uint64_t& capacity, uint64_t& valid_pieces, uint64_t& touched) const;
     inline static uint64_t bdi_stat_encoded = 0;
@@ -331,19 +345,6 @@ class BaseCache {
     virtual void decr_psel() = 0;
     virtual void record_leader_access(SetDuelingType type, bool hit) = 0;
 
-//    virtual void update_data_var_hub_hits(bool is_hub, uint64_t serviced_from_llc) = 0;
-    virtual void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) = 0;
-//    virtual void update_data_var_eviction_reuse(bool is_hub, uint64_t reuse) = 0;
-//    virtual void update_data_var_pc_evictions1(uint64_t fill_pc, uint64_t eviction_pc) = 0;
-//    virtual void update_data_var_pc_evictions2(uint64_t fill_pc, bool is_hub) = 0;
-//    virtual void update_data_var_pc_evictions3(uint64_t fill_pc, uint64_t eviction_pc, uint64_t degree) = 0;
-    //virtual void update_data_var_invalidations(uint64_t pc, uint64_t footprint) = 0;
-
-//    virtual void update_data_var_evictions(uint64_t pc, uint64_t footprint) = 0;
-    virtual void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> footprint) = 0;
-
-    virtual void update_data_var_hits(uint64_t pc) = 0;
-
     virtual void print_mpki_curve(uint64_t inst_count) = 0;
     virtual void print_stats(uint64_t inst_count, std::string tracename) = 0;
     virtual void print_reuse_distance() = 0;
@@ -497,151 +498,6 @@ class Cache: public BaseCache {
     void log_dueling_metrics();
 
 
-    // Workload Behavior
-    std::unordered_map<uint64_t, uint64_t> data_var_misses;
-    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_invalidations;
-    std::unordered_map<bool, std::map<uint64_t, uint64_t>> data_var_hub_hits;
-    std::unordered_map<bool, std::map<uint64_t, uint64_t>> data_var_hub_evictions;
-    std::unordered_map<bool, std::map<int64_t, uint64_t>> data_var_eviction_reuse;
-    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_pc_evictions1;
-    std::unordered_map<uint64_t, std::map<bool, uint64_t>> data_var_pc_evictions2;
-    std::unordered_map<uint64_t, std::map<uint64_t, uint64_t>> data_var_pc_evictions3;
-    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_evictions;
-    std::map<uint64_t, std::map<uint64_t, uint64_t>> data_var_block_accesses;
-    std::map<uint64_t, uint64_t> data_var_hits;
-
-//    void update_data_var_hub_hits(bool is_hub, uint64_t serviced_from_llc) {
-//        if (data_var_hub_hits.find(is_hub) == data_var_hub_hits.end()) {
-//            data_var_hub_hits[is_hub] = std::map<uint64_t, uint64_t>();
-//        }
-//
-//        if (data_var_hub_hits[is_hub].find(serviced_from_llc) == data_var_hub_hits[is_hub].end()) {
-//            data_var_hub_hits[is_hub][serviced_from_llc] = 1;
-//        } else {
-//            data_var_hub_hits[is_hub][serviced_from_llc] += 1;
-//        }
-//    }
-
-    void update_data_var_hub_evictions(bool is_hub, uint64_t serviced_from_llc) {
-        if (data_var_hub_evictions.find(is_hub) == data_var_hub_evictions.end()) {
-            data_var_hub_evictions[is_hub] = std::map<uint64_t, uint64_t>();
-        }
-
-        if (data_var_hub_evictions[is_hub].find(serviced_from_llc) == data_var_hub_evictions[is_hub].end()) {
-            data_var_hub_evictions[is_hub][serviced_from_llc] = 1;
-        } else {
-            data_var_hub_evictions[is_hub][serviced_from_llc] += 1;
-        }
-    }
-
-//    void update_data_var_eviction_reuse(bool is_hub, uint64_t reuse) {
-//        if (reuse == UINT64_MAX) return;
-//        if (reuse == 0) return;
-//        auto next_reuse = reuse - cachesim::inst_count;
-//        next_reuse = next_reuse & ~(0x8 - 1);//0x7f;
-//        if (next_reuse > 0x3200) return;
-//        if (data_var_eviction_reuse.find(is_hub) == data_var_eviction_reuse.end()) {
-//            data_var_eviction_reuse[is_hub] = std::map<int64_t, uint64_t>();
-//        }
-//
-//        if (data_var_eviction_reuse[is_hub].find(next_reuse) == data_var_eviction_reuse[is_hub].end()) {
-//            data_var_eviction_reuse[is_hub][next_reuse] = 1;
-//        } else {
-//            data_var_eviction_reuse[is_hub][next_reuse] += 1;
-//        }
-//    }
-
-
-//    void update_data_var_pc_evictions1(uint64_t fill_pc, uint64_t eviction_pc) {
-//        if (data_var_pc_evictions1.find(fill_pc) == data_var_pc_evictions1.end()) {
-//            data_var_pc_evictions1[fill_pc] = std::map<uint64_t, uint64_t>();
-//        }
-//
-//        if (data_var_pc_evictions1[fill_pc].find(eviction_pc) == data_var_pc_evictions1[fill_pc].end()) {
-//            data_var_pc_evictions1[fill_pc][eviction_pc] = 1;
-//        } else {
-//            data_var_pc_evictions1[fill_pc][eviction_pc] += 1;
-//        }
-//    }
-
-//    void update_data_var_pc_evictions2(uint64_t fill_pc, bool is_hub) {
-//        if (data_var_pc_evictions2.find(fill_pc) == data_var_pc_evictions2.end()) {
-//            data_var_pc_evictions2[fill_pc] = std::map<bool, uint64_t>();
-//        }
-//
-//        if (data_var_pc_evictions2[fill_pc].find(is_hub) == data_var_pc_evictions2[fill_pc].end()) {
-//            data_var_pc_evictions2[fill_pc][is_hub] = 1;
-//        } else {
-//            data_var_pc_evictions2[fill_pc][is_hub] += 1;
-//        }
-//    }
-
-//    void update_data_var_pc_evictions3(uint64_t fill_pc, uint64_t eviction_pc, uint64_t degree) {
-//        if (data_var_pc_evictions3.find(fill_pc) == data_var_pc_evictions3.end()) {
-//            data_var_pc_evictions3[fill_pc] = std::map<uint64_t, uint64_t>();
-//        }
-//
-//        if (data_var_pc_evictions3[fill_pc].find(eviction_pc) == data_var_pc_evictions3[fill_pc].end()) {
-//            data_var_pc_evictions3[fill_pc][eviction_pc] = degree;
-//        } else {
-//            data_var_pc_evictions3[fill_pc][eviction_pc] += degree;
-//        }
-//    }
-
-
-//    void update_data_var_invalidations(uint64_t pc, uint64_t _footprint) {
-//        if (data_var_invalidations.find(pc) == data_var_invalidations.end()) {
-//            std::map<uint64_t, uint64_t> invalidations_hist;
-//            invalidations_hist[0]=0;
-//            invalidations_hist[1]=0;
-//            invalidations_hist[2]=0;
-//            invalidations_hist[3]=0;
-//            invalidations_hist[4]=0;
-//            invalidations_hist[5]=0;
-//            invalidations_hist[6]=0;
-//            invalidations_hist[7]=0;
-//        
-//            data_var_invalidations[pc] = invalidations_hist;
-//        }
-//        data_var_invalidations[pc][_footprint] += 1;
-//    }
-
-//    void update_data_var_evictions(uint64_t pc, uint64_t _footprint) {
-//        if (data_var_evictions.find(pc) == data_var_evictions.end()) {
-//            std::map<uint64_t, uint64_t> footprint_hist;
-//            footprint_hist[0]=0;
-//            footprint_hist[1]=0;
-//            footprint_hist[2]=0;
-//            footprint_hist[3]=0;
-//            footprint_hist[4]=0;
-//            footprint_hist[5]=0;
-//            footprint_hist[6]=0;
-//            footprint_hist[7]=0;
-//
-//            data_var_evictions[pc] = footprint_hist;
-//        }
-//        data_var_evictions[pc][_footprint] += 1;
-//    }
-
-    void update_data_var_block_accesses(uint64_t pc, std::vector<uint64_t> _footprint) {
-        if (data_var_block_accesses.find(pc) == data_var_block_accesses.end()) {
-            std::map<uint64_t, uint64_t> footprint_hist;
-            for (int i = 0; i < 8; i++)
-                footprint_hist[i] = _footprint[i];
-
-            data_var_block_accesses[pc] = footprint_hist;
-        } else {
-            for (int i = 0; i < 8; i++)
-                data_var_block_accesses[pc][i] += _footprint[i];
-        }
-    }
-
-    void update_data_var_hits(uint64_t pc) {
-        if (data_var_hits.find(pc) == data_var_hits.end()) {
-            data_var_hits[pc] = 0;
-        }
-        data_var_hits[pc]++;
-    }
 
     
     public:
