@@ -395,13 +395,30 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
         invalidate_packet.size = packet->size;
     }
 
-    *packet = invalidate_packet;
-    num_blocks_used += count_footprint(invalidate_packet.footprint);
-//        fmt::print("Aligned Address {:#x} Footprint {:#x}\n", aligned_address, packet->footprint);
-
-
     auto invalidated = std::count_if(invalidate_packet.blocks.begin(), invalidate_packet.blocks.end(),
             [](uint64_t addr){return (addr != UINT64_MAX);});
+    if constexpr (std::is_same_v<T, Set>) {
+        // 16B/32B blocks moving up: L1D holds 8B sectors, so hand it one entry
+        // per sector, each with its block's degree and LLC service count.
+        if (block_size > 8 && block_size < CACHELINE_SIZE) {
+            uint64_t per = block_size / 8;
+            std::vector<uint64_t> blocks(CACHELINE_SIZE/8, UINT64_MAX), degrees(CACHELINE_SIZE/8, 0), serviced(CACHELINE_SIZE/8, 0);
+            for (uint64_t b = 0; b < invalidate_packet.blocks.size(); b++) {
+                if (invalidate_packet.blocks[b] == UINT64_MAX) continue;
+                for (uint64_t s = 0; s < per; s++) {
+                    blocks[b*per + s] = invalidate_packet.blocks[b] + 8*s;
+                    degrees[b*per + s] = invalidate_packet.block_degrees[b];
+                    serviced[b*per + s] = invalidate_packet.block_serviced_from_llc[b];
+                }
+            }
+            invalidate_packet.blocks = blocks;
+            invalidate_packet.block_degrees = degrees;
+            invalidate_packet.block_serviced_from_llc = serviced;
+        }
+    }
+    *packet = invalidate_packet;
+    num_blocks_used += count_footprint(invalidate_packet.footprint);
+
     evictions += invalidated;
     evicted_words += invalidated * (block_size / 8);
 }
