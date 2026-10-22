@@ -350,7 +350,12 @@ void Set::handle_fill(PacketPtr packet) {
         if (level == CacheLevel::L1D) {
             was_accessed = (block_address == align_address(packet->address, block_size)); 
         } else {
-            was_accessed = ((packet->footprint >> (block_idx*bits_per_block)&bitmask) == bitmask);
+            // The footprint has one bit per 8B sector of the line, by position.
+            // blocks[] may have been compacted (empty, already-present or
+            // dropped blocks removed), so index it by this block's own first
+            // sector, not by block_idx.
+            uint64_t first_sector = (block_address % CACHELINE_SIZE) / 8;
+            was_accessed = ((packet->footprint >> first_sector) & bitmask) == bitmask;
         }
         if (packet->serviced_from_llc > 0) {
             packet->is_hub_node = packet->block_degrees[block_idx] > uint64_t(packet->avg_degree);
