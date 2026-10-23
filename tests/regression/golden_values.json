@@ -610,5 +610,150 @@
       }
     }
   },
-  "performance_history": {}
+  "performance_history": {
+    "hru_8b_psel": {
+      "as-Skitter": {
+        "mpki": 30.442081,
+        "cycles": 1422883957
+      },
+      "web-BerkStan": {
+        "mpki": 17.726288,
+        "cycles": 330047230
+      },
+      "sx-stackoverflow": {
+        "mpki": 19.878551,
+        "cycles": 1602158156
+      },
+      "cit-Patents": {
+        "mpki": 49.785194,
+        "cycles": 1973777442
+      }
+    },
+    "hrupp_8b_psel": {
+      "as-Skitter": {
+        "mpki": 26.956291,
+        "cycles": 1290466431
+      },
+      "web-BerkStan": {
+        "mpki": 17.640202,
+        "cycles": 329051673
+      },
+      "sx-stackoverflow": {
+        "mpki": 18.581306,
+        "cycles": 1525177222
+      },
+      "cit-Patents": {
+        "mpki": 47.222878,
+        "cycles": 1884420158
+      }
+    },
+    "phru_8b_psel": {
+      "as-Skitter": {
+        "mpki": 34.951344,
+        "cycles": 1594349263
+      },
+      "web-BerkStan": {
+        "mpki": 18.185171,
+        "cycles": 336140333
+      },
+      "sx-stackoverflow": {
+        "mpki": 22.696882,
+        "cycles": 1769475597
+      },
+      "cit-Patents": {
+        "mpki": 51.525703,
+        "cycles": 2034566870
+      }
+    },
+    "phrupp_8b_psel": {
+      "as-Skitter": {
+        "mpki": 31.927082,
+        "cycles": 1479436080
+      },
+      "web-BerkStan": {
+        "mpki": 16.829,
+        "cycles": 318369319
+      },
+      "sx-stackoverflow": {
+        "mpki": 20.798447,
+        "cycles": 1656786989
+      },
+      "cit-Patents": {
+        "mpki": 49.249569,
+        "cycles": 1955205191
+      }
+    },
+    "hru_8b_ztest": {
+      "as-Skitter": {
+        "mpki": 30.493177,
+        "cycles": 1424818676
+      },
+      "web-BerkStan": {
+        "mpki": 19.74283,
+        "cycles": 356808217
+      },
+      "sx-stackoverflow": {
+        "mpki": 19.952238,
+        "cycles": 1606526863
+      },
+      "cit-Patents": {
+        "mpki": 49.782993,
+        "cycles": 1973700106
+      }
+    },
+    "hrupp_8b_ztest": {
+      "as-Skitter": {
+        "mpki": 26.944027,
+        "cycles": 1289998085
+      },
+      "web-BerkStan": {
+        "mpki": 17.864901,
+        "cycles": 332031553
+      },
+      "sx-stackoverflow": {
+        "mpki": 18.565615,
+        "cycles": 1524244056
+      },
+      "cit-Patents": {
+        "mpki": 47.322865,
+        "cycles": 1887906419
+      }
+    },
+    "phru_8b_ztest": {
+      "as-Skitter": {
+        "mpki": 34.863998,
+        "cycles": 1591029851
+      },
+      "web-BerkStan": {
+        "mpki": 18.185171,
+        "cycles": 336140333
+      },
+      "sx-stackoverflow": {
+        "mpki": 22.768604,
+        "cycles": 1773725995
+      },
+      "cit-Patents": {
+        "mpki": 51.494434,
+        "cycles": 2033474794
+      }
+    },
+    "phrupp_8b_ztest": {
+      "as-Skitter": {
+        "mpki": 31.884548,
+        "cycles": 1477814836
+      },
+      "web-BerkStan": {
+        "mpki": 16.606226,
+        "cycles": 315431838
+      },
+      "sx-stackoverflow": {
+        "mpki": 20.918922,
+        "cycles": 1663935629
+      },
+      "cit-Patents": {
+        "mpki": 49.476677,
+        "cycles": 1963120903
+      }
+    }
+  }
 }
