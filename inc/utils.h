@@ -93,6 +93,8 @@ namespace cachesim {
     extern bool TAG_BDI_UNCONSTRAINED;
     // Print every Base+Delta encode / lookup / release / base replacement.
     extern bool DEBUG_TAG_BDI;
+    // 0-based index of the trace line being simulated (the units of NextReuse).
+    extern uint64_t TRACE_LINE;
 };
 
 enum class InsertionPolicy {

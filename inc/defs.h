@@ -29,6 +29,7 @@
 #include "hawkeye_replacement_policy.h"
 #include "hub_hawkeye_replacement_policy.h"
 #include "grasp_replacement_policy.h"
+#include "popt_replacement_policy.h"
 #include "hub_oracle_replacement_policy.h"
 
 enum class ReplacementPolicy {
@@ -46,6 +47,7 @@ enum class ReplacementPolicy {
     Hawkeye,
     HubHawkeye,
     GRASP,
+    POPT,
     HubOracle,
 };
 
@@ -79,6 +81,8 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new HubHawkeye(set_idx, num_ways, level);
         case ReplacementPolicy::GRASP:
             return new GRASP(set_idx, num_ways, level);
+        case ReplacementPolicy::POPT:
+            return new POPT(set_idx, num_ways, level);
         case ReplacementPolicy::HubOracle:
             return new HubOracle(set_idx, num_ways, level);
 

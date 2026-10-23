@@ -60,6 +60,7 @@ uint64_t cachesim::TAG_BDI_BASES = 8;
 uint64_t cachesim::TAG_BDI_DELTA = 10;
 bool cachesim::TAG_BDI_UNCONSTRAINED = false;
 bool cachesim::DEBUG_TAG_BDI = false;
+uint64_t cachesim::TRACE_LINE = 0;
 uint64_t cachesim::L2_NUM_SETS = 1024;
 uint64_t cachesim::L2_NUM_WAYS = 16;
 
@@ -106,7 +107,8 @@ int main(int argc, char** argv) {
         {"hrrip", ReplacementPolicy::HRRIP},
         {"hawkeye", ReplacementPolicy::Hawkeye},
         {"hub_hawkeye", ReplacementPolicy::HubHawkeye},
-        {"grasp", ReplacementPolicy::GRASP}
+        {"grasp", ReplacementPolicy::GRASP},
+        {"popt", ReplacementPolicy::POPT}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -153,6 +155,8 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
+    app.add_option("--popt-graph", POPT::graph_path, "popt: the trace's graph as a GAP .sg file; its vertex count sizes the rereference matrix");
+    app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4)");
 
 
     CLI11_PARSE(app, argc, argv);
@@ -197,6 +201,7 @@ int main(int argc, char** argv) {
         case ReplacementPolicy::Hawkeye:
         case ReplacementPolicy::HubHawkeye:
         case ReplacementPolicy::GRASP:
+        case ReplacementPolicy::POPT:
             cachesim::SET_DUELING = false;
             break;
         default:
@@ -231,6 +236,22 @@ int main(int argc, char** argv) {
     }
     GRASP::trace_path = tracename;
     GRASP::llc_bytes = llc_num_sets * llc_num_ways * CACHELINE_SIZE;
+    if (replacement_policy == ReplacementPolicy::POPT) {
+        // P-OPT gives up LLC ways for two epochs of its rereference matrix.
+        if (cachesim::BLOCK_SIZE != CACHELINE_SIZE) {
+            fmt::print(stderr, "popt models a 64B LLC; use --cache-block-size 64\n");
+            return 1;
+        }
+        if (!POPT::prescan(tracename))
+            return 1;
+        uint64_t reserved = POPT::reserved_ways(llc_num_sets, CACHELINE_SIZE);
+        if (reserved >= llc_num_ways) {
+            fmt::print(stderr, "popt: rereference matrix needs {} of {} LLC ways\n", reserved, llc_num_ways);
+            return 1;
+        }
+        fmt::print("POPT: reserving {} of {} LLC ways for the rereference matrix\n", reserved, llc_num_ways);
+        llc_num_ways -= reserved;
+    }
     cache.push_back(new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy));
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
@@ -277,6 +298,8 @@ int main(int argc, char** argv) {
         HubHawkeye::print_stats();
     if (replacement_policy == ReplacementPolicy::GRASP)
         GRASP::print_stats();
+    if (replacement_policy == ReplacementPolicy::POPT)
+        POPT::print_stats();
     if (cachesim::USE_GHOST_CACHE)
         fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
             cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,

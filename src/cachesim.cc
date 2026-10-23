@@ -771,7 +771,9 @@ void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename,
         }
 
         std::string line;
+        uint64_t line_idx = 0;   // NextReuse indexes lines within one pass
         while (file.getline(line)) {
+            cachesim::TRACE_LINE = line_idx++;
             uint64_t pc = 0;
             uint64_t address = 0;
             uint64_t next_reuse = UINT64_MAX;
@@ -824,7 +826,9 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
         }
 
         std::string line;
+        uint64_t line_idx = 0;   // NextReuse indexes lines within one pass
         while (file.getline(line)) {
+            cachesim::TRACE_LINE = line_idx++;
             uint64_t pc = 0;
             uint64_t address = 0;
             uint64_t next_reuse = UINT64_MAX;
