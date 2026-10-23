@@ -629,6 +629,9 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             // serviced_from_llc counts LLC round trips only, not L2 hits.
             if (cache[hit_at_level]->get_level() == CacheLevel::LLC)
                 fill_packet->serviced_from_llc += 1;
+            // The line's next use is this access's NextReuse, not the one
+            // stored with it (which was this access).
+            fill_packet->next_reuse = access_packet->next_reuse;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
         } else {
             // Pull any partial copy of the line out of every level, LLC first
@@ -650,6 +653,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
+            // Copying an invalidation packet above clears next_reuse.
+            fill_packet->next_reuse = access_packet->next_reuse;
             cache[0]->handle_fill_line(fill_packet, eviction_packet);
         }
 
