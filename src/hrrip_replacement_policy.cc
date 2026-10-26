@@ -4,6 +4,7 @@
 void HRRIP::init_counter(PacketPtr /*packet*/) {
     if (diff < maxRRPV)
         std::transform(counter.cbegin(), counter.cend(), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) {
+                if (x > _maxRRPV) return x;   // invalid way: keep it invalid
                 uint64_t val = x + _diff;
                 if (val <= _maxRRPV) return val;
                 else return _maxRRPV;
