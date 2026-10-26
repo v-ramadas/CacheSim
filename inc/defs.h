@@ -9,6 +9,7 @@
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include <list>
+#include <string>
 #include "utils.h"
 #include <cassert>
 #include <cstdlib>
@@ -266,6 +267,48 @@ inline uint64_t get_iso_area_cache_merge(uint64_t num_sets, uint64_t current_way
     ways = ((ways + 8) / 8) * 8;
     new_size = get_total_cache_size(num_sets, ways, new_block_size, false);
     return ways;
+}
+
+// GAP .sg/.wsg headers of the graphs in gapbs_traces/inputs (every ordering
+// and the weighted copies share one header), so policies that need a graph's
+// size (P-OPT) can look it up by name instead of reading the file.
+struct GraphInfo {
+    const char* name;
+    bool directed;
+    uint64_t num_arcs;
+    uint64_t num_nodes;
+};
+
+inline constexpr GraphInfo GRAPH_INFO[] = {
+    {"as-Skitter",       false,  22190596, 1696415},
+    {"cit-Patents",      true,   16518947, 3774768},
+    {"com-LiveJournal",  false,  69362378, 3997962},
+    {"com-Orkut",        false, 234370166, 3072627},
+    {"com-Youtube",      false,   5975248, 1134890},
+    {"flickr-growth",    true,   33140017, 2302926},
+    {"higgs-twitter",    true,   14855819,  456627},
+    {"hollywood-2009",   false, 112751422, 1139905},
+    {"in-2004",          true,   16539643, 1382908},
+    {"indochina-2004",   true,  191606827, 7414865},
+    {"kron21",           false,  63537182, 2097150},
+    {"ogbn-products",    false, 123718024, 2449029},
+    {"soc-LiveJournal1", true,   68475391, 4847571},
+    {"soc-Pokec",        true,   30622564, 1632804},
+    {"sx-stackoverflow", true,   34875684, 2601977},
+    {"web-BerkStan",     true,    7600595,  685230},
+    {"web-Google",       true,    5105039,  916428},
+    {"wiki-Talk",        true,    5021410, 2394385},
+    {"wiki-topcats",     true,   28508141, 1791489},
+};
+
+// The graph a trace or graph file is named after: its basename up to the
+// first '.' (e.g. .../kron21.hubsort.xz -> kron21). nullptr if not listed.
+inline const GraphInfo* find_graph_info(const std::string& path) {
+    auto base = path.substr(path.find_last_of('/') + 1);
+    base = base.substr(0, base.find('.'));
+    for (const auto& g : GRAPH_INFO)
+        if (base == g.name) return &g;
+    return nullptr;
 }
 
 #endif

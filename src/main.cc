@@ -158,7 +158,6 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
-    app.add_option("--popt-graph", POPT::graph_path, "popt: the trace's graph as a GAP .sg file; its vertex count sizes the rereference matrix");
     app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4)");
 
 

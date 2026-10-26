@@ -15,7 +15,8 @@
 // rereference information. Lines with a degree label stand in for P-OPT's
 // irregular data. As in the paper, the matrix spans
 // numLines = numVertices * elemSize / 64 lines; numVertices comes from the
-// graph's GAP .sg header (--popt-graph), elemSize from --popt-elem-size.
+// GRAPH_INFO table in defs.h (the graph the trace is named after), elemSize
+// from --popt-elem-size.
 //
 // Eviction (P-OPT's getReplacementIndex): first a way holding unlabelled
 // data; otherwise the largest epoch distance, ties broken by RRIP (aging only
@@ -32,16 +33,15 @@ class POPT : public SRRIP {
     inline static uint64_t stat_evict_regular = 0, stat_evict_opt = 0, stat_evict_tie = 0;
 
     public:
-    // Set by main from --popt-graph / --popt-elem-size.
-    inline static std::string graph_path;
+    // Set by main from --popt-elem-size.
     inline static uint64_t elem_size = 4;
     // Set by prescan(): trace length in lines; irregular-array lines from the
-    // graph header.
+    // graph's GRAPH_INFO entry.
     inline static uint64_t trace_lines = 0;
     inline static uint64_t num_vertices = 0;
     inline static uint64_t irregular_lines = 0;
-    // Reads the graph header and makes one pass over the trace before the LLC
-    // is built. Returns false if the graph header cannot be read.
+    // Looks up the graph's size and makes one pass over the trace before the
+    // LLC is built. Returns false if the graph is not in GRAPH_INFO.
     static bool prescan(const std::string& trace_path);
     // Ways P-OPT reserves per set for two epochs of the rereference matrix
     // (one byte per irregular line per epoch).

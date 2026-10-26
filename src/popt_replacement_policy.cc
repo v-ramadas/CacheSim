@@ -1,22 +1,17 @@
 #include "popt_replacement_policy.h"
 #include "trace_file.h"
+#include "defs.h"
 #include <fmt/core.h>
-#include <fstream>
 
 bool POPT::prescan(const std::string& trace_path) {
-    // GAP serialized graph header (reader.h): bool directed, int64 num_arcs,
-    // int64 num_nodes.
-    std::ifstream graph(graph_path, std::ios::binary);
-    bool directed = false;
-    int64_t num_arcs = 0, num_nodes = 0;
-    graph.read(reinterpret_cast<char*>(&directed), sizeof(bool));
-    graph.read(reinterpret_cast<char*>(&num_arcs), sizeof(num_arcs));
-    graph.read(reinterpret_cast<char*>(&num_nodes), sizeof(num_nodes));
-    if (!graph || num_nodes <= 0) {
-        fmt::print(stderr, "POPT: cannot read a GAP .sg header from '{}' (--popt-graph)\n", graph_path);
+    // Vertex count from the GRAPH_INFO table (defs.h), keyed by the graph the
+    // trace is named after.
+    const GraphInfo* info = find_graph_info(trace_path);
+    if (!info) {
+        fmt::print(stderr, "POPT: no GRAPH_INFO entry (defs.h) for the graph of trace '{}'\n", trace_path);
         return false;
     }
-    num_vertices = num_nodes;
+    num_vertices = info->num_nodes;
     irregular_lines = (num_vertices * elem_size + CACHELINE_SIZE - 1) / CACHELINE_SIZE;
 
     TraceFile trace(trace_path);
