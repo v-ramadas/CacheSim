@@ -1,65 +1,63 @@
 #ifndef __SHIP_REPLACEMENT_POLICY_H__
 #define __SHIP_REPLACEMENT_POLICY_H__
 
-#include "replacement_policy.h"
-#include <climits>
+#include "srrip_replacement_policy.h"
 
-class SHIP : public BasePolicy {
-    const uint64_t maxRRPV;;
-    uint64_t denseRRPV;
-    uint64_t sparseRRPV;
-    uint64_t diff = UINT64_MAX;
+// SHiP (Wu et al., MICRO 2011) on SRRIP's 2-bit RRPV. Each way remembers
+// the signature of the access that inserted it and whether it was
+// reused. A shared SHCT of 3-bit saturating counters is incremented when a
+// line is hit and decremented when a line is evicted without reuse. A fill
+// whose signature's counter is 0 is predicted dead and inserted at maxRRPV,
+// otherwise at maxRRPV-1. In the exclusive hierarchy an LLC hit moves the line
+// to L1D, so training happens in hit_update; lines re-inserted after an LLC
+// hit go to RRPV 0, as in SRRIP. Counters start at 1 (weakly reused) so cold
+// signatures are not all predicted dead.
+//
+// SHIPBase holds the shared mechanism; the variants differ only in the
+// signature: SHIPPC (SHiP-PC) uses the inserting PC, SHIPMem (SHiP-Mem) the
+// line's 16KB memory region.
+class SHIPBase : public SRRIP {
+    static constexpr uint64_t SHCT_ENTRIES = 16384;
+    static constexpr uint8_t SHCT_MAX = 7;
+    inline static std::vector<uint8_t> shct = std::vector<uint8_t>(SHCT_ENTRIES, 1);
+
+    std::vector<uint64_t> signature;   // SHCT index of the inserting access
+    std::vector<bool> reused;
+    std::vector<bool> tracked;          // way holds a line inserted by fill_update
+
+    protected:
+    static uint64_t fold(uint64_t key);   // into an SHCT index
+    // SHCT index for the block being filled.
+    virtual uint64_t make_signature(PacketPtr packet, uint64_t block_idx) const = 0;
 
     public:
-    SHIP(): maxRRPV(3) {}
-
-    SHIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level):
-        maxRRPV(_num_ways-1) {
-//        maxRRPV(3) {
-        set_idx = _set_idx;
-        num_ways = _num_ways;
-        counter.resize(num_ways, maxRRPV);
-        insertion_clock.resize(num_ways, 0);
-        denseRRPV = maxRRPV;
-        sparseRRPV = maxRRPV;
-        level = _level;
-        global_clock = 0;
-        reserved_ways = 0;
+    SHIPBase(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SRRIP(_set_idx, _num_ways, _level) {
+        signature.resize(num_ways, 0);
+        reused.resize(num_ways, false);
+        tracked.resize(num_ways, false);
     }
-    
-    void init_counter(PacketPtr packet);
 
     void hit_update(PacketPtr packet, uint64_t way_idx);
-
     void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
-
-    uint64_t get_eviction_candidate(bool is_low_priority);
-
-    uint64_t get_reserved_eviction_candidate(bool is_low_priority);
-
     void evict(uint64_t way_idx);
-
-    uint64_t get_counter_value(uint64_t way_idx);
-
-    uint64_t count_distance(uint64_t threshold);
-
-    void repartition_ways(uint64_t num_ways_to_reserve);
-
-    uint64_t get_reserved_ways() {return reserved_ways;}
-
-    bool can_insert(PacketPtr /*packet*/, uint64_t /*idx*/) { return true;}
-
     void set_breakdown(uint64_t old_block_size, uint64_t new_block_size);
-
-    template<typename VecType>
-    void breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool incr);
-
     void set_contract(uint64_t way_idx, uint64_t size);
-
     void set_merge(uint64_t old_block_size, uint64_t new_block_size, uint64_t new_num_ways);
+};
 
-    template<typename VecType>
-    void contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks);
+class SHIPPC : public SHIPBase {
+    protected:
+    uint64_t make_signature(PacketPtr packet, uint64_t block_idx) const override;
+    public:
+    SHIPPC(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SHIPBase(_set_idx, _num_ways, _level) {}
+};
+
+class SHIPMem : public SHIPBase {
+    static constexpr uint64_t REGION_BITS = 14;   // 16KB regions
+    protected:
+    uint64_t make_signature(PacketPtr packet, uint64_t block_idx) const override;
+    public:
+    SHIPMem(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SHIPBase(_set_idx, _num_ways, _level) {}
 };
 
 #endif

@@ -1,152 +1,68 @@
 #include "ship_replacement_policy.h"
-#include <fmt/core.h>
 
-void SHIP::init_counter(PacketPtr /*packet*/) {
-    if (diff < maxRRPV)
-        std::transform(counter.cbegin(), counter.cend(), counter.begin(), [_diff = diff, _maxRRPV = maxRRPV](auto x) {
-                uint64_t val = x + _diff;
-                if (val <= _maxRRPV) return val;
-                else return _maxRRPV;
-        });
-
-    diff = UINT64_MAX;
-    global_clock++;
-
+uint64_t SHIPBase::fold(uint64_t key) {
+    // Fold the key into 14 bits.
+    key ^= key >> 14;
+    key ^= key >> 28;
+    return key % SHCT_ENTRIES;
 }
 
-void SHIP::hit_update(PacketPtr /*packet*/, uint64_t way_idx) {
-    counter[way_idx] = 0;
+uint64_t SHIPPC::make_signature(PacketPtr packet, uint64_t /*block_idx*/) const {
+    return fold(packet->pc);
 }
 
-void SHIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
-    if (packet->serviced_from_llc == true) {
-        counter[way_idx] = 0;
-    } else {
-        if (packet->shct_value > 0) {
-            counter[way_idx] = denseRRPV - 2;
-        } else {
-            counter[way_idx] = denseRRPV-1;
-        }
-    }
-    insertion_clock[way_idx] = global_clock;
+uint64_t SHIPMem::make_signature(PacketPtr packet, uint64_t block_idx) const {
+    uint64_t addr = (block_idx < packet->blocks.size() && packet->blocks[block_idx] != UINT64_MAX)
+                        ? packet->blocks[block_idx] : packet->address;
+    return fold(addr >> REGION_BITS);
 }
 
-uint64_t SHIP::get_eviction_candidate(bool /*is_low_priority = false*/) {
-    auto candidate_idx = 0;
-    auto candidate = counter[candidate_idx];
-    for (uint64_t idx = 0; idx < num_ways; idx++) {
-        candidate = counter[candidate_idx];
-        auto way = counter[idx];
-
-        if (way > maxRRPV) continue;
-        if (candidate > maxRRPV) {
-            candidate_idx = idx;
-            continue;
-        }
-
-        if (way > candidate) candidate_idx = idx;
-        else if (way == candidate) {
-            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
-                candidate_idx = idx;
-            }
-        }
-    }
-
-    diff = std::min(diff, maxRRPV - candidate);
-    return candidate_idx;
-}
-
-uint64_t SHIP::get_reserved_eviction_candidate(bool /*is_low_priority = false*/) {
-    assert(reserved_ways != 0);
-    auto candidate_idx = 0;
-    auto candidate = counter[candidate_idx];
-    for (uint64_t idx = num_ways; idx < num_ways+reserved_ways; idx++) {
-        candidate = counter[candidate_idx];
-        auto way = counter[idx];
-
-        if (way > maxRRPV) continue;
-        if (candidate > maxRRPV) {
-            candidate_idx = idx;
-            continue;
-        }
-
-        if (way > candidate) candidate_idx = idx;
-        else if (way == candidate) {
-            if (insertion_clock[idx] < insertion_clock[candidate_idx]) {
-                candidate_idx = idx;
-            }
-        }
-    }
-
-    diff = std::min(diff, maxRRPV - candidate);
-    return candidate_idx;
-}
-
-void SHIP::evict(uint64_t way_idx) {
-    counter[way_idx] = UINT_MAX;
-    insertion_clock[way_idx] = UINT_MAX;
-}
-
-uint64_t SHIP::get_counter_value(uint64_t way_idx) {
-    return counter[way_idx];
-}
-
-uint64_t SHIP::count_distance(uint64_t threshold) {
-    uint64_t distance = std::count_if(
-        counter.begin(), counter.end(),
-        [threshold](uint64_t n) {
-            return n > threshold;}
-    );
-    return distance;
-}
-
-void SHIP::repartition_ways(uint64_t num_ways_to_reserve) {
-    num_ways -= num_ways_to_reserve;
-    reserved_ways = num_ways_to_reserve;
-}
-
-template<typename VecType>
-void SHIP::breakdown(std::vector<VecType>& vec, uint64_t prev_num_ways, uint64_t scale_factor, bool /*incr*/) {
-    vec.resize(prev_num_ways*scale_factor);
-    for (size_t i = prev_num_ways; i-- > 0; ) {
-        VecType val = vec[i];
-        size_t baseIdx = i * scale_factor;
-        for (size_t j = 0; j < scale_factor; ++j) {
-            vec[baseIdx + j] = val;
-        }
+void SHIPBase::hit_update(PacketPtr packet, uint64_t way_idx) {
+    SRRIP::hit_update(packet, way_idx);
+    if (tracked[way_idx]) {
+        if (shct[signature[way_idx]] < SHCT_MAX) shct[signature[way_idx]]++;
+        reused[way_idx] = true;
     }
 }
 
-void SHIP::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
-    assert(old_block_size != new_block_size);
-    uint64_t scale_factor = old_block_size/new_block_size;
-    uint64_t new_num_ways = num_ways*scale_factor;
-
-    breakdown(counter, num_ways, scale_factor, false);
-    breakdown(insertion_clock, num_ways, scale_factor, false);
-
-    num_ways = new_num_ways;
+void SHIPBase::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+    uint64_t sig = make_signature(packet, block_idx);
+    signature[way_idx] = sig;
+    reused[way_idx] = false;
+    tracked[way_idx] = true;
+    if (packet->from_ghost_cache || packet->serviced_from_llc > 0)
+        SRRIP::fill_update(way_idx, block_idx, packet, was_accessed);   // RRPV 0
+    else
+        counter[way_idx] = (shct[sig] == 0) ? maxRRPV : maxRRPV - 1;
 }
 
-template<typename VecType>
-void SHIP::contract(std::vector<VecType>& vec, uint64_t way_idx, uint64_t num_blocks) {
-    assert(way_idx + num_blocks <= vec.size());
-    auto start_it = vec.begin() + way_idx;
-    auto end_it = vec.begin() + (way_idx + num_blocks);
-    vec.erase(start_it, end_it);
+void SHIPBase::evict(uint64_t way_idx) {
+    // A line that leaves without being reused trains its signature as dead.
+    // (A hit sets reused before the line is invalidated and moves to L1D.)
+    if (tracked[way_idx] && !reused[way_idx] && shct[signature[way_idx]] > 0)
+        shct[signature[way_idx]]--;
+    tracked[way_idx] = false;
+    SRRIP::evict(way_idx);
 }
 
-void SHIP::set_contract(uint64_t way_idx, uint64_t size) {
-    contract(counter, way_idx, size);
-    contract(insertion_clock, way_idx, size);
-    num_ways -= size;
+void SHIPBase::set_breakdown(uint64_t old_block_size, uint64_t new_block_size) {
+    uint64_t new_num_ways = num_ways * (old_block_size / new_block_size);
+    SRRIP::set_breakdown(old_block_size, new_block_size);
+    signature.assign(new_num_ways, 0);
+    reused.assign(new_num_ways, false);
+    tracked.assign(new_num_ways, false);
 }
 
-void SHIP::set_merge(uint64_t /*old_block_size*/, uint64_t /*new_block_size*/, uint64_t new_num_ways) {
-    // No sound way to merge per-way RRPV state across a group of small
-    // blocks, so reset it for the new (larger-block) geometry instead, same
-    // defaults as a fresh construction.
-    counter.assign(new_num_ways, maxRRPV);
-    insertion_clock.assign(new_num_ways, 0);
-    num_ways = new_num_ways;
+void SHIPBase::set_contract(uint64_t way_idx, uint64_t size) {
+    SRRIP::set_contract(way_idx, size);
+    signature.erase(signature.begin() + way_idx, signature.begin() + way_idx + size);
+    reused.erase(reused.begin() + way_idx, reused.begin() + way_idx + size);
+    tracked.erase(tracked.begin() + way_idx, tracked.begin() + way_idx + size);
+}
+
+void SHIPBase::set_merge(uint64_t old_block_size, uint64_t new_block_size, uint64_t new_num_ways) {
+    SRRIP::set_merge(old_block_size, new_block_size, new_num_ways);
+    signature.assign(new_num_ways, 0);
+    reused.assign(new_num_ways, false);
+    tracked.assign(new_num_ways, false);
 }

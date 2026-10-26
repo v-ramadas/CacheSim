@@ -41,7 +41,8 @@ enum class ReplacementPolicy {
     SRRIP,
     DRRIP,
     PRRIP,
-    SHIP,
+    SHIPPC,
+    SHIPMem,
     Belady,
     HRRIP,
     Hawkeye,
@@ -69,8 +70,10 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new DRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::PRRIP:
             return new PRRIP(set_idx, num_ways, level);
-        case ReplacementPolicy::SHIP:
-            return new SHIP(set_idx, num_ways, level);
+        case ReplacementPolicy::SHIPMem:
+            return new SHIPMem(set_idx, num_ways, level);
+        case ReplacementPolicy::SHIPPC:
+            return new SHIPPC(set_idx, num_ways, level);
         case ReplacementPolicy::Belady:
             return new Belady(set_idx, num_ways, level);
         case ReplacementPolicy::HRRIP:

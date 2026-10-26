@@ -102,7 +102,8 @@ int main(int argc, char** argv) {
         {"srrip", ReplacementPolicy::SRRIP},
         {"drrip", ReplacementPolicy::DRRIP},
         {"prrip", ReplacementPolicy::PRRIP},
-        {"ship", ReplacementPolicy::SHIP},
+        {"ship_pc", ReplacementPolicy::SHIPPC},
+        {"ship_mem", ReplacementPolicy::SHIPMem},
         {"belady", ReplacementPolicy::Belady},
         {"hrrip", ReplacementPolicy::HRRIP},
         {"hawkeye", ReplacementPolicy::Hawkeye},
@@ -176,9 +177,6 @@ int main(int argc, char** argv) {
     switch(replacement_policy) {
         case ReplacementPolicy::LRU:
             cachesim::SET_DUELING = false;
-            break;
-        case ReplacementPolicy::SHIP:
-            cachesim::useMemSignature = true;
             break;
         case ReplacementPolicy::HRRIP:
             cachesim::dropBlocks = true;
