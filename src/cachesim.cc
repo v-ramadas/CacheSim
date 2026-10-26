@@ -1052,12 +1052,16 @@ void Cache<T>::record_leader_access(SetDuelingType type, bool hit) {
 template<typename T>
 void Cache<T>::update_dueling_confidence() {
     if (cachesim::DUELING_MODE == DuelingMode::PSEL) {
+        // Hysteresis band [THRESHOLD - H, THRESHOLD + H): break down only
+        // below it, merge back only at or above it, and otherwise keep the
+        // current state, so PSEL hovering near the threshold does not flip
+        // (and flush) the follower sets. H = 0 is the plain threshold check.
         if (cachesim::instCount >= cachesim::DUELING_PERIOD) {
-            if (PSEL < cachesim::PSEL_THRESHOLD) {
+            const uint64_t h = cachesim::PSEL_HYSTERESIS;
+            if (!duel_locked && PSEL + h < cachesim::PSEL_THRESHOLD)
                 duel_locked = true;
-            } else {
+            else if (duel_locked && PSEL >= cachesim::PSEL_THRESHOLD + h)
                 duel_locked = false;
-            }
         } else {
             duel_locked = false;
         }

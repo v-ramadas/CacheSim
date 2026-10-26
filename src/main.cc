@@ -27,6 +27,7 @@ bool cachesim::SET_DUELING = false;
 int cachesim::NUM_DUELS = 64;
 uint64_t cachesim::PSEL_MAX = 4096;
 uint64_t cachesim::PSEL_THRESHOLD = cachesim::PSEL_MAX >> 1;
+uint64_t cachesim::PSEL_HYSTERESIS = UINT64_MAX;   // unset: PSEL_MAX / 8
 uint64_t cachesim::DUELING_PERIOD = 1000000;
 
 DuelingMode cachesim::DUELING_MODE = DuelingMode::PSEL;
@@ -130,6 +131,7 @@ int main(int argc, char** argv) {
     app.add_option("--num-duels", cachesim::NUM_DUELS, "Max Value of PSEL");
     app.add_option("--psel-max", cachesim::PSEL_MAX, "Max Value of PSEL");
     app.add_option("--psel-threshold", cachesim::PSEL_THRESHOLD, "PSEL Threshold value");
+    app.add_option("--psel-hysteresis", cachesim::PSEL_HYSTERESIS, "PSEL mode: break down only below threshold - H, merge back only at or above threshold + H (default psel-max / 8; 0 = plain threshold)");
     app.add_option("--dueling-period", cachesim::DUELING_PERIOD, "Hard cap (instructions) on set dueling before a winner is forced");
     app.add_option("--dueling-mode", cachesim::DUELING_MODE, "Set-dueling decision mechanism: psel (original, live-checked PSEL threshold), ztest (cumulative+windowed conditional-binomial z-test on miss counts), or ztest-ratio (same, but a two-proportion z-test on miss rates)")->transform(CLI::CheckedTransformer(std::map<std::string, DuelingMode>{
         {"psel", DuelingMode::PSEL},
@@ -161,6 +163,8 @@ int main(int argc, char** argv) {
 
 
     CLI11_PARSE(app, argc, argv);
+    if (cachesim::PSEL_HYSTERESIS == UINT64_MAX)
+        cachesim::PSEL_HYSTERESIS = cachesim::PSEL_MAX / 8;
 
     if (cachesim::USE_GHOST_CACHE) {
         // A ghost cache entry is one address tag at the LLC's CURRENT block

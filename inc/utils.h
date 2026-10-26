@@ -51,6 +51,9 @@ namespace cachesim {
     extern int NUM_DUELS;
     extern uint64_t PSEL_MAX;
     extern uint64_t PSEL_THRESHOLD;
+    // PSEL mode: half-width of the band around PSEL_THRESHOLD in which the
+    // 64B/8B decision is kept as is (default PSEL_MAX / 8; 0 = plain threshold).
+    extern uint64_t PSEL_HYSTERESIS;
     extern uint64_t DUELING_PERIOD;
 
     extern DuelingMode DUELING_MODE;
