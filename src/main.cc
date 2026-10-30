@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
     app.add_flag("--debug-llc", cachesim::LLC_DEBUG, "Enable debug mode");
     app.add_flag("--debug-l1", cachesim::L1_DEBUG, "Enable debug mode");
     app.add_flag("--debug-replacement-policy", cachesim::REPLACEMENT_POLICY_DEBUG, "Enable debug mode");
-    app.add_flag("--no-iso-area", cachesim::NO_ISO_AREA, "Disable iso-area mode");
+    app.add_flag("--no-iso-area", cachesim::NO_ISO_AREA, "Give a smaller-block LLC 64/block-size times the ways instead of sizing it iso-area with the 64B LLC (iso-area is the default for every policy except hrupp and phrupp, which never are)");
     app.add_option("--debug-start", cachesim::START_DEBUG, "Start debugging here");
     app.add_option("--debug-end", cachesim::END_DEBUG, "End debugging here");
     app.add_option("--iters", num_iters, "Number of iterations");
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
     app.add_flag("--l2", cachesim::L2_ENABLED, "Add a sectored L2 (64B lines, 8B sectors, LRU) between L1D and LLC; exclusive like the rest of the hierarchy");
     app.add_option("--l2-sets", cachesim::L2_NUM_SETS, "L2 sets (only used with --l2; default 1024)");
     app.add_option("--l2-ways", cachesim::L2_NUM_WAYS, "L2 ways, each a 64B line (only used with --l2; default 16 -> 1MB)");
-    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets (HRU/PHRU/hub_oracle)");
+    app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets");
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
@@ -188,6 +188,10 @@ int main(int argc, char** argv) {
         cachesim::ghostCache.debug = cachesim::GHOST_CACHE_DEBUG;
     }
 
+    // Smaller-block LLCs are sized iso-area with the 64B LLC unless
+    // --no-iso-area; HRUpp and PHRUpp are the non-iso-area bounds and turn it
+    // off below.
+    cachesim::isoArea = !cachesim::NO_ISO_AREA;
     switch(replacement_policy) {
         case ReplacementPolicy::LRU:
             cachesim::SET_DUELING = false;
@@ -197,15 +201,18 @@ int main(int argc, char** argv) {
             break;
         case ReplacementPolicy::HRU:
             cachesim::dropBlocks = true;
-            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
         case ReplacementPolicy::HRUpp:
             cachesim::dropBlocks = true;
+            cachesim::isoArea = false;
+            break;
+        case ReplacementPolicy::PHRUpp:
+            cachesim::dropBlocks = false;
+            cachesim::isoArea = false;
             break;
         case ReplacementPolicy::PHRU:
         case ReplacementPolicy::HubOracle:
             cachesim::dropBlocks = true;
-            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             break;
         case ReplacementPolicy::Belady:
             cachesim::SET_DUELING = false;
@@ -225,7 +232,6 @@ int main(int argc, char** argv) {
             }
             cachesim::AMOEBA = true;
             cachesim::TAG_BDI_BASES = 0;
-            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             cachesim::SET_DUELING = false;
             break;
         default:
