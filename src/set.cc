@@ -395,6 +395,12 @@ void Set::handle_fill(PacketPtr packet) {
                 if ((packet->footprint >> (first_sector + word_idx)) & 1)
                     set_footprint(way_idx, word_idx, true);
             }
+#ifndef MULTI_LEVEL
+            // Single-level fills are demand misses with no footprint: the
+            // demanded word is used, as SectoredSet marks it in the L1D.
+            if (block_address == align_address(packet->address, block_size))
+                set_footprint(way_idx, (packet->address - block_address) >> 3, true);
+#endif
         }
 
         if (cachesim::DEBUG || cachesim::LLC_DEBUG)

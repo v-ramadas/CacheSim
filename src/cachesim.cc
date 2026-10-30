@@ -156,15 +156,25 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
                 enc, ovf, (enc + ovf) ? 100.0 * ovf / (enc + ovf) : 0.0);
         }
     }
-    // Per residency at this level: touched 8B words over all 8B words of the
-    // blocks evicted or invalidated (moved up) from this level. Not printed
-    // for the LLC, where Line lifetime utilization below replaces it.
+    // Per residency at this level: share of 8B words used while resident (the
+    // demanded word or a hit). Running totals over the blocks evicted or
+    // invalidated (moved up) from this level, plus, for non-sectored caches,
+    // the blocks still resident at the end (their residency ends with the
+    // run), so a working set that fits is not judged by its few evictions
+    // alone; both parts are also printed on their own. Not printed for the
+    // LLC, where Line lifetime utilization below replaces it.
     if (level != CacheLevel::LLC) {
-        if (evicted_words > 0) {
-            fmt::print("Utilization {:4f} \n", 100*(float)(get_num_blocks_used())/evicted_words);
-        } else {
-            fmt::print("Utilization undefined (No evictions)\n");
+        uint64_t resident = 0, resident_used = 0;
+        if constexpr (std::is_same_v<T, Set>) {
+            uint64_t capacity = 0;
+            for (const auto& [idx, s] : sets) s->count_resident(capacity, resident, resident_used);
         }
+        auto pct = [](uint64_t used, uint64_t words) { return words ? 100.0 * used / words : 0.0; };
+        uint64_t evicted_used = get_num_blocks_used();
+        fmt::print("Utilization {:.4f}% of words used | evicted words {} used {} ({:.4f}%) | "
+                   "resident at end words {} used {} ({:.4f}%)\n",
+            pct(evicted_used + resident_used, evicted_words + resident), evicted_words, evicted_used,
+            pct(evicted_used, evicted_words), resident, resident_used, pct(resident_used, resident));
     }
     if constexpr (std::is_same_v<T, Set>) {
         if (level == CacheLevel::LLC) {
