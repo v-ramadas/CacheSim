@@ -242,6 +242,7 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
     if (valid[way_idx]) {
         packet->block_degrees.push_back(degree[way_idx]);
         packet->block_serviced_from_llc.push_back(serviced_from_llc[way_idx]);
+        packet->block_prev_counter.push_back(repl_counter->get_counter_value(way_idx));
     }
     packet->avg_degree = avg_degree[way_idx];
 }
@@ -769,6 +770,7 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
         packet->blocks.push_back(UINT64_MAX);
         packet->block_degrees.push_back(0);
         packet->block_serviced_from_llc.push_back(0);
+        packet->block_prev_counter.push_back(UINT64_MAX);
     }
 }
 

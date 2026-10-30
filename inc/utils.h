@@ -164,6 +164,9 @@ struct Packet {
     std::vector<uint64_t> block_degrees;
     float avg_degree=0.0f;
     std::vector<uint64_t> block_serviced_from_llc;
+    // Per block: its LLC replacement counter when it last left the LLC for
+    // L1D (UINT64_MAX = none), carried through L1D/L2 back to the LLC fill.
+    std::vector<uint64_t> block_prev_counter;
     bool from_ghost_cache = false;
 
     Packet() {
@@ -192,6 +195,7 @@ struct Packet {
         block_degrees.clear();
         avg_degree = 0.0f;
         block_serviced_from_llc.clear();
+        block_prev_counter.clear();
         from_ghost_cache = false;
     }
 
@@ -205,12 +209,14 @@ struct Packet {
         size = 0;
         blocks.clear();
         block_serviced_from_llc.clear();
+        block_prev_counter.clear();
     }
     
     void clear_blocks() {
         blocks.clear();
         block_degrees.clear();
         block_serviced_from_llc.clear();
+        block_prev_counter.clear();
     }
 
     void clear_metadata() {
@@ -244,6 +250,7 @@ struct Packet {
         block_degrees = packet.block_degrees;
         avg_degree = packet.avg_degree;
         block_serviced_from_llc = packet.block_serviced_from_llc;
+        block_prev_counter = packet.block_prev_counter;
         from_ghost_cache = packet.from_ghost_cache;
 
         return *this;

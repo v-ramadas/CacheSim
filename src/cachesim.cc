@@ -236,6 +236,7 @@ bool Cache<T>::try_hit(PacketPtr packet) {
         packet->blocks.resize(num_blocks);
         packet->block_degrees.resize(num_blocks);
         packet->block_serviced_from_llc.resize(num_blocks);
+        packet->block_prev_counter.resize(num_blocks, UINT64_MAX);
         packet->blocks[0] = packet->aligned_address;
         // Populate the vector
         for (uint64_t i = 0; i < num_blocks; i++) {
@@ -437,17 +438,20 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
         if (block_size > 8 && block_size < CACHELINE_SIZE) {
             uint64_t per = block_size / 8;
             std::vector<uint64_t> blocks(CACHELINE_SIZE/8, UINT64_MAX), degrees(CACHELINE_SIZE/8, 0), serviced(CACHELINE_SIZE/8, 0);
+            std::vector<uint64_t> prev(CACHELINE_SIZE/8, UINT64_MAX);
             for (uint64_t b = 0; b < invalidate_packet.blocks.size(); b++) {
                 if (invalidate_packet.blocks[b] == UINT64_MAX) continue;
                 for (uint64_t s = 0; s < per; s++) {
                     blocks[b*per + s] = invalidate_packet.blocks[b] + 8*s;
                     degrees[b*per + s] = invalidate_packet.block_degrees[b];
                     serviced[b*per + s] = invalidate_packet.block_serviced_from_llc[b];
+                    prev[b*per + s] = invalidate_packet.block_prev_counter[b];
                 }
             }
             invalidate_packet.blocks = blocks;
             invalidate_packet.block_degrees = degrees;
             invalidate_packet.block_serviced_from_llc = serviced;
+            invalidate_packet.block_prev_counter = prev;
         }
     }
     *packet = invalidate_packet;
@@ -476,10 +480,12 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
         fill_packet->blocks.resize(num_blocks, UINT64_MAX);
         fill_packet->block_degrees.resize(num_blocks, 0);
         fill_packet->block_serviced_from_llc.resize(num_blocks, 0);
+        fill_packet->block_prev_counter.resize(num_blocks, UINT64_MAX);
     } else if (fill_packet->blocks.size() < num_blocks) {
         fill_packet->blocks.resize(num_blocks, UINT64_MAX);
         fill_packet->block_degrees.resize(num_blocks, 0);
         fill_packet->block_serviced_from_llc.resize(num_blocks, 0);
+        fill_packet->block_prev_counter.resize(num_blocks, UINT64_MAX);
     }
     assert(fill_packet->blocks.size() == num_blocks);
     auto ways = get_ways(set_idx);
@@ -498,6 +504,7 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
             //TODO: Fix
                 fill_packet->block_degrees[block_idx] = 0;
             fill_packet->block_serviced_from_llc[block_idx] = 0;
+            fill_packet->block_prev_counter[block_idx] = UINT64_MAX;
         }
     }
     return;
@@ -518,6 +525,8 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
                 fill_packet->blocks.erase(it);
                 fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
                 fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
+                if (index < (decltype(index))fill_packet->block_prev_counter.size())
+                    fill_packet->block_prev_counter.erase(fill_packet->block_prev_counter.begin() + index);
             }
             idx++;
             continue;
@@ -559,6 +568,8 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             fill_packet->blocks.erase(it);
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
             fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
+            if (index < (decltype(index))fill_packet->block_prev_counter.size())
+                fill_packet->block_prev_counter.erase(fill_packet->block_prev_counter.begin() + index);
         } else if (dropBlock){
             if (level == CacheLevel::LLC) {   // never inserted: its line lifetime ends here
                 auto index = std::distance(fill_packet->blocks.begin(), it);
@@ -571,6 +582,8 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             fill_packet->blocks.erase(it);
             fill_packet->block_degrees.erase(fill_packet->block_degrees.begin() + index);
             fill_packet->block_serviced_from_llc.erase(fill_packet->block_serviced_from_llc.begin() + index);
+            if (index < (decltype(index))fill_packet->block_prev_counter.size())
+                fill_packet->block_prev_counter.erase(fill_packet->block_prev_counter.begin() + index);
         } else {
             ++it;
         }

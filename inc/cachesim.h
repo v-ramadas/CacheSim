@@ -269,6 +269,7 @@ struct Sector {
     std::vector<uint64_t> degree;
     std::vector<float> avg_degree;
     std::vector<uint64_t> block_serviced_from_llc;
+    std::vector<uint64_t> block_prev_counter;
     uint64_t num_blocks;
 
     Sector(uint64_t num_blocks):
@@ -280,6 +281,7 @@ struct Sector {
         degree.resize(num_blocks, 0);
         avg_degree.resize(num_blocks, 0.0f);
         block_serviced_from_llc.resize(num_blocks, 0);
+        block_prev_counter.resize(num_blocks, UINT64_MAX);
     }
 
     Sector(const Sector& other) noexcept : 
@@ -289,6 +291,7 @@ struct Sector {
         degree(other.degree),
         avg_degree(other.avg_degree),
         block_serviced_from_llc(other.block_serviced_from_llc),
+        block_prev_counter(other.block_prev_counter),
         num_blocks(other.num_blocks)
     {
     }
@@ -311,6 +314,7 @@ struct Sector {
         std::fill(degree.begin(), degree.end(), 0);
         std::fill(avg_degree.begin(), avg_degree.end(), 0.0f);
         std::fill(block_serviced_from_llc.begin(), block_serviced_from_llc.end(), 0);
+        std::fill(block_prev_counter.begin(), block_prev_counter.end(), UINT64_MAX);
     }
 };
 

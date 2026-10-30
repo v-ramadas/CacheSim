@@ -114,23 +114,28 @@ inline void resize_packet(PacketPtr packet, uint64_t block_size) {
     if (num_blocks == 0) num_blocks = 1;
     // A sector-granular victim (one entry per 8B sector) going into 16B/32B
     // blocks: each block is present if any of its sectors is, and takes the
-    // largest degree and LLC service count of its sectors, so the per-block
+    // largest degree, LLC service count and previous LLC counter of its
+    // sectors (UINT64_MAX = none is ignored), so the per-block
     // arrays line up with blocks. (64B keeps the per-sector arrays as before;
     // hub_oracle reads them.)
     if (block_size < CACHELINE_SIZE && packet->blocks.size() == CACHELINE_SIZE/8 && num_blocks < packet->blocks.size()) {
         auto per = packet->blocks.size() / num_blocks;
         auto aligned_address = align_address(packet->address, packet->size);
         std::vector<uint64_t> blocks(num_blocks, UINT64_MAX), degrees(num_blocks, 0), serviced(num_blocks, 0);
+        std::vector<uint64_t> prev(num_blocks, UINT64_MAX);
         for (uint64_t idx = 0; idx < num_blocks; ++idx) {
             for (uint64_t s = idx*per; s < (idx+1)*per; ++s) {
                 if (packet->blocks[s] != UINT64_MAX) blocks[idx] = aligned_address + idx*block_size;
                 if (s < packet->block_degrees.size()) degrees[idx] = std::max(degrees[idx], packet->block_degrees[s]);
                 if (s < packet->block_serviced_from_llc.size()) serviced[idx] = std::max(serviced[idx], packet->block_serviced_from_llc[s]);
+                if (s < packet->block_prev_counter.size() && packet->block_prev_counter[s] != UINT64_MAX)
+                    prev[idx] = (prev[idx] == UINT64_MAX) ? packet->block_prev_counter[s] : std::max(prev[idx], packet->block_prev_counter[s]);
             }
         }
         packet->blocks = blocks;
         packet->block_degrees = degrees;
         packet->block_serviced_from_llc = serviced;
+        packet->block_prev_counter = prev;
         return;
     }
     if (packet->blocks.size() > 0) {

@@ -31,6 +31,7 @@ void SectoredSet::fill_packet(PacketPtr packet, uint64_t way_idx) {
         packet->blocks = way_sectors[way_idx].sectors;
         packet->block_degrees = way_sectors[way_idx].degree;
         packet->block_serviced_from_llc = way_sectors[way_idx].block_serviced_from_llc;
+        packet->block_prev_counter = way_sectors[way_idx].block_prev_counter;
 }
 
 void SectoredSet::invalidate_way(uint64_t way_idx) {
@@ -168,6 +169,8 @@ void SectoredSet::handle_fill(PacketPtr packet) {
             } else {
                 way_sector->degree[sector_idx] = packet->block_degrees[sector_idx];
                 way_sector->block_serviced_from_llc[sector_idx] = packet->block_serviced_from_llc[sector_idx];
+                way_sector->block_prev_counter[sector_idx] = (sector_idx < packet->block_prev_counter.size())
+                    ? packet->block_prev_counter[sector_idx] : UINT64_MAX;
             }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
 
@@ -239,6 +242,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
             packet->blocks.push_back(way_sectors[way_idx].sectors[sector_idx]);
             packet->block_degrees.push_back(way_sectors[way_idx].degree[sector_idx]);
             packet->block_serviced_from_llc.push_back(way_sectors[way_idx].block_serviced_from_llc[sector_idx]);
+            packet->block_prev_counter.push_back(way_sectors[way_idx].block_prev_counter[sector_idx]);
             //fmt::print("Level 0 Evicting address {:#x} sector {} counter {} serviced_from_llc {} vector size {} val {}\n",
 //                    way_sectors[way_idx].sectors[sector_idx], sector_idx, way_sectors[way_idx].block_serviced_from_llc[sector_idx], serviced_from_llc[way_idx], packet->block_serviced_from_llc.size(), packet->block_serviced_from_llc[sector_idx]);
 
