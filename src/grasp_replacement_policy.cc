@@ -47,8 +47,8 @@ void GRASP::compute_thresholds() {
 void GRASP::print_stats() {
     uint64_t tot = stat_fills[0] + stat_fills[1] + stat_fills[2] + stat_fills[3];
     auto pct = [tot](uint64_t v) { return tot ? 100.0 * v / tot : 0.0; };
-    fmt::print("GRASP thresholds high {} moderate {} | fills {} high {} ({:.2f}%) moderate {} ({:.2f}%) low {} ({:.2f}%) default {} ({:.2f}%)\n",
-        high_degree, mod_degree, tot,
+    fmt::print("GRASP thresholds high {} moderate {} | untouched 8B fills at maxRRPV {} | fills {} high {} ({:.2f}%) moderate {} ({:.2f}%) low {} ({:.2f}%) default {} ({:.2f}%)\n",
+        high_degree, mod_degree, stat_untouched, tot,
         stat_fills[(int)Hint::High], pct(stat_fills[(int)Hint::High]),
         stat_fills[(int)Hint::Moderate], pct(stat_fills[(int)Hint::Moderate]),
         stat_fills[(int)Hint::Low], pct(stat_fills[(int)Hint::Low]),
@@ -84,7 +84,15 @@ void GRASP::hit_update(PacketPtr packet, uint64_t way_idx) {
     }
 }
 
-void GRASP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool /*was_accessed*/) {
+void GRASP::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+    // 8B blocks: a block of the line that was not touched during its L1
+    // residency goes in at maxRRPV, whatever its hint, so it is evicted first.
+    // (A 64B line always has a touched sector, so 64B is unchanged.)
+    if (!was_accessed && cachesim::BLOCK_SIZE < CACHELINE_SIZE) {
+        stat_untouched++;
+        counter[way_idx] = maxRRPV;
+        return;
+    }
     Hint hint = classify(block_degree(packet, block_idx));
     stat_fills[(int)hint]++;
     uint64_t serviced = (block_idx < packet->block_serviced_from_llc.size())

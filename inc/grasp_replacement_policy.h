@@ -18,12 +18,15 @@
 //   moderate: insert maxRRPV-1,  hit -> one step closer to 0 per LLC service
 //   low:      insert maxRRPV,    hit -> one step closer to 0 per LLC service
 //   default:  SRRIP (insert maxRRPV-1, hit -> 0)
+// With 8B LLC blocks the hint is per 8B block, and a block that was not
+// touched during its L1 residency is inserted at maxRRPV regardless of hint.
 class GRASP : public SRRIP {
     enum class Hint { Default, High, Moderate, Low };
     Hint classify(uint64_t degree) const;
     uint64_t block_degree(PacketPtr packet, uint64_t block_idx) const;
 
     inline static uint64_t stat_fills[4] = {0, 0, 0, 0};
+    inline static uint64_t stat_untouched = 0;   // untouched 8B blocks inserted at maxRRPV
 
     // Degree thresholds of the high / moderate reuse tiers.
     inline static uint64_t high_degree = UINT64_MAX;
