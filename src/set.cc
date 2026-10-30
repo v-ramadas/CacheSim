@@ -292,6 +292,12 @@ bool Set::try_hit(PacketPtr packet) {
     if (hit) {
         if (level == CacheLevel::L1D || cache->get_insertion_policy() != InsertionPolicy::EXCLUSIVE)
             repl_counter->init_counter(packet);
+        // Amoeba-Cache: LRU over blocks, so a hit makes the block most recent
+        // (an exclusive LLC moves the line out on a hit, so this only matters
+        // for the single-level cache).
+        if (amoeba_active())
+            for (auto way_idx : way_idx_list)
+                if (am_way_block[way_idx] >= 0) am_blocks[am_way_block[way_idx]].stamp = ++am_clock;
         for (auto way_idx: way_idx_list) {
             if (!packet->is_read) {
                 dirty[way_idx] = true;
@@ -574,6 +580,8 @@ void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks
 bool Set::amoeba_keep(PacketPtr fill_packet, uint64_t block_address) const {
     uint64_t sector = (block_address % CACHELINE_SIZE) / 8;
     uint64_t fp = fill_packet->footprint & 0xff;
+    if (fp == 0 && level != CacheLevel::LLC && fill_packet->address != UINT64_MAX)
+        fp = 1ULL << ((fill_packet->address % CACHELINE_SIZE) / 8);
     bool keep = true;
     if (fp != 0 && cachesim::AMOEBA_INSERT == AmoebaInsert::SPAN) {
         uint64_t first = __builtin_ctzll(fp), last = 63 - __builtin_clzll(fp);

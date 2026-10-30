@@ -349,11 +349,21 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
 
     // Populate the vector
     populate_line(fill_packet);
+    if constexpr (std::is_same_v<T, Set>) {
+        // Below 64B a line can be partly resident: drop the blocks already
+        // present (and any the policy or Amoeba declines), as
+        // handle_fill_blocks does, so no block is filled twice.
+        populate_blocks(fill_packet);
+    }
     if (eviction_packet->size == 0)
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
+    if constexpr (std::is_same_v<T, Set>) {
+        if (sets[set_idx]->amoeba_active())
+            sets[set_idx]->amoeba_reserve(fill_packet, eviction_packet);
+    }
     sets[set_idx]->handle_evict(eviction_packet);
     num_blocks_used += count_footprint(eviction_packet->footprint);
     evictions+=eviction_packet->blocks.size();

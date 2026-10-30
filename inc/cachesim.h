@@ -207,9 +207,15 @@ class Set {
     std::vector<int32_t> am_pending;     // blocks allocated for the current fill
     uint64_t am_clock = 0;
     bool amoeba_active() const {
+#ifdef MULTI_LEVEL
         return cachesim::AMOEBA && level == CacheLevel::LLC && block_size == 8;
+#else
+        return cachesim::AMOEBA && block_size == 8;   // the single cache
+#endif
     }
     // Whether the block at block_address of an incoming L1D victim is stored.
+    // In the single-level build the fill is a demand miss with no footprint,
+    // so the demanded word counts as the touched one.
     bool amoeba_keep(PacketPtr fill_packet, uint64_t block_address) const;
     // Before a fill: allocate one block for the fill's words (one contiguous
     // range), evicting whole blocks into eviction_packet until it fits.
