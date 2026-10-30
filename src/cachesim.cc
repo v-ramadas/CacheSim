@@ -316,12 +316,11 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
 //        fill_packet->block_accesses.resize(8, 0);
 //    }
     auto set_idx = get_set_idx(fill_packet->address);
-    auto block_size = sets[set_idx]->get_block_size();
 
-    if (is_sectored)
-        fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
-    else
-        fill_packet->aligned_address = align_address(fill_packet->address, block_size);
+    // The fill covers the whole 64B line holding the access, at any block
+    // size: aligning to a smaller block would start the window mid-line and
+    // spill blocks into the next line, which belongs to another set.
+    fill_packet->aligned_address = align_address(fill_packet->address, CACHELINE_SIZE);
 
     // Populate the vector
     populate_line(fill_packet);
