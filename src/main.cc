@@ -324,6 +324,8 @@ int main(int argc, char** argv) {
         GRASP::print_stats();
     if (replacement_policy == ReplacementPolicy::POPT)
         POPT::print_stats();
+    if (replacement_policy == ReplacementPolicy::LRU && cachesim::BLOCK_SIZE < CACHELINE_SIZE)
+        LRU::print_stats();
     if (replacement_policy == ReplacementPolicy::Amoeba)
         Set::print_amoeba_stats();
     if (cachesim::USE_GHOST_CACHE)

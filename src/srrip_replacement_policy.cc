@@ -24,7 +24,12 @@ void SRRIP::hit_update(PacketPtr packet, uint64_t way_idx) {
     
 }
 
-void SRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
+void SRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool was_accessed) {
+#ifdef MULTI_LEVEL
+    bool split = split_reused_8b && cachesim::BLOCK_SIZE < CACHELINE_SIZE && level == CacheLevel::LLC && packet->serviced_from_llc > 0;
+#else
+    bool split = split_reused_8b && cachesim::BLOCK_SIZE < CACHELINE_SIZE;
+#endif
 
     if (packet->from_ghost_cache) {
         // A ghost cache hit is direct, deterministic proof this exact line
@@ -32,6 +37,8 @@ void SRRIP::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr pack
         // confirmed-reuse (serviced_from_llc) fill: near-immediate RRPV.
         // Always false unless --use-ghost-cache is passed.
         counter[way_idx] = 0;
+    } else if (split) {
+        counter[way_idx] = was_accessed ? 0 : maxRRPV - 1;
     } else if (packet->serviced_from_llc > 0) {
         counter[way_idx] = 0;
     } else {

@@ -12,6 +12,13 @@ class SRRIP : public BasePolicy {
 
     uint64_t diff = UINT64_MAX;
 
+    // Split insertion at 8B: the accessed blocks of a fill get RRPV 0, the
+    // line's other blocks maxRRPV-1. Multi-level: LLC fills with
+    // serviced_from_llc > 0 only. Single-level (no LLC hand-off, so
+    // serviced_from_llc is always 0): every fill, the demanded block being
+    // the accessed one. DRRIP and SHiP, which reuse fill_update, turn it off.
+    bool split_reused_8b = true;
+
     public:
     SRRIP(): maxRRPV(3) {}
 

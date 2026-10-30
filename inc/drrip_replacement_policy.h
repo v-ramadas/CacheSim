@@ -21,7 +21,9 @@ class DRRIP : public SRRIP {
     void insert_brrip(uint64_t way_idx, PacketPtr packet);
 
     public:
-    DRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SRRIP(_set_idx, _num_ways, _level) {}
+    DRRIP(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SRRIP(_set_idx, _num_ways, _level) {
+        split_reused_8b = false;
+    }
 
     void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
 };

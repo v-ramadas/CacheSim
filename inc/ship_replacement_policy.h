@@ -35,6 +35,7 @@ class SHIPBase : public SRRIP {
         signature.resize(num_ways, 0);
         reused.resize(num_ways, false);
         tracked.resize(num_ways, false);
+        split_reused_8b = false;
     }
 
     void hit_update(PacketPtr packet, uint64_t way_idx);

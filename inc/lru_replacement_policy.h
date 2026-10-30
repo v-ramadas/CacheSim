@@ -8,7 +8,9 @@ class LRU : public BasePolicy {
     uint64_t mru_counter = 0;
     uint64_t lru_counter = 0;
     std::vector<bool> low_priority;
+    inline static uint64_t stat_restored = 0, stat_fallback = 0;
     public:
+    static void print_stats();
     LRU() {}
     LRU(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;

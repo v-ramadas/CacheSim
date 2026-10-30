@@ -10,8 +10,35 @@ void LRU::hit_update(PacketPtr /*packet*/, uint64_t way_idx) {
     counter[way_idx] = lru_counter;
 }
 
-void LRU::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr /*packet*/, bool /*was_accessed*/) {
-    counter[way_idx] = lru_counter;
+void LRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+    // Split insertion at 8B: accessed blocks get this fill's counter
+    // (init_counter already incremented it); the line's other blocks get back
+    // the counter they had when they left the LLC (prev_counter), or, if they
+    // have none, the counter before this fill. Multi-level: LLC fills with
+    // serviced_from_llc > 0 only. Single-level: every fill (serviced_from_llc
+    // is always 0 there), the demanded block being the accessed one.
+#ifdef MULTI_LEVEL
+    bool split = level == CacheLevel::LLC && cachesim::BLOCK_SIZE < CACHELINE_SIZE && packet->serviced_from_llc > 0;
+#else
+    bool split = cachesim::BLOCK_SIZE < CACHELINE_SIZE;
+#endif
+    if (!split || was_accessed) {
+        counter[way_idx] = lru_counter;
+        return;
+    }
+    uint64_t prev = (block_idx < packet->block_prev_counter.size()) ? packet->block_prev_counter[block_idx] : UINT64_MAX;
+    if (prev != UINT64_MAX) {
+        stat_restored++;
+        counter[way_idx] = prev;
+    } else {
+        stat_fallback++;
+        counter[way_idx] = lru_counter - 1;
+    }
+}
+
+void LRU::print_stats() {
+    fmt::print("LRU 8B split fills, untouched blocks: prev_counter restored {} | no prev_counter (lru_counter-1) {}\n",
+        stat_restored, stat_fallback);
 }
 
 uint64_t LRU::get_eviction_candidate(bool /*is_low_priority = false*/) {
