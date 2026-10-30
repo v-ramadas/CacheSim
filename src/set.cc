@@ -247,6 +247,8 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
 }
 
 void Set::invalidate_way(uint64_t way_idx) {
+    if (amoeba_active())
+        amoeba_release_way(way_idx);
     set_way_address(way_idx, UINT64_MAX);
     valid[way_idx] = false;
     dirty[way_idx] = false;
@@ -313,6 +315,17 @@ bool Set::try_hit(PacketPtr packet) {
 
         hits++;
     } else {
+        if (amoeba_active()) {
+            for (const auto block : packet->blocks) {
+                auto aligned = align_address(block, block_size);
+                if (find_way(aligned) < tags.size()) continue;
+                auto f = am_fate.find(aligned);
+                if (f == am_fate.end()) am_miss_never++;
+                else if (f->second == 1) am_miss_dropped++;
+                else am_miss_evicted++;
+                break;   // classify the access by its first missing word
+            }
+        }
         // Miss: how many blocks of the requested 64B line this set still holds
         // (all of a line's blocks map to the same set). Always 0 at 64B.
         uint64_t line = align_address(packet->address, CACHELINE_SIZE), present = 0;
@@ -375,6 +388,8 @@ void Set::handle_fill(PacketPtr packet) {
         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
         if (block_address != UINT64_MAX) {
             set_way_address(way_idx, block_address);
+            if (amoeba_active())
+                amoeba_attach_way(way_idx, block_address);
         }
         valid[way_idx] = true;
         pc[way_idx] = packet->pc;
@@ -556,7 +571,135 @@ void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks
     invalidate_way(way_idx);
 }
 
+bool Set::amoeba_keep(PacketPtr fill_packet, uint64_t block_address) const {
+    uint64_t sector = (block_address % CACHELINE_SIZE) / 8;
+    uint64_t fp = fill_packet->footprint & 0xff;
+    bool keep = true;
+    if (fp != 0 && cachesim::AMOEBA_INSERT == AmoebaInsert::SPAN) {
+        uint64_t first = __builtin_ctzll(fp), last = 63 - __builtin_clzll(fp);
+        keep = sector >= first && sector <= last;
+    }
+    if (!keep) {
+        am_stat_dropped++;
+        am_fate[block_address] = 1;
+    }
+    return keep;
+}
+
+uint64_t Set::amoeba_reserve(PacketPtr fill_packet, PacketPtr eviction_packet) {
+    // The words to store form one contiguous range of one line (span or
+    // whole line), so this fill is a single Amoeba-Block.
+    uint32_t first_sector = UINT32_MAX, last_sector = 0, count = 0;
+    for (auto addr : fill_packet->blocks) {
+        if (addr == UINT64_MAX) continue;
+        uint32_t s = (addr % CACHELINE_SIZE) / 8;
+        first_sector = std::min(first_sector, s);
+        last_sector = std::max(last_sector, s);
+        count++;
+    }
+    assert(count > 0 && last_sector - first_sector + 1 == count);
+    const std::pair<uint32_t, uint32_t> ranges[] = {{first_sector, count}};   // (start, len)
+    auto find_free = [this](uint32_t need) -> int64_t {   // first fit
+        uint32_t run = 0;
+        for (uint64_t i = 0; i < am_word.size(); i++) {
+            if (am_word[i] >= 0) { run = 0; continue; }
+            if (++run == need) return (int64_t)(i + 1 - need);
+        }
+        return -1;
+    };
+    am_pending.clear();
+    am_stat_fills++;
+    uint64_t evicted = 0;
+    const uint64_t first_stamp = am_clock + 1;   // blocks of this fill are never victims
+    for (auto [start, len] : ranges) {
+        const uint32_t tag_words = cachesim::AMOEBA_FREE_TAGS ? 0 : 1;
+        uint32_t need = len + tag_words;         // tag word + data words
+        int64_t pos;
+        while ((pos = find_free(need)) < 0) {
+            uint64_t free_words = std::count(am_word.begin(), am_word.end(), -1);
+            int32_t victim = -1;
+            for (int32_t id = 0; id < (int32_t)am_blocks.size(); id++) {
+                const auto& b = am_blocks[id];
+                if (b.stamp != 0 && b.stamp < first_stamp && (victim < 0 || b.stamp < am_blocks[victim].stamp))
+                    victim = id;
+            }
+            assert(victim >= 0 && !am_blocks[victim].ways.empty());
+            if (free_words >= need)
+                am_stat_frag_evictions++;   // enough free words, just not contiguous
+            am_stat_evicted_blocks++;
+            auto victim_ways = am_blocks[victim].ways;   // released (and freed) as they go
+            for (auto w : victim_ways) {
+                am_fate[ways[w]] = 2;
+                evict_way_into(eviction_packet, w, std::min<uint64_t>(evicted++, 63), 0);
+            }
+        }
+        int32_t id;
+        if (!am_free_ids.empty()) { id = am_free_ids.back(); am_free_ids.pop_back(); }
+        else { id = am_blocks.size(); am_blocks.emplace_back(); }
+        auto& b = am_blocks[id];
+        b.start = start; b.len = len; b.pos = pos; b.live = 0; b.stamp = ++am_clock; b.ways.clear();
+        for (uint32_t i = 0; i < need; i++) am_word[pos + i] = id;   // tag (if any), then data
+        am_pending.push_back(id);
+        am_stat_blocks++;
+        am_stat_words += len;
+    }
+    return evicted;
+}
+
+void Set::amoeba_attach_way(uint64_t way_idx, uint64_t block_address) {
+    uint32_t sector = (block_address % CACHELINE_SIZE) / 8;
+    for (auto id : am_pending) {
+        auto& b = am_blocks[id];
+        if (sector < b.start || sector >= b.start + b.len) continue;
+        b.ways.push_back(way_idx);
+        b.live++;
+        am_way_block[way_idx] = id;
+        am_way_pos[way_idx] = b.pos + (cachesim::AMOEBA_FREE_TAGS ? 0 : 1) + (sector - b.start);
+        assert(am_word[am_way_pos[way_idx]] == id);
+        return;
+    }
+    assert(false && "amoeba: filled word has no reserved block");
+}
+
+void Set::amoeba_release_way(uint64_t way_idx) {
+    int32_t id = am_way_block[way_idx];
+    if (id < 0) return;
+    auto& b = am_blocks[id];
+    assert(am_word[am_way_pos[way_idx]] == id);
+    am_word[am_way_pos[way_idx]] = -1;
+    b.ways.erase(std::find(b.ways.begin(), b.ways.end(), (uint32_t)way_idx));
+    am_way_block[way_idx] = -1;
+    if (--b.live == 0) {   // last data word gone: free the tag word too
+        if (!cachesim::AMOEBA_FREE_TAGS)
+            am_word[b.pos] = -1;
+        b.stamp = 0;
+        am_free_ids.push_back(id);
+    }
+}
+
+void Set::amoeba_resident(uint64_t& blocks, uint64_t& data_words) const {
+    for (const auto& b : am_blocks) {
+        if (b.stamp == 0) continue;
+        blocks++;
+        data_words += b.live;
+    }
+}
+
+void Set::print_amoeba_stats() {
+    fmt::print("Amoeba: fills {} blocks inserted {} ({:.3f} words/block) | words dropped at fill {} | blocks evicted {} of which with enough free words but none contiguous {} ({:.2f}%)\n",
+        am_stat_fills, am_stat_blocks, am_stat_blocks ? (double)am_stat_words / am_stat_blocks : 0.0, am_stat_dropped,
+        am_stat_evicted_blocks, am_stat_frag_evictions,
+        am_stat_evicted_blocks ? 100.0 * am_stat_frag_evictions / am_stat_evicted_blocks : 0.0);
+    uint64_t misses = am_miss_dropped + am_miss_evicted + am_miss_never;
+    auto pct = [misses](uint64_t v) { return misses ? 100.0 * v / misses : 0.0; };
+    fmt::print("Amoeba LLC misses {}: word dropped at fill {} ({:.2f}%) | word evicted {} ({:.2f}%) | word never in LLC {} ({:.2f}%)\n",
+        misses, am_miss_dropped, pct(am_miss_dropped), am_miss_evicted, pct(am_miss_evicted), am_miss_never, pct(am_miss_never));
+}
+
 void Set::handle_evict(PacketPtr packet) {
+    // Amoeba-Cache sets made room for exactly this fill in amoeba_reserve().
+    if (amoeba_active())
+        return;
     uint64_t num_blocks_evicted = 0;
     auto num_invalid_blocks = get_num_invalid();
     uint64_t num_blocks_to_evict = packet->size/block_size;

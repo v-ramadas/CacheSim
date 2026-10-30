@@ -61,6 +61,10 @@ uint64_t cachesim::TAG_BDI_BASES = 8;
 uint64_t cachesim::TAG_BDI_DELTA = 10;
 bool cachesim::TAG_BDI_UNCONSTRAINED = false;
 bool cachesim::DEBUG_TAG_BDI = false;
+bool cachesim::AMOEBA = false;
+AmoebaInsert cachesim::AMOEBA_INSERT = AmoebaInsert::SPAN;
+uint64_t cachesim::AMOEBA_WORDS = 0;
+bool cachesim::AMOEBA_FREE_TAGS = false;
 uint64_t cachesim::TRACE_LINE = 0;
 uint64_t cachesim::L2_NUM_SETS = 1024;
 uint64_t cachesim::L2_NUM_WAYS = 16;
@@ -110,7 +114,8 @@ int main(int argc, char** argv) {
         {"hawkeye", ReplacementPolicy::Hawkeye},
         {"hub_hawkeye", ReplacementPolicy::HubHawkeye},
         {"grasp", ReplacementPolicy::GRASP},
-        {"popt", ReplacementPolicy::POPT}
+        {"popt", ReplacementPolicy::POPT},
+        {"amoeba", ReplacementPolicy::Amoeba}
     }));
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
@@ -158,6 +163,12 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
+    app.add_option("--amoeba-insert", cachesim::AMOEBA_INSERT, "amoeba: words of an L1D victim to store as one block - span (first to last touched word, default), line (whole line)")->transform(CLI::CheckedTransformer(std::map<std::string, AmoebaInsert>{
+        {"span", AmoebaInsert::SPAN},
+        {"line", AmoebaInsert::LINE},
+    }));
+    app.add_option("--amoeba-words", cachesim::AMOEBA_WORDS, "amoeba (debug): words per set, overriding the iso-area / naive size");
+    app.add_flag("--amoeba-free-tags", cachesim::AMOEBA_FREE_TAGS, "amoeba (debug): blocks take no tag word, only their data words");
     app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4)");
 
 
@@ -203,6 +214,18 @@ int main(int argc, char** argv) {
         case ReplacementPolicy::HubHawkeye:
         case ReplacementPolicy::GRASP:
         case ReplacementPolicy::POPT:
+            cachesim::SET_DUELING = false;
+            break;
+        case ReplacementPolicy::Amoeba:
+            // Amoeba sets keep their own tag words, so Base+Delta tags are off;
+            // sets are sized from the 64B budget unless --no-iso-area.
+            if (cachesim::BLOCK_SIZE != 8) {
+                fmt::print(stderr, "amoeba models a word-granularity LLC; use --cache-block-size 8\n");
+                return 1;
+            }
+            cachesim::AMOEBA = true;
+            cachesim::TAG_BDI_BASES = 0;
+            cachesim::isoArea = !cachesim::NO_ISO_AREA;
             cachesim::SET_DUELING = false;
             break;
         default:
@@ -301,6 +324,8 @@ int main(int argc, char** argv) {
         GRASP::print_stats();
     if (replacement_policy == ReplacementPolicy::POPT)
         POPT::print_stats();
+    if (replacement_policy == ReplacementPolicy::Amoeba)
+        Set::print_amoeba_stats();
     if (cachesim::USE_GHOST_CACHE)
         fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
             cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,

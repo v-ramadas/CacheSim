@@ -51,6 +51,7 @@ enum class ReplacementPolicy {
     GRASP,
     POPT,
     HubOracle,
+    Amoeba,
 };
 
 inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, CacheLevel level) {
@@ -89,6 +90,10 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
             return new POPT(set_idx, num_ways, level);
         case ReplacementPolicy::HubOracle:
             return new HubOracle(set_idx, num_ways, level);
+        // Amoeba-Cache replaces whole blocks in LRU order itself (Set::amoeba_*);
+        // the per-way LRU state only tracks insertion and hits.
+        case ReplacementPolicy::Amoeba:
+            return new LRU(set_idx, num_ways, level);
 
         default:
             return nullptr;
@@ -188,9 +193,18 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
 
     // 2. Incrementally search for the highest number of ways for the 8-byte block cache
     if (block_size != CACHELINE_SIZE) {
+        if (cachesim::AMOEBA && cachesim::AMOEBA_WORDS > 0)
+            return cachesim::AMOEBA_WORDS;
         if (!cachesim::isoArea) {
             get_total_cache_size(num_sets, reference_ways * (CACHELINE_SIZE/block_size), block_size, false);
             return (reference_ways * (CACHELINE_SIZE/block_size));
+        }
+        if (cachesim::AMOEBA) {
+            // Amoeba-Cache: the set is a uniform array of 64-bit words (tags
+            // and data alike), each with a T? (is-tag) and a V? (in-use) bit,
+            // so a set gets budget / (64 + 2) words; "ways" are those words.
+            uint64_t budget_bits_per_set = (uint64_t)(target_budget_bytes * 8) / num_sets;
+            return budget_bits_per_set / (64 + 2);
         }
         if (cachesim::TAG_BDI_BASES > 0) {
             // Base+Delta tag compression (capacity only, --tag-bdi-bases B

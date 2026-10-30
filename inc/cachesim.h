@@ -16,6 +16,7 @@
 #include <fmt/core.h>
 #include <CLI/CLI.hpp>
 #include <list>
+#include <unordered_map>
 
 #include "tracereader.h"
 
@@ -121,6 +122,11 @@ class Set {
         way_hits.resize(num_ways, 0);
         degree.resize(num_ways, 0);
         avg_degree.resize(num_ways, 0.0f);
+        if (amoeba_active()) {
+            am_word.assign(num_ways, -1);
+            am_way_block.assign(num_ways, -1);
+            am_way_pos.assign(num_ways, 0);
+        }
     }
 
     ~Set() {
@@ -178,6 +184,47 @@ class Set {
     inline static uint64_t bdi_stat_replaced_blocks = 0;
 
     void evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks_evicted, uint64_t num_blocks_to_evict);
+
+    // Amoeba-Cache (LLC, --replacement-policy amoeba). The set's num_ways are
+    // its physical 64-bit words. An Amoeba-Block is a tag word followed by a
+    // contiguous run of data words from one 64B line; each data word is also
+    // one Set way (8B block), so hits, invalidations and stats are unchanged.
+    // am_word is the T?/V? state: -1 for a free word, else the id of the block
+    // whose tag or data occupies it. Blocks are placed first-fit and replaced
+    // whole, in LRU (insertion) order, until the incoming run fits.
+    struct AmoebaBlock {
+        uint32_t start = 0, len = 0;   // first word in the line, # data words
+        uint32_t pos = 0;              // tag word; data at pos+1 .. pos+len
+        uint32_t live = 0;             // data words still valid
+        uint64_t stamp = 0;            // LRU order (0 = free entry)
+        std::vector<uint32_t> ways;    // Set ways holding its data words
+    };
+    std::vector<int32_t> am_word;
+    std::vector<AmoebaBlock> am_blocks;
+    std::vector<int32_t> am_free_ids;
+    std::vector<int32_t> am_way_block;   // per way: owning block, -1 if none
+    std::vector<uint32_t> am_way_pos;    // per way: its data word
+    std::vector<int32_t> am_pending;     // blocks allocated for the current fill
+    uint64_t am_clock = 0;
+    bool amoeba_active() const {
+        return cachesim::AMOEBA && level == CacheLevel::LLC && block_size == 8;
+    }
+    // Whether the block at block_address of an incoming L1D victim is stored.
+    bool amoeba_keep(PacketPtr fill_packet, uint64_t block_address) const;
+    // Before a fill: allocate one block for the fill's words (one contiguous
+    // range), evicting whole blocks into eviction_packet until it fits.
+    // Returns the number of 8B blocks evicted.
+    uint64_t amoeba_reserve(PacketPtr fill_packet, PacketPtr eviction_packet);
+    void amoeba_attach_way(uint64_t way_idx, uint64_t block_address);
+    void amoeba_release_way(uint64_t way_idx);
+    void amoeba_resident(uint64_t& blocks, uint64_t& data_words) const;
+    inline static uint64_t am_stat_fills = 0, am_stat_blocks = 0, am_stat_words = 0;
+    inline static uint64_t am_stat_dropped = 0, am_stat_evicted_blocks = 0, am_stat_frag_evictions = 0;
+    // Why an LLC miss's word was not in the LLC: the last way it left - dropped
+    // at fill (1) or evicted (2); absent = never left the hierarchy before.
+    inline static std::unordered_map<uint64_t, uint8_t> am_fate;
+    inline static uint64_t am_miss_dropped = 0, am_miss_evicted = 0, am_miss_never = 0;
+    static void print_amoeba_stats();
 
     void fill_way(PacketPtr packet, uint64_t way_idx);
     void fill_packet(PacketPtr packet, uint64_t way_idx);

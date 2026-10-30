@@ -25,6 +25,15 @@ enum class DuelingMode {
     ZTEST_RATIO,
 };
 
+// Which words of an L1D victim an Amoeba-Cache LLC stores, always as one
+// block: SPAN = from the first to the last touched word, untouched words in
+// between included (the paper's single contiguous range per insertion);
+// LINE = the whole 64B line (fixed granularity).
+enum class AmoebaInsert {
+    SPAN,
+    LINE,
+};
+
 namespace cachesim {
     extern uint64_t instCount;
     extern uint64_t prevInstCount;
@@ -96,6 +105,16 @@ namespace cachesim {
     extern bool TAG_BDI_UNCONSTRAINED;
     // Print every Base+Delta encode / lookup / release / base replacement.
     extern bool DEBUG_TAG_BDI;
+    // Amoeba-Cache LLC (--replacement-policy amoeba, 8B blocks): each set is an
+    // array of 64-bit words holding variable-size blocks, each a tag word plus
+    // a contiguous run of data words from one 64B line (Kumar et al., MICRO
+    // 2012). AMOEBA_INSERT picks which words of an L1D victim are stored.
+    extern bool AMOEBA;
+    extern AmoebaInsert AMOEBA_INSERT;
+    // Debug knobs: words per set (0 = from the iso-area budget), and blocks
+    // that take no tag word (tags cost nothing; data words only).
+    extern uint64_t AMOEBA_WORDS;
+    extern bool AMOEBA_FREE_TAGS;
     // 0-based index of the trace line being simulated (the units of NextReuse).
     extern uint64_t TRACE_LINE;
 };

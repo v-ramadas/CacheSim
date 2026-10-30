@@ -177,6 +177,17 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
             pct(evicted_used, evicted_words), resident, resident_used, pct(resident_used, resident));
     }
     if constexpr (std::is_same_v<T, Set>) {
+        if (!sets.empty() && sets.begin()->second->amoeba_active()) {
+            uint64_t capacity = 0, valid_pieces = 0, touched = 0, am_blocks = 0, am_data = 0;
+            for (const auto& [idx, s] : sets) {
+                s->count_resident(capacity, valid_pieces, touched);
+                s->amoeba_resident(am_blocks, am_data);
+            }
+            uint64_t tag_words = cachesim::AMOEBA_FREE_TAGS ? 0 : am_blocks;
+            fmt::print("Amoeba LLC at end: {} blocks ({:.2f}/set, {:.3f} data words/block) | words: data {} tag {} free {} of {}\n",
+                am_blocks, (double)am_blocks / sets.size(), am_blocks ? (double)am_data / am_blocks : 0.0,
+                am_data, tag_words, capacity - am_data - tag_words, capacity);
+        }
         if (level == CacheLevel::LLC) {
             fmt::print("Line lifetime utilization {:4f} | touched {} of {} 8B pieces that left the hierarchy\n",
                 Set::life_pieces ? 100.0 * Set::life_touched / Set::life_pieces : 0.0, Set::life_touched, Set::life_pieces);
@@ -296,6 +307,10 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
         evictions += bdi_evicted;
         evicted_words += bdi_evicted * (sets[set_idx]->get_block_size() / 8);
         num_blocks_used += used_words;
+        // Amoeba-Cache: make contiguous room for each block of this fill; the
+        // evicted words land in eviction_packet and are counted below.
+        if (sets[set_idx]->amoeba_active())
+            sets[set_idx]->amoeba_reserve(fill_packet, eviction_packet);
     }
     sets[set_idx]->handle_evict(eviction_packet);
     if (eviction_packet->blocks.size() == 0) {
@@ -518,6 +533,11 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
         auto dropBlock = false;
         if (cachesim::dropBlocks && (block_size < CACHELINE_SIZE) && !sets[set_idx]->get_replacement_policy()->can_insert(fill_packet, idx)) {
             dropBlock = true;
+        }
+        if constexpr (std::is_same_v<T, Set>) {
+            // Amoeba-Cache stores only the words its insertion mode selects.
+            if (try_hit == ways.end() && sets[set_idx]->amoeba_active() && !sets[set_idx]->amoeba_keep(fill_packet, *it))
+                dropBlock = true;
         }
 
         if (try_hit != ways.end()) {
