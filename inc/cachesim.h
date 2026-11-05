@@ -118,6 +118,8 @@ class Set {
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size/8, false);
+        eff_fill.resize(num_ways, 0);
+        eff_last_use.resize(num_ways*block_size/8, UINT64_MAX);
         next_reuse.resize(num_ways, 0);
         way_hits.resize(num_ways, 0);
         degree.resize(num_ways, 0);
@@ -169,6 +171,26 @@ class Set {
     inline static uint64_t line_used_hist[9] = {};
     void record_line_used(uint64_t way_idx);
     void record_line_used_residents();
+    // Cache efficiency (Burger, Goodman and Kagi), per 8B word, last level
+    // only: a word is live from its fill until its last use in that stay and
+    // dead from then until it leaves (all of its stay if never used). A use
+    // is the demanded word of a single-level fill or a hit on the word - in
+    // the exclusive multi-level LLC only the word an LLC hit asks for, not
+    // the rest of the line that moves up with it. Stays still open at the
+    // end of the run close then. Time is instructions.
+    std::vector<uint64_t> eff_fill;       // per way: instCount at fill
+    std::vector<uint64_t> eff_last_use;   // per word: last use, UINT64_MAX = none
+    inline static uint64_t eff_live = 0, eff_dead_after_use = 0, eff_dead_unused = 0;
+    bool eff_tracked() const {
+#ifdef MULTI_LEVEL
+        return level == CacheLevel::LLC;
+#else
+        return true;
+#endif
+    }
+    void eff_use(uint64_t way_idx, uint64_t word_idx);
+    void eff_close(uint64_t way_idx);
+    void eff_close_residents();
     // Reuse by degree (LLC only): one record per block when its lifetime ends
     // (evicted, dropped at fill, or resident at end of run). Reuse = times it
     // was serviced from the LLC. Degree rows are power-of-two buckets

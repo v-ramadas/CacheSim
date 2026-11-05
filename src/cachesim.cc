@@ -233,6 +233,23 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
             fmt::print(" | lines {} mean {:.4f} of 8\n", lines, (double)used / lines);
         }
     }
+    if constexpr (std::is_same_v<T, Set>) {
+        // Cache efficiency: live word-time over capacity x run length. The
+        // stays still open end now (print_stats runs once, after the trace).
+        uint64_t capacity_words = 0;
+        for (const auto& [idx, s] : sets) {
+            s->eff_close_residents();
+            capacity_words += s->get_ways().size() * s->get_block_size() / 8;
+        }
+        double total = (double)capacity_words * instCount;
+        uint64_t dead = Set::eff_dead_after_use + Set::eff_dead_unused;
+        uint64_t occupied = Set::eff_live + dead;
+        auto pct = [](double x, double of) { return of > 0 ? 100.0 * x / of : 0.0; };
+        fmt::print("Cache efficiency {:.4f}% (live word-time / capacity x time) | occupied {:.4f}% of capacity, "
+                   "live {:.4f}% of occupied | dead: never used {:.4f}%, after last use {:.4f}% of occupied\n",
+            pct(Set::eff_live, total), pct(occupied, total), pct(Set::eff_live, occupied),
+            pct(Set::eff_dead_unused, occupied), pct(Set::eff_dead_after_use, occupied));
+    }
     // Misses by how many 8B-or-larger blocks of the requested 64B line were
     // already present at this level (64B LLC: always 0).
     fmt::print("Partial Misses (blocks of the 64B line present on a miss) ");

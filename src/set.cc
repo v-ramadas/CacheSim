@@ -248,6 +248,7 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
 }
 
 void Set::invalidate_way(uint64_t way_idx) {
+    eff_close(way_idx);
     if (amoeba_active())
         amoeba_release_way(way_idx);
     set_way_address(way_idx, UINT64_MAX);
@@ -307,6 +308,9 @@ bool Set::try_hit(PacketPtr packet) {
             //fmt::print("Aligned Address {:#x} Address {:#x} word_idx {}\n", packet->aligned_address, packet->address, word_idx);
 
             set_footprint(way_idx, word_idx, true);
+            if (ways[way_idx] == align_address(packet->address, block_size)) {
+                eff_use(way_idx, word_idx);
+            }
             //TODO: TEMP
             packet->l1_hits = way_hits[way_idx]+1;
             repl_counter->hit_update(packet, way_idx);
@@ -417,11 +421,22 @@ void Set::handle_fill(PacketPtr packet) {
                 if ((packet->footprint >> (first_sector + word_idx)) & 1)
                     set_footprint(way_idx, word_idx, true);
             }
+            if (eff_tracked()) {
+                if (eff_fill.size() < num_ways) {   // breakdown/merge resized the set
+                    eff_fill.resize(num_ways, 0);
+                    eff_last_use.resize(num_ways * bits_per_block, UINT64_MAX);
+                }
+                eff_fill[way_idx] = cachesim::instCount;
+                for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
+                    eff_last_use[way_idx * bits_per_block + word_idx] = UINT64_MAX;
+            }
 #ifndef MULTI_LEVEL
             // Single-level fills are demand misses with no footprint: the
             // demanded word is used, as SectoredSet marks it in the L1D.
-            if (block_address == align_address(packet->address, block_size))
+            if (block_address == align_address(packet->address, block_size)) {
                 set_footprint(way_idx, (packet->address - block_address) >> 3, true);
+                eff_use(way_idx, (packet->address - block_address) >> 3);
+            }
 #endif
         }
 
@@ -504,6 +519,34 @@ void Set::record_line_used(uint64_t way_idx) {
     for (uint64_t word_idx = 0; word_idx < CACHELINE_SIZE/8; word_idx++)
         used += get_footprint(way_idx, word_idx);
     line_used_hist[used]++;
+}
+
+void Set::eff_use(uint64_t way_idx, uint64_t word_idx) {
+    uint64_t words = block_size / 8;
+    if (eff_tracked() && (way_idx + 1) * words <= eff_last_use.size())
+        eff_last_use[way_idx * words + word_idx] = cachesim::instCount;
+}
+
+void Set::eff_close(uint64_t way_idx) {
+    uint64_t words = block_size / 8;
+    if (!eff_tracked() || !valid[way_idx] || (way_idx + 1) * words > eff_last_use.size())
+        return;
+    uint64_t now = cachesim::instCount, fill = eff_fill[way_idx];
+    for (uint64_t word_idx = 0; word_idx < words; word_idx++) {
+        uint64_t& last = eff_last_use[way_idx * words + word_idx];
+        if (last == UINT64_MAX) {
+            eff_dead_unused += now - fill;
+        } else {
+            eff_live += last - fill;
+            eff_dead_after_use += now - last;
+        }
+        last = UINT64_MAX;
+    }
+}
+
+void Set::eff_close_residents() {
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        eff_close(way_idx);
 }
 
 void Set::record_line_used_residents() {
