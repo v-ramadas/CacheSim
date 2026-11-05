@@ -697,6 +697,13 @@ void access_single_level(std::vector<BaseCache*> &cache,
             uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
 #endif
 
+// Per-PC hub stats (always printed, top PC_HUB_TOP_N PCs by accesses + the rest + all): per-PC accesses and per-level misses split by data class, from the trace's hubs.py labels
+// (the rule HRU/PHRU's is_hub_node uses): regular = PCAvgDegree 0, hub = NodeDegree > uint64(PCAvgDegree),
+// non-hub = the rest. hit_at_level = index of the level that hit (cache.size() = memory).
+constexpr uint64_t PC_HUB_TOP_N = 10;
+void count_pc_hub(uint64_t pc, uint64_t degree, float avg_degree, int hit_at_level);
+void print_pc_hub_stats(const std::vector<std::string>& level_names, uint64_t top_n);
+
 void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters);
 
 void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters);

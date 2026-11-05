@@ -8,6 +8,7 @@
 #include <random>
 #include <algorithm>
 #include <cmath>
+#include <unordered_map>
 
 template<typename T>
 Cache<T>::Cache():
@@ -951,6 +952,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         }
     }
 
+    count_pc_hub(pc, degree, avg_degree, hit_at_level);
+
     // L1D hit: we assume the CPU has an IPC of 1 on cache hit, already
     // accounted for in processCPU. Otherwise charge each level the access
     // reached: L2 (if present), then LLC, then memory.
@@ -995,6 +998,7 @@ void access_single_level(std::vector<BaseCache*> &cache,
     if (!hit) {
         cache[0]->handle_fill_line(fill_packet, eviction_packet);
     }
+    count_pc_hub(pc, degree, avg_degree, hit ? 0 : 1);
     return;
 }
 #endif
@@ -1398,4 +1402,58 @@ void Cache<T>::merge(uint64_t block_size) {
     }
     fmt::print("Merge done\n");
     is_broken_down = false;
+}
+
+namespace {
+constexpr int PC_HUB_MAX_LEVELS = 3;
+struct PcHubCounts {
+    uint64_t acc[3] = {};                       // regular, hub, non-hub
+    uint64_t miss[3][PC_HUB_MAX_LEVELS] = {};   // [class][level]
+};
+std::unordered_map<uint64_t, PcHubCounts> pc_hub;
+}
+
+void count_pc_hub(uint64_t pc, uint64_t degree, float avg_degree, int hit_at_level) {
+    int c = avg_degree == 0.0f ? 0 : (degree > uint64_t(avg_degree) ? 1 : 2);
+    auto& e = pc_hub[pc];
+    e.acc[c]++;
+    for (int l = 0; l < std::min(hit_at_level, PC_HUB_MAX_LEVELS); l++)
+        e.miss[c][l]++;
+}
+
+void print_pc_hub_stats(const std::vector<std::string>& level_names, uint64_t top_n) {
+    static const char* names[3] = {"regular", "hub", "non-hub"};
+    const int levels = std::min<int>(level_names.size(), PC_HUB_MAX_LEVELS);
+    std::vector<std::pair<uint64_t, PcHubCounts>> v(pc_hub.begin(), pc_hub.end());
+    auto total = [](const PcHubCounts& e) { return e.acc[0] + e.acc[1] + e.acc[2]; };
+    std::sort(v.begin(), v.end(), [&](const auto& a, const auto& b) { return total(a.second) > total(b.second); });
+    PcHubCounts all, rest;
+    uint64_t grand = 0;
+    for (const auto& [pc, e] : v) grand += total(e);
+    auto add = [&](PcHubCounts& d, const PcHubCounts& e) {
+        for (int c = 0; c < 3; c++) {
+            d.acc[c] += e.acc[c];
+            for (int l = 0; l < PC_HUB_MAX_LEVELS; l++) d.miss[c][l] += e.miss[c][l];
+        }
+    };
+    auto line = [&](const std::string& label, const PcHubCounts& e) {
+        uint64_t t = total(e);
+        std::string out = fmt::format("{} accesses {} ({:.1f}% of all)", label, t, grand ? 100.0 * t / grand : 0.0);
+        for (int c = 0; c < 3; c++) {
+            if (!e.acc[c]) continue;
+            out += fmt::format(" | {} {} ({:.1f}%)", names[c], e.acc[c], 100.0 * e.acc[c] / t);
+            for (int l = 0; l < levels; l++)
+                out += fmt::format(" {} miss {}", level_names[l], e.miss[c][l]);
+        }
+        fmt::print("{}\n", out);
+    };
+    fmt::print("PC hub stats: {} PCs, top {} by accesses (regular = PCAvgDegree 0, hub = NodeDegree > PCAvgDegree)\n",
+               v.size(), std::min<uint64_t>(top_n, v.size()));
+    for (size_t i = 0; i < v.size(); i++) {
+        add(all, v[i].second);
+        if (i < top_n) line(fmt::format("PC {:#x}", v[i].first), v[i].second);
+        else add(rest, v[i].second);
+    }
+    if (v.size() > top_n) line(fmt::format("PC other ({} PCs)", v.size() - top_n), rest);
+    line("PC all", all);
 }

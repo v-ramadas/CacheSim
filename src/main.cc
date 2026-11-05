@@ -337,6 +337,8 @@ int main(int argc, char** argv) {
 
     // Print L1D, then the LLC, then any middle level (L2), so the LLC stays the
     // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC.
+    std::vector<std::string> level_names;   // print_pc_hub_stats prints after the caches are deleted
+    for (auto c: cache) level_names.push_back(c->get_name());
     std::vector<BaseCache*> print_order{cache.front()};
     if (cache.size() > 1) print_order.push_back(cache.back());
     for (size_t i = 1; i + 1 < cache.size(); ++i) print_order.push_back(cache[i]);
@@ -364,6 +366,7 @@ int main(int argc, char** argv) {
         Set::print_amoeba_stats();
     if (cachesim::L1_AMOEBA)
         Set::print_l1_amoeba_stats();
+    print_pc_hub_stats(level_names, PC_HUB_TOP_N);
     if (cachesim::L1_AMOEBA && !l1_amoeba_record.empty() && !Set::save_l1_record(l1_amoeba_record))
         fmt::print(stderr, "--l1-amoeba-record: cannot write '{}'\n", l1_amoeba_record);
     if (cachesim::USE_GHOST_CACHE)
