@@ -410,6 +410,14 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
     if constexpr (std::is_same_v<T, Set>) {
+        // Base+Delta tags: free a base for this line first if none fits, as
+        // handle_fill_blocks does; without it a line too far from all of a
+        // full set of bases has no base to encode against.
+        uint64_t used_words = 0;
+        auto bdi_evicted = sets[set_idx]->bdi_reserve(fill_packet, used_words);
+        evictions += bdi_evicted;
+        evicted_words += bdi_evicted * (sets[set_idx]->get_block_size() / 8);
+        num_blocks_used += used_words;
         if (sets[set_idx]->amoeba_active())
             sets[set_idx]->amoeba_reserve(fill_packet, eviction_packet);
     }
