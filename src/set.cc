@@ -274,6 +274,9 @@ bool Set::try_hit(PacketPtr packet) {
         auto way_idx = find_way(aligned_address);
 
         bool block_hit = (way_idx < tags.size());// && (valid[way_idx] == true);
+        // A partial line (from an Amoeba L1D victim) only holds some words.
+        if (block_hit && partial_lines() && !((am_present[way_idx] >> ((packet->address % CACHELINE_SIZE) / 8)) & 1))
+            block_hit = false;
         hit &= block_hit;
 
         //if (cachesim::DEBUG || cachesim::LLC_DEBUG)
@@ -310,6 +313,8 @@ bool Set::try_hit(PacketPtr packet) {
             set_footprint(way_idx, word_idx, true);
             if (ways[way_idx] == align_address(packet->address, block_size)) {
                 eff_use(way_idx, word_idx);
+                if (amoeba_l1())
+                    am_l1_used[align_address(packet->address, CACHELINE_SIZE)] |= 1u << ((packet->address % CACHELINE_SIZE) / 8);
             }
             //TODO: TEMP
             packet->l1_hits = way_hits[way_idx]+1;
@@ -319,7 +324,9 @@ bool Set::try_hit(PacketPtr packet) {
             way_hits[way_idx]++;
             degree[way_idx] = std::max(degree[way_idx], packet->degree);
 
-            if (tags[way_idx] == make_tag(align_address(packet->address, block_size))) {
+            // An Amoeba L1D hit is not an LLC service: counting it would make
+            // every L1-reused victim look LLC-reused to the LLC's policy.
+            if (!amoeba_l1() && tags[way_idx] == make_tag(align_address(packet->address, block_size))) {
                 serviced_from_llc[way_idx]++;
             }
         }
@@ -368,6 +375,18 @@ void Set::handle_fill(PacketPtr packet) {
     auto way = valid.begin();
     repl_counter->init_counter(packet);
     uint64_t block_idx = 0;
+    if (amoeba_l1()) {
+        uint64_t line = align_address(packet->address, CACHELINE_SIZE);
+        am_l1_last_line_words = 0;
+        for (uint64_t w = 0; w < CACHELINE_SIZE / 8; w++)
+            if (find_way(line + 8 * w) < tags.size() ||
+                std::find(packet->blocks.begin(), packet->blocks.end(), line + 8 * w) != packet->blocks.end())
+                am_l1_last_line_words |= 1u << w;
+        am_l1_fills++;
+        am_l1_fill_words += std::count_if(packet->blocks.begin(), packet->blocks.end(),
+                                          [](uint64_t b) { return b != UINT64_MAX; });
+        am_l1_predicted_fills += am_l1_history.count(align_address(packet->address, CACHELINE_SIZE));
+    }
 
     for (const auto block_address: packet->blocks) {
         bool was_accessed;
@@ -417,10 +436,17 @@ void Set::handle_fill(PacketPtr packet) {
         // block covers sectors (block_address % 64)/8 .. + bits_per_block - 1.
         if (block_address != UINT64_MAX) {
             uint64_t first_sector = (block_address % CACHELINE_SIZE) / 8;
-            for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++) {
+            // An Amoeba L1D residency starts clean: only the demanded word is used.
+            for (uint64_t word_idx = 0; word_idx < bits_per_block && !amoeba_l1(); word_idx++) {
                 if ((packet->footprint >> (first_sector + word_idx)) & 1)
                     set_footprint(way_idx, word_idx, true);
             }
+            if (amoeba_l1() && block_address == align_address(packet->address, block_size)) {
+                set_footprint(way_idx, 0, true);
+                am_l1_used[align_address(block_address, CACHELINE_SIZE)] |= 1u << first_sector;
+            }
+            if (partial_lines())
+                am_present[way_idx] = packet->present_mask;
             if (eff_tracked()) {
                 if (eff_fill.size() < num_ways) {   // breakdown/merge resized the set
                     eff_fill.resize(num_ways, 0);
@@ -640,6 +666,8 @@ void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks
 }
 
 bool Set::amoeba_keep(PacketPtr fill_packet, uint64_t block_address) const {
+    if (amoeba_l1())
+        return amoeba_l1_keep(fill_packet, block_address);
     uint64_t sector = (block_address % CACHELINE_SIZE) / 8;
     uint64_t fp = fill_packet->footprint & 0xff;
     if (fp == 0 && level != CacheLevel::LLC && fill_packet->address != UINT64_MAX)
@@ -726,6 +754,14 @@ void Set::amoeba_attach_way(uint64_t way_idx, uint64_t block_address) {
         am_way_block[way_idx] = id;
         am_way_pos[way_idx] = b.pos + (cachesim::AMOEBA_FREE_TAGS ? 0 : 1) + (sector - b.start);
         assert(am_word[am_way_pos[way_idx]] == id);
+        if (amoeba_l1()) {
+            uint64_t line = align_address(block_address, CACHELINE_SIZE);
+            if (am_l1_live[line]++ == 0 && cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::ORACLE) {
+                auto o = am_l1_oracle.find(line);
+                if (o != am_l1_oracle.end() && am_l1_oracle_next[line]++ < o->second.size())
+                    am_l1_oracle_hits++;
+            }
+        }
         return;
     }
     assert(false && "amoeba: filled word has no reserved block");
@@ -734,6 +770,19 @@ void Set::amoeba_attach_way(uint64_t way_idx, uint64_t block_address) {
 void Set::amoeba_release_way(uint64_t way_idx) {
     int32_t id = am_way_block[way_idx];
     if (id < 0) return;
+    if (amoeba_l1()) {
+        // The line's L1 residency ends with its last word: remember what it used.
+        uint64_t line = align_address(ways[way_idx], CACHELINE_SIZE);
+        auto live = am_l1_live.find(line);
+        assert(live != am_l1_live.end() && live->second > 0);
+        if (--live->second == 0) {
+            if (am_l1_recording)
+                am_l1_record[line].push_back(am_l1_used[line]);
+            am_l1_history[line] = am_l1_used[line];
+            am_l1_used.erase(line);
+            am_l1_live.erase(live);
+        }
+    }
     auto& b = am_blocks[id];
     assert(am_word[am_way_pos[way_idx]] == id);
     am_word[am_way_pos[way_idx]] = -1;
@@ -753,6 +802,89 @@ void Set::amoeba_resident(uint64_t& blocks, uint64_t& data_words) const {
         blocks++;
         data_words += b.live;
     }
+}
+
+// Amoeba L1D fetch: the contiguous run of words around the demanded one that
+// lies within the span the line used in its previous L1 residency (the whole
+// line if it has none), is present in the source (a partial LLC line holds
+// only some words) and is not already in this set.
+bool Set::amoeba_l1_keep(PacketPtr fill_packet, uint64_t block_address) const {
+    uint64_t line = align_address(block_address, CACHELINE_SIZE);
+    uint32_t demand = (fill_packet->address % CACHELINE_SIZE) / 8;
+    uint32_t predicted = 0xff;
+    if (cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::HISTORY) {
+        auto h = am_l1_history.find(line);
+        if (h != am_l1_history.end()) predicted = h->second;
+    } else if (cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::ORACLE) {
+        // A fill that starts a residency takes that residency's recorded mask;
+        // a later fill of the same residency, the one it started with.
+        auto o = am_l1_oracle.find(line);
+        if (o != am_l1_oracle.end()) {
+            uint32_t k = am_l1_oracle_next.count(line) ? am_l1_oracle_next.at(line) : 0;
+            if (am_l1_live.count(line) && k > 0) k--;
+            if (k < o->second.size()) predicted = o->second[k];
+        }
+    }
+    predicted |= 1u << demand;
+    uint32_t lo = __builtin_ctz(predicted), hi = 31 - __builtin_clz(predicted);
+    auto available = [&](uint32_t w) {
+        return ((fill_packet->present_mask >> w) & 1) && find_way(line + 8 * w) >= tags.size();
+    };
+    uint32_t first = demand, last = demand;
+    while (first > lo && available(first - 1)) first--;
+    while (last < hi && available(last + 1)) last++;
+    uint32_t word = (block_address % CACHELINE_SIZE) / 8;
+    bool keep = word >= first && word <= last;
+    if (!keep)
+        am_stat_dropped++;
+    return keep;
+}
+
+void Set::merge_partial_line(uint64_t way_idx, uint8_t present, uint8_t footprint) {
+    am_present[way_idx] |= present;
+    for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
+        if ((footprint >> word_idx) & 1)
+            set_footprint(way_idx, word_idx, true);
+}
+
+void Set::print_l1_amoeba_stats() {
+    const char* mode = cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::HISTORY ? "history"
+                     : cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::LINE ? "line" : "oracle";
+    fmt::print("Amoeba L1D ({} fetch{}): fills {} ({:.3f} words/fill) | fills of lines with a previous residency {} ({:.2f}%) | "
+               "residencies with an oracle mask {} | words kept in the LLC {} in {} lines\n",
+        mode, cachesim::L1_AMOEBA_KEEP_LLC ? ", keep-llc" : "", am_l1_fills,
+        am_l1_fills ? (double)am_l1_fill_words / am_l1_fills : 0.0, am_l1_predicted_fills,
+        am_l1_fills ? 100.0 * am_l1_predicted_fills / am_l1_fills : 0.0, am_l1_oracle_hits,
+        am_l1_kept_words, am_l1_kept_lines);
+}
+
+// Oracle file: per line, its address, the number of residencies, then one
+// used-word mask byte per residency.
+bool Set::save_l1_record(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) return false;
+    for (const auto& [line, masks] : am_l1_record) {
+        uint32_t n = masks.size();
+        std::fwrite(&line, sizeof line, 1, f);
+        std::fwrite(&n, sizeof n, 1, f);
+        std::fwrite(masks.data(), 1, n, f);
+    }
+    std::fclose(f);
+    return true;
+}
+
+bool Set::load_l1_oracle(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint64_t line;
+    uint32_t n;
+    while (std::fread(&line, sizeof line, 1, f) == 1 && std::fread(&n, sizeof n, 1, f) == 1) {
+        auto& masks = am_l1_oracle[line];
+        masks.resize(n);
+        if (std::fread(masks.data(), 1, n, f) != n) { std::fclose(f); return false; }
+    }
+    std::fclose(f);
+    return true;
 }
 
 void Set::print_amoeba_stats() {
@@ -818,6 +950,8 @@ void Set::handle_invalidate(PacketPtr packet, uint64_t block_num) {
             packet->footprint |= (uint64_t)get_footprint(way_idx, word_idx) << (block_num*bits_per_block + word_idx);
 
         fill_packet(packet, way_idx);
+        if (partial_lines())
+            packet->present_mask = am_present[way_idx];
         invalidate_way(way_idx);
         for (uint64_t word_idx = 0; word_idx < bits_per_block; word_idx++)
             set_footprint(way_idx, word_idx, false);

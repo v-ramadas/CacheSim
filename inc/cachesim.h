@@ -129,6 +129,7 @@ class Set {
             am_way_block.assign(num_ways, -1);
             am_way_pos.assign(num_ways, 0);
         }
+        am_present.assign(num_ways, 0xff);
     }
 
     ~Set() {
@@ -140,7 +141,7 @@ class Set {
 
     // Base+Delta tag encoding (see bdi_bases above).
     bool bdi_active() const {
-        return cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea && block_size < CACHELINE_SIZE;
+        return cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea && block_size < CACHELINE_SIZE && !amoeba_active();
     }
     uint64_t sector_bits() const;
     void bdi_reset();                          // all ways unencoded, all base slots free
@@ -239,7 +240,8 @@ class Set {
     uint64_t am_clock = 0;
     bool amoeba_active() const {
 #ifdef MULTI_LEVEL
-        return cachesim::AMOEBA && level == CacheLevel::LLC && block_size == 8;
+        return block_size == 8 && ((cachesim::AMOEBA && level == CacheLevel::LLC) ||
+                                   (cachesim::L1_AMOEBA && level == CacheLevel::L1D));
 #else
         return cachesim::AMOEBA && block_size == 8;   // the single cache
 #endif
@@ -260,6 +262,32 @@ class Set {
     // Why an LLC miss's word was not in the LLC: the last way it left - dropped
     // at fill (1) or evicted (2); absent = never left the hierarchy before.
     inline static std::unordered_map<uint64_t, uint8_t> am_fate;
+    // --l1-amoeba. L1D: per 64B line, the words used in its previous L1
+    // residency (the fetch predictor), and for lines with words resident now,
+    // how many and which were used so far. 64B LLC: per way, the words of the
+    // line it holds (an L1 victim may be a partial line; a lookup of a word
+    // not present misses).
+    inline static std::unordered_map<uint64_t, uint8_t> am_l1_history;
+    inline static std::unordered_map<uint64_t, uint32_t> am_l1_live;
+    inline static std::unordered_map<uint64_t, uint8_t> am_l1_used;
+    inline static uint64_t am_l1_fills = 0, am_l1_fill_words = 0, am_l1_predicted_fills = 0;
+    // Words of the last filled line now in the L1D (resident before + fetched).
+    inline static uint8_t am_l1_last_line_words = 0;
+    // ORACLE fetch: per line, the used-word mask of each L1 residency in order
+    // (read from --l1-amoeba-oracle; written to --l1-amoeba-record), and
+    // which residency is next.
+    inline static std::unordered_map<uint64_t, std::vector<uint8_t>> am_l1_oracle, am_l1_record;
+    inline static std::unordered_map<uint64_t, uint32_t> am_l1_oracle_next;
+    inline static bool am_l1_recording = false;
+    inline static uint64_t am_l1_oracle_hits = 0, am_l1_kept_lines = 0, am_l1_kept_words = 0;
+    static bool load_l1_oracle(const std::string& path);
+    static bool save_l1_record(const std::string& path);
+    std::vector<uint8_t> am_present;
+    bool amoeba_l1() const { return amoeba_active() && level == CacheLevel::L1D; }
+    bool partial_lines() const { return cachesim::L1_AMOEBA && level == CacheLevel::LLC && block_size == CACHELINE_SIZE; }
+    bool amoeba_l1_keep(PacketPtr fill_packet, uint64_t block_address) const;
+    void merge_partial_line(uint64_t way_idx, uint8_t present, uint8_t footprint);
+    static void print_l1_amoeba_stats();
     inline static uint64_t am_miss_dropped = 0, am_miss_evicted = 0, am_miss_never = 0;
     static void print_amoeba_stats();
 

@@ -34,6 +34,17 @@ enum class AmoebaInsert {
     LINE,
 };
 
+// What an Amoeba L1D fetches around the demanded word on a miss (always one
+// contiguous run, limited to words the source holds and the L1D does not):
+// HISTORY = within the span the line used in its previous L1 residency (the
+// whole line on its first touch); LINE = the whole line; ORACLE = within the
+// span a recorded run says this residency of the line uses.
+enum class L1AmoebaFetch {
+    HISTORY,
+    LINE,
+    ORACLE,
+};
+
 namespace cachesim {
     extern uint64_t instCount;
     extern uint64_t prevInstCount;
@@ -115,6 +126,17 @@ namespace cachesim {
     // that take no tag word (tags cost nothing; data words only).
     extern uint64_t AMOEBA_WORDS;
     extern bool AMOEBA_FREE_TAGS;
+    // Amoeba-Cache as the L1D (--l1-amoeba, multi-level build): the L1D is an
+    // Amoeba word array sized iso-area with the 64B L1D; on a miss it fetches
+    // the words the line used in its previous L1 residency (all of it on the
+    // first touch); the line's other words are dropped.
+    extern bool L1_AMOEBA;
+    extern L1AmoebaFetch L1_AMOEBA_FETCH;
+    // --l1-amoeba-keep-llc: no word is lost - on an LLC hit the words the L1D
+    // does not take stay in the LLC, and on a memory fill they go into it, as
+    // a partial line (line-level exclusivity no longer holds; a word is still
+    // in one level only).
+    extern bool L1_AMOEBA_KEEP_LLC;
     // 0-based index of the trace line being simulated (the units of NextReuse).
     extern uint64_t TRACE_LINE;
 };
@@ -167,6 +189,9 @@ struct Packet {
     // Per block: its LLC replacement counter when it last left the LLC for
     // L1D (UINT64_MAX = none), carried through L1D/L2 back to the LLC fill.
     std::vector<uint64_t> block_prev_counter;
+    // Words of the 64B line this packet's data holds (bit = 8B word); below
+    // all-ones only with --l1-amoeba, whose L1D keeps and evicts partial lines.
+    uint8_t present_mask = 0xff;
     bool from_ghost_cache = false;
 
     Packet() {
@@ -196,6 +221,7 @@ struct Packet {
         avg_degree = 0.0f;
         block_serviced_from_llc.clear();
         block_prev_counter.clear();
+        present_mask = 0xff;
         from_ghost_cache = false;
     }
 
@@ -251,6 +277,7 @@ struct Packet {
         avg_degree = packet.avg_degree;
         block_serviced_from_llc = packet.block_serviced_from_llc;
         block_prev_counter = packet.block_prev_counter;
+        present_mask = packet.present_mask;
         from_ghost_cache = packet.from_ghost_cache;
 
         return *this;

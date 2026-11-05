@@ -35,6 +35,8 @@ Cache<T>::Cache(std::string name, uint64_t _num_sets, uint64_t _num_ways, uint64
 {
     PSEL = cachesim::PSEL_THRESHOLD;
     auto iso_area_num_ways = get_iso_area_cache(num_sets, num_ways, block_size);
+    if (level == CacheLevel::L1D && cachesim::L1_AMOEBA)
+        iso_area_num_ways = get_amoeba_words(num_sets, num_ways);   // Amoeba L1D, 8B words
     if (is_sectored) {
         assert(block_size != CACHELINE_SIZE);
     } else {
@@ -617,6 +619,12 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
 
         if (try_hit != ways.end()) {
             auto way_idx = std::distance(ways.begin(), try_hit);
+            if constexpr (std::is_same_v<T, Set>) {
+                // Another part of a line the LLC already holds (from an Amoeba
+                // L1D, which evicts partial lines): merge it into that way.
+                if (sets[set_idx]->partial_lines())
+                    sets[set_idx]->merge_partial_line(way_idx, fill_packet->present_mask, fill_packet->footprint & 0xff);
+            }
             if (cachesim::DEBUG && try_hit != ways.end())
                 fmt::print("Block address {:#x} already present in set {} way {}. Removing fill packet\n", *it, set_idx, way_idx);
             //assert(valid[way_idx] == true);
@@ -660,6 +668,67 @@ template class Cache<Set>;
 template class Cache<SectoredSet>;
 
 #ifdef MULTI_LEVEL
+// An Amoeba L1D evicts whole blocks, possibly of several lines, into one
+// packet (8B words; footprint bit k = k-th word evicted). Regroup them into
+// one 64B-line packet per line - word-indexed blocks, footprint and per-block
+// arrays, and the words present - for the levels below.
+static std::vector<Packet> split_amoeba_victims(const Packet& ev) {
+    std::vector<Packet> out;
+    for (size_t k = 0; k < ev.blocks.size(); k++) {
+        uint64_t b = ev.blocks[k];
+        if (b == UINT64_MAX) continue;
+        uint64_t line = align_address(b, CACHELINE_SIZE);
+        auto it = std::find_if(out.begin(), out.end(), [line](const Packet& p) { return p.address == line; });
+        if (it == out.end()) {
+            Packet p = ev;
+            p.address = p.aligned_address = line;
+            p.size = CACHELINE_SIZE;
+            p.footprint = 0;
+            p.present_mask = 0;
+            p.serviced_from_llc = 0;
+            p.blocks.assign(CACHELINE_SIZE / 8, UINT64_MAX);
+            p.block_degrees.assign(CACHELINE_SIZE / 8, 0);
+            p.block_serviced_from_llc.assign(CACHELINE_SIZE / 8, 0);
+            p.block_prev_counter.assign(CACHELINE_SIZE / 8, UINT64_MAX);
+            out.push_back(p);
+            it = out.end() - 1;
+        }
+        uint32_t w = (b % CACHELINE_SIZE) / 8;
+        it->blocks[w] = b;
+        it->present_mask |= 1u << w;
+        if (k < 64 && ((ev.footprint >> k) & 1)) it->footprint |= 1ull << w;
+        if (k < ev.block_degrees.size()) it->block_degrees[w] = ev.block_degrees[k];
+        if (k < ev.block_serviced_from_llc.size()) {
+            it->block_serviced_from_llc[w] = ev.block_serviced_from_llc[k];
+            it->serviced_from_llc = std::max(it->serviced_from_llc, ev.block_serviced_from_llc[k]);
+        }
+        if (k < ev.block_prev_counter.size()) it->block_prev_counter[w] = ev.block_prev_counter[k];
+    }
+    return out;
+}
+
+// --l1-amoeba-keep-llc: the part of a line the Amoeba L1D did not take, as a
+// packet that puts it into the LLC as a partial line.
+static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t footprint, uint64_t serviced) {
+    Packet p;
+    p.pc = access.pc;
+    p.degree = access.degree;
+    p.avg_degree = access.avg_degree;
+    p.next_reuse = access.next_reuse;
+    p.address = p.aligned_address = align_address(access.address, CACHELINE_SIZE);
+    p.size = CACHELINE_SIZE;
+    p.present_mask = words;
+    p.footprint = footprint & words;
+    p.serviced_from_llc = serviced;
+    for (uint64_t w = 0; w < CACHELINE_SIZE / 8; w++) {
+        p.blocks.push_back(((words >> w) & 1) ? p.address + 8 * w : UINT64_MAX);
+        p.block_degrees.push_back(0);
+        p.block_serviced_from_llc.push_back(serviced);
+        p.block_prev_counter.push_back(UINT64_MAX);
+    }
+    return p;
+}
+
 void access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
@@ -730,6 +799,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
     }
 
     if (hit_at_level != 0) {
+        Packet rest_of_line;            // --l1-amoeba-keep-llc only
+        bool keep_rest = false;
         if (hit) {
             cache[hit_at_level]->handle_invalidate(invalidation_packet);
             *fill_packet = *invalidation_packet;
@@ -740,7 +811,33 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             // The line's next use is this access's NextReuse, not the one
             // stored with it (which was this access).
             fill_packet->next_reuse = access_packet->next_reuse;
-            cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
+            if (cachesim::L1_AMOEBA) {
+                // The Amoeba L1D takes the line's words it predicts (of those
+                // the LLC copy holds) around the demanded one; the rest of the
+                // line is dropped.
+                const uint64_t line = align_address(access_packet->address, CACHELINE_SIZE);
+                fill_packet->address = access_packet->address;
+                fill_packet->size = CACHELINE_SIZE;
+                fill_packet->clear_blocks();
+                for (uint64_t w = 0; w < CACHELINE_SIZE / 8; w++) {
+                    fill_packet->blocks.push_back(line + 8 * w);
+                    fill_packet->block_degrees.push_back(line + 8 * w == align_address(access_packet->address, 8) ? access_packet->degree : 0);
+                    fill_packet->block_serviced_from_llc.push_back(fill_packet->serviced_from_llc);
+                    fill_packet->block_prev_counter.push_back(UINT64_MAX);
+                }
+                const uint8_t src_words = fill_packet->present_mask;
+                const uint64_t src_footprint = fill_packet->footprint, src_serviced = fill_packet->serviced_from_llc;
+                cache[0]->handle_fill_line(fill_packet, eviction_packet);
+                if (cachesim::L1_AMOEBA_KEEP_LLC) {
+                    uint8_t rest = src_words & ~Set::am_l1_last_line_words;
+                    if (rest) {
+                        rest_of_line = amoeba_rest_of_line(*access_packet, rest, src_footprint, src_serviced);
+                        keep_rest = true;
+                    }
+                }
+            } else {
+                cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
+            }
         } else {
             // Pull any partial copy of the line out of every level, LLC first
             // and L1D last, so the line is refilled into L1D whole. A miss in a
@@ -749,7 +846,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             const uint64_t line_address = invalidation_packet->address;
             const uint64_t line_size = invalidation_packet->size;
             uint64_t line_footprint = 0;   // touched sectors of every partial copy
-            for (int i = num_levels - 1; i >= 0; i--) {
+            // An Amoeba L1D keeps the words of the line it already holds and
+            // fetches only around the missing one, so it is not invalidated.
+            const int lowest = cachesim::L1_AMOEBA ? 1 : 0;
+            for (int i = num_levels - 1; i >= lowest; i--) {
                 invalidation_packet->address = line_address;
                 invalidation_packet->size = line_size;
                 cache[i]->handle_invalidate(invalidation_packet);
@@ -763,61 +863,91 @@ void access_multi_level(std::vector<BaseCache*> &cache,
             fill_packet->avg_degree = access_packet->avg_degree;
             // Copying an invalidation packet above clears next_reuse.
             fill_packet->next_reuse = access_packet->next_reuse;
+            if (cachesim::L1_AMOEBA) {   // from memory: every word is available
+                fill_packet->address = access_packet->address;
+                fill_packet->present_mask = 0xff;
+                fill_packet->clear_blocks();
+            }
             cache[0]->handle_fill_line(fill_packet, eviction_packet);
+            if (cachesim::L1_AMOEBA && cachesim::L1_AMOEBA_KEEP_LLC) {
+                uint8_t rest = 0xff & ~Set::am_l1_last_line_words;
+                if (rest) {
+                    rest_of_line = amoeba_rest_of_line(*access_packet, rest, 0, 0);
+                    keep_rest = true;
+                }
+            }
         }
 
-        auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(eviction_packet->address));
-        auto curr_cache_block_size = prev_cache_block_size;
-        for (int i = 1; i < num_levels; i++) {
-            curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(eviction_packet->address));
+        // Push the L1D's victim down through the levels below.
+        auto push_down = [&]() {
+            auto prev_cache_block_size = cache[0]->get_block_size(cache[0]->get_set_idx(eviction_packet->address));
+            auto curr_cache_block_size = prev_cache_block_size;
+            for (int i = 1; i < num_levels; i++) {
+                curr_cache_block_size = cache[i]->get_block_size(cache[i]->get_set_idx(eviction_packet->address));
 
-            if (prev_cache_block_size != curr_cache_block_size) {
-                resize_packet(eviction_packet, curr_cache_block_size);       
-            }
-
-
-            fill_packet->l1_hits = eviction_packet->l1_hits;
-            if (fill_packet->l1_hits == 0) fill_packet->l1_hits = 1;
-            if (eviction_packet->blocks.size() > 0 && cache[i]->get_level() != CacheLevel::LLC) {
-                // L1D victim into the L2: move it as is. The predictor only
-                // trains on, and predicts for, fills into the LLC.
-                *fill_packet = *eviction_packet;
-                eviction_packet->clear();
-                cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
-            } else if (eviction_packet->blocks.size() > 0) {
-                // Train on data movement from LLC -> L1D
-                predictor->update_footprint(eviction_packet);
-                predictor->update_access(fill_packet);
-                if (cachesim::instCount >= cachesim::WARMUP_INSTRUCTIONS) {
-                    // Predict for data movement from L1D -> LLC
-                    fill_packet->is_high_reuse = predictor->predict(eviction_packet);
+                if (prev_cache_block_size != curr_cache_block_size) {
+                    resize_packet(eviction_packet, curr_cache_block_size);       
                 }
 
-                *fill_packet = *eviction_packet;
-                fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
 
-                fill_packet->shct_value = predictor->get_shct_value(fill_packet);
+                fill_packet->l1_hits = eviction_packet->l1_hits;
+                if (fill_packet->l1_hits == 0) fill_packet->l1_hits = 1;
+                if (eviction_packet->blocks.size() > 0 && cache[i]->get_level() != CacheLevel::LLC) {
+                    // L1D victim into the L2: move it as is. The predictor only
+                    // trains on, and predicts for, fills into the LLC.
+                    *fill_packet = *eviction_packet;
+                    eviction_packet->clear();
+                    cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
+                } else if (eviction_packet->blocks.size() > 0) {
+                    // Train on data movement from LLC -> L1D
+                    predictor->update_footprint(eviction_packet);
+                    predictor->update_access(fill_packet);
+                    if (cachesim::instCount >= cachesim::WARMUP_INSTRUCTIONS) {
+                        // Predict for data movement from L1D -> LLC
+                        fill_packet->is_high_reuse = predictor->predict(eviction_packet);
+                    }
 
-                if (predictor->get_reuse_distance(eviction_packet) <= 1) {
-                    fill_packet->reuse_distance = UINT64_MAX;
+                    *fill_packet = *eviction_packet;
+                    fill_packet->reuse_probability = predictor->get_reuse_probability(eviction_packet);
+
+                    fill_packet->shct_value = predictor->get_shct_value(fill_packet);
+
+                    if (predictor->get_reuse_distance(eviction_packet) <= 1) {
+                        fill_packet->reuse_distance = UINT64_MAX;
+                    } else {
+                        fill_packet->reuse_distance = cachesim::instCount + predictor->get_reuse_distance(eviction_packet);
+                    }
+                    fill_packet->next_reuse = eviction_packet->next_reuse;
+                    eviction_packet->clear();
+                    cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
+
+                    if (eviction_packet->blocks.size() > 0) {
+                        predictor->update_eviction(eviction_packet);
+                    }
                 } else {
-                    fill_packet->reuse_distance = cachesim::instCount + predictor->get_reuse_distance(eviction_packet);
+                    break;
                 }
-                fill_packet->next_reuse = eviction_packet->next_reuse;
-                eviction_packet->clear();
-                cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
-
-                if (eviction_packet->blocks.size() > 0) {
-                    predictor->update_eviction(eviction_packet);
-                }
-            } else {
-                break;
+                // eviction_packet now holds this level's victim, which the next
+                // iteration fills into the level below - do not clear it here.
+                fill_packet->clear();
+                fill_packet->clear_pc();
+                prev_cache_block_size = curr_cache_block_size;
             }
-            // eviction_packet now holds this level's victim, which the next
-            // iteration fills into the level below - do not clear it here.
-            fill_packet->clear();
-            fill_packet->clear_pc();
-            prev_cache_block_size = curr_cache_block_size;
+        };
+        if (cachesim::L1_AMOEBA && eviction_packet->blocks.size() > 0) {
+            // One push per victim line (an Amoeba L1D can evict several).
+            for (const auto& victim : split_amoeba_victims(*eviction_packet)) {
+                *eviction_packet = victim;
+                push_down();
+            }
+        } else {
+            push_down();
+        }
+        if (keep_rest) {
+            Set::am_l1_kept_lines++;
+            Set::am_l1_kept_words += __builtin_popcount(rest_of_line.present_mask);
+            *eviction_packet = rest_of_line;
+            push_down();
         }
     }
 

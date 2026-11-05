@@ -189,6 +189,15 @@ inline float get_total_cache_size(uint64_t num_sets, uint64_t num_ways, uint64_t
     return data_size + tag_size;
 }
 
+// Amoeba-Cache words per set at the area of a 64B cache with reference_ways:
+// the set is a uniform array of 64-bit words (tags and data alike), each with
+// a T? (is-tag) and a V? (in-use) bit, so it gets budget / (64 + 2) words.
+inline uint64_t get_amoeba_words(uint64_t num_sets, uint64_t reference_ways) {
+    float target_budget_bytes = get_total_cache_size(num_sets, reference_ways, 64, false);
+    uint64_t budget_bits_per_set = (uint64_t)(target_budget_bytes * 8) / num_sets;
+    return budget_bits_per_set / (64 + 2);
+}
+
 inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, uint64_t block_size) {
     // 1. Calculate the budget baseline using the 64-byte block cache
     float target_budget_bytes = get_total_cache_size(num_sets, reference_ways, 64, false);
@@ -204,13 +213,8 @@ inline uint64_t get_iso_area_cache(uint64_t num_sets, uint64_t reference_ways, u
             get_total_cache_size(num_sets, reference_ways * (CACHELINE_SIZE/block_size), block_size, false);
             return (reference_ways * (CACHELINE_SIZE/block_size));
         }
-        if (cachesim::AMOEBA) {
-            // Amoeba-Cache: the set is a uniform array of 64-bit words (tags
-            // and data alike), each with a T? (is-tag) and a V? (in-use) bit,
-            // so a set gets budget / (64 + 2) words; "ways" are those words.
-            uint64_t budget_bits_per_set = (uint64_t)(target_budget_bytes * 8) / num_sets;
-            return budget_bits_per_set / (64 + 2);
-        }
+        if (cachesim::AMOEBA)
+            return get_amoeba_words(num_sets, reference_ways);   // "ways" are its words
         if (cachesim::TAG_BDI_BASES > 0) {
             // Base+Delta tag compression (capacity only, --tag-bdi-bases B
             // --tag-bdi-delta d): per set, B base line tags of

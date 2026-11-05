@@ -65,6 +65,9 @@ bool cachesim::AMOEBA = false;
 AmoebaInsert cachesim::AMOEBA_INSERT = AmoebaInsert::SPAN;
 uint64_t cachesim::AMOEBA_WORDS = 0;
 bool cachesim::AMOEBA_FREE_TAGS = false;
+bool cachesim::L1_AMOEBA = false;
+L1AmoebaFetch cachesim::L1_AMOEBA_FETCH = L1AmoebaFetch::HISTORY;
+bool cachesim::L1_AMOEBA_KEEP_LLC = false;
 uint64_t cachesim::TRACE_LINE = 0;
 uint64_t cachesim::L2_NUM_SETS = 1024;
 uint64_t cachesim::L2_NUM_WAYS = 16;
@@ -169,6 +172,16 @@ int main(int argc, char** argv) {
     }));
     app.add_option("--amoeba-words", cachesim::AMOEBA_WORDS, "amoeba (debug): words per set, overriding the iso-area / naive size");
     app.add_flag("--amoeba-free-tags", cachesim::AMOEBA_FREE_TAGS, "amoeba (debug): blocks take no tag word, only their data words");
+    app.add_flag("--l1-amoeba", cachesim::L1_AMOEBA, "cachesim_multi: make the L1D an Amoeba-Cache (8B words, iso-area with the 64B L1D); a miss fetches the words the line used in its previous L1 residency (the whole line on its first touch), the rest of the line is dropped. Not with --l2, set dueling or an amoeba LLC");
+    app.add_option("--l1-amoeba-fetch", cachesim::L1_AMOEBA_FETCH, "--l1-amoeba: what a miss fetches around the demanded word - history (span used in the line's previous L1 residency, default), line (whole line), oracle (span recorded for this residency, needs --l1-amoeba-oracle)")->transform(CLI::CheckedTransformer(std::map<std::string, L1AmoebaFetch>{
+        {"history", L1AmoebaFetch::HISTORY},
+        {"line", L1AmoebaFetch::LINE},
+        {"oracle", L1AmoebaFetch::ORACLE},
+    }));
+    app.add_flag("--l1-amoeba-keep-llc", cachesim::L1_AMOEBA_KEEP_LLC, "--l1-amoeba: words of a line the L1D does not take stay in / go into the LLC as a partial line instead of being dropped (breaks line-level exclusivity)");
+    std::string l1_amoeba_record, l1_amoeba_oracle;
+    app.add_option("--l1-amoeba-record", l1_amoeba_record, "--l1-amoeba: write every L1 residency's used-word mask per line to this file (input for --l1-amoeba-oracle)");
+    app.add_option("--l1-amoeba-oracle", l1_amoeba_oracle, "--l1-amoeba-fetch oracle: per-residency used-word masks recorded by --l1-amoeba-record");
     app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4)");
 
 
@@ -260,7 +273,22 @@ int main(int argc, char** argv) {
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
     //cache[0] = new Cache<Set>("L1D", 128, 16, cachesim::BLOCK_SIZE, 0, false, ReplacementPolicy::LRU, insertion_policy);
-    cache.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
+    if (cachesim::L1_AMOEBA) {
+        if (cachesim::L2_ENABLED || cachesim::SET_DUELING || cachesim::AMOEBA) {
+            fmt::print(stderr, "--l1-amoeba supports two levels only, without set dueling or an amoeba LLC\n");
+            return 1;
+        }
+        cache.push_back(new Cache<Set>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, false, ReplacementPolicy::Amoeba, insertion_policy));
+        if (cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::ORACLE && !Set::load_l1_oracle(l1_amoeba_oracle)) {
+            fmt::print(stderr, "--l1-amoeba-fetch oracle: cannot read --l1-amoeba-oracle '{}'\n", l1_amoeba_oracle);
+            return 1;
+        }
+        Set::am_l1_recording = !l1_amoeba_record.empty();
+        fmt::print("Amoeba L1D: {} sets x {} words (iso-area with {} x 64B ways)\n", cachesim::L1_NUM_SETS,
+            get_amoeba_words(cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS), cachesim::L1_NUM_WAYS);
+    } else {
+        cache.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
+    }
     if (cachesim::L2_ENABLED) {
         cache.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
     }
@@ -334,6 +362,10 @@ int main(int argc, char** argv) {
         LRU::print_stats();
     if (replacement_policy == ReplacementPolicy::Amoeba)
         Set::print_amoeba_stats();
+    if (cachesim::L1_AMOEBA)
+        Set::print_l1_amoeba_stats();
+    if (cachesim::L1_AMOEBA && !l1_amoeba_record.empty() && !Set::save_l1_record(l1_amoeba_record))
+        fmt::print(stderr, "--l1-amoeba-record: cannot write '{}'\n", l1_amoeba_record);
     if (cachesim::USE_GHOST_CACHE)
         fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
             cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,
