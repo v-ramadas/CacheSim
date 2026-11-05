@@ -160,6 +160,15 @@ class Set {
     inline static uint64_t life_pieces = 0;
     inline static uint64_t life_touched = 0;
     void retire_way(uint64_t way_idx);
+    // Used 8B words per 64B line (64B blocks only; at smaller blocks a line's
+    // words come and go one block at a time): line_used_hist[k] = lines with
+    // k of their 8 words used, counted when the line's lifetime ends - leaving
+    // the hierarchy from the multi-level LLC (as Line lifetime utilization),
+    // or evicted from / resident at the end in the single-level cache (as
+    // Utilization).
+    inline static uint64_t line_used_hist[9] = {};
+    void record_line_used(uint64_t way_idx);
+    void record_line_used_residents();
     // Reuse by degree (LLC only): one record per block when its lifetime ends
     // (evicted, dropped at fill, or resident at end of run). Reuse = times it
     // was serviced from the LLC. Degree rows are power-of-two buckets

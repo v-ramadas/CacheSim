@@ -126,15 +126,16 @@ def run_one(trace, extra_args):
     result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=1800)
     mpkis = MPKI_RE.findall(result.stdout)
     cycles = CYCLES_RE.findall(result.stdout)
-    if len(mpkis) < 2 or len(cycles) < 2:
+    if len(mpkis) < 2 or len(cycles) < 1:
         raise RuntimeError(
             f"Could not parse MPKI/Num Cycles (LLC) for trace={trace}, cmd={' '.join(cmd)}\n"
             f"--- stdout tail ---\n{result.stdout[-2000:]}\n"
             f"--- stderr tail ---\n{result.stderr[-2000:]}"
         )
-    # Every level (L1D, then LLC) prints its own MPKI/Num Cycles line - the
-    # second occurrence of each is the LLC, which is what we track.
-    return {"mpki": float(mpkis[1]), "cycles": int(cycles[1])}
+    # Every level (L1D, then LLC) prints its own MPKI line - the second is the
+    # LLC, which is what we track. Num Cycles (one global count) is printed by
+    # the last level (the LLC) only.
+    return {"mpki": float(mpkis[1]), "cycles": int(cycles[-1])}
 
 
 def run_config_all_traces(extra_args, traces):

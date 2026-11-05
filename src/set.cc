@@ -494,6 +494,21 @@ void Set::retire_way(uint64_t way_idx) {
         life_pieces++;
         life_touched += get_footprint(way_idx, word_idx);
     }
+    record_line_used(way_idx);
+}
+
+void Set::record_line_used(uint64_t way_idx) {
+    if (block_size != CACHELINE_SIZE || !valid[way_idx])
+        return;
+    int used = 0;
+    for (uint64_t word_idx = 0; word_idx < CACHELINE_SIZE/8; word_idx++)
+        used += get_footprint(way_idx, word_idx);
+    line_used_hist[used]++;
+}
+
+void Set::record_line_used_residents() {
+    for (uint64_t way_idx = 0; way_idx < num_ways; way_idx++)
+        record_line_used(way_idx);
 }
 
 void Set::count_resident(uint64_t& capacity, uint64_t& valid_pieces, uint64_t& touched) const {
@@ -508,6 +523,9 @@ void Set::count_resident(uint64_t& capacity, uint64_t& valid_pieces, uint64_t& t
 
 void Set::evict_way_into(PacketPtr packet, uint64_t way_idx, uint64_t num_blocks_evicted, uint64_t num_blocks_to_evict) {
     retire_way(way_idx);   // an LLC victim leaves the hierarchy
+#ifndef MULTI_LEVEL
+    record_line_used(way_idx);   // single-level: the line's lifetime ends here
+#endif
     if (dirty[way_idx]) {
         dirty[way_idx] = false;
     }

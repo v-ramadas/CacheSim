@@ -135,6 +135,17 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     fmt::print("Cache {}\n", NAME);
     fmt::print(" Trace File {}, Instruction count: {} cache size: {} KB\n", tracename, (float)(instCount),
             num_sets*num_ways*get_block_size(0)/1024);
+    // Upper levels report MPKI only; every other stat is for the last level
+    // (the LLC in the multi-level build, the one cache otherwise).
+#ifdef MULTI_LEVEL
+    const bool last_level = level == CacheLevel::LLC;
+#else
+    const bool last_level = true;
+#endif
+    if (!last_level) {
+        fmt::print("MPKI {:10f}\n", mpki);
+        return;
+    }
     fmt::print("hits: {} miss: {} accesses: {} read_hits: {} read_misses: {} write_hits: {} write_misses: {}\n",
          get_hits(), get_misses(), get_accesses(),
          get_read_hits(), get_read_misses(),
@@ -144,7 +155,7 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     fmt::print("PSEL {}\n", get_psel());
     fmt::print("Num Cycles {}\n", PerformanceModel::getCycles());
     if constexpr (std::is_same_v<T, Set>) {
-        if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea) {
+        if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea && cachesim::BLOCK_SIZE < CACHELINE_SIZE) {
             uint64_t enc = 0, ovf = 0;
             for (const auto& [idx, s] : sets) s->bdi_resident(enc, ovf);
             auto fills = Set::bdi_stat_encoded + Set::bdi_stat_overflow;
@@ -161,8 +172,8 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
     // invalidated (moved up) from this level, plus, for non-sectored caches,
     // the blocks still resident at the end (their residency ends with the
     // run), so a working set that fits is not judged by its few evictions
-    // alone; both parts are also printed on their own. Not printed for the
-    // LLC, where Line lifetime utilization below replaces it.
+    // alone; both parts are also printed on their own. Single-level only:
+    // the multi-level LLC prints Line lifetime utilization below instead.
     if (level != CacheLevel::LLC) {
         uint64_t resident = 0, resident_used = 0;
         if constexpr (std::is_same_v<T, Set>) {
@@ -200,6 +211,26 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
             fmt::print("LLC touched capacity at end {:4f} | touched {} valid {} capacity {} 8B pieces ({:4f}% valid)\n",
                 capacity ? 100.0 * touched / capacity : 0.0, touched, valid_pieces, capacity,
                 capacity ? 100.0 * valid_pieces / capacity : 0.0);
+        }
+    }
+    if constexpr (std::is_same_v<T, Set>) {
+#ifndef MULTI_LEVEL
+        for (const auto& [idx, s] : sets) s->record_line_used_residents();   // print_stats runs once
+        const char* population = "evicted + resident at end";
+#else
+        const char* population = "left the hierarchy";
+#endif
+        uint64_t lines = 0, used = 0;
+        for (int k = 0; k <= 8; k++) {
+            lines += Set::line_used_hist[k];
+            used += k * Set::line_used_hist[k];
+        }
+        if (lines == 0) {
+            fmt::print("Used words per 64B line: n/a (no 64B blocks)\n");
+        } else {
+            fmt::print("Used words per 64B line ({}):", population);
+            for (int k = 0; k <= 8; k++) fmt::print(" {}:{}", k, Set::line_used_hist[k]);
+            fmt::print(" | lines {} mean {:.4f} of 8\n", lines, (double)used / lines);
         }
     }
     // Misses by how many 8B-or-larger blocks of the requested 64B line were

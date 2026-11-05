@@ -243,7 +243,7 @@ int main(int argc, char** argv) {
         cachesim::SET_DUELING = false;
     }
 
-    if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea) {
+    if (cachesim::TAG_BDI_BASES > 0 && cachesim::isoArea && cachesim::BLOCK_SIZE < CACHELINE_SIZE) {
         fmt::print("Tag BDI ({}): bases {} delta {} bits -> {}B LLC sets get {} ways (uncompressed iso-area would give {})\n",
             cachesim::TAG_BDI_UNCONSTRAINED ? "unconstrained" : "base replacement", cachesim::TAG_BDI_BASES, cachesim::TAG_BDI_DELTA, cachesim::BLOCK_SIZE,
             get_iso_area_cache(llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE),
