@@ -10,8 +10,17 @@ void HubHawkeye::print_stats() {
     fmt::print("HubHawkeye prediction vs degree hub label: TP {} FP {} FN {} TN {} | precision {:.4f} recall {:.4f} accuracy {:.4f}\n",
         stat_tp, stat_fp, stat_fn, stat_tn, pos ? (double)stat_tp / pos : 0.0, hubs ? (double)stat_tp / hubs : 0.0,
         tot ? (double)(stat_tp + stat_tn) / tot : 0.0);
-    if (block_predictor)
-        fmt::print("HubHawkeye block counters: {}\n", block_predictor->num_tracked());
+    if (block_predictor) {
+        auto& t = *block_predictor;
+        fmt::print("HubHawkeye block table: {} entries ({} sets x {} ways, {} b/entry) = {:.2f} KB | Hawkeye predictor budget "
+                   "{:.2f} KB (SHCT {:.2f} + sampler {:.2f} + OPTgen {:.2f}) -> HubHawkeye total {:.2f} KB = {:.2f}x Hawkeye\n",
+            t.num_entries(), t.num_sets(), HawkeyeBlockPredictor::WAYS, HawkeyeBlockPredictor::ENTRY_BITS, t.storage_bits() / 8192.0,
+            hawkeye_budget.total() / 8192.0, hawkeye_budget.shct / 8192.0, hawkeye_budget.sampler / 8192.0, hawkeye_budget.optgen / 8192.0,
+            (hawkeye_budget.total() + t.storage_bits()) / 8192.0,
+            hawkeye_budget.total() ? (double)(hawkeye_budget.total() + t.storage_bits()) / hawkeye_budget.total() : 0.0);
+        fmt::print("HubHawkeye block counters: {} valid | lookups+training hits {} misses {} | allocations {} evictions {}\n",
+            t.num_tracked(), t.hits, t.misses, t.allocations, t.evictions);
+    }
 }
 
 void HubHawkeye::train_sampled(uint64_t paddr, bool friendly) {

@@ -230,6 +230,23 @@ class Hawkeye : public BasePolicy {
     void update_addr_history_lru(uint64_t sampler_set, uint64_t curr_lru);
 
 
+    // Storage of Hawkeye's predictor state in hardware bits, as this code sizes it (per-line RRPV and PC
+    // signature are not counted: they are per-way state every Hawkeye variant carries).
+    //   SHCT    : SHCT_SIZE x 5-bit counters (0..MAX_SHCT)
+    //   sampler : sampled_cache_size entries x (8-bit tag (CRC % 256) + last_quanta (log2 timer_size) +
+    //             SHCT_SIZE_BITS PC signature + log2(sampler_ways) LRU + prefetched + valid)
+    //   OPTgen  : sampled sets (num_sets/64) x optgen_vector_size occupancy counters of log2(num_ways - 1) bits
+    struct Budget { uint64_t shct, sampler, optgen; uint64_t total() const { return shct + sampler + optgen; } };
+    static uint64_t ceil_log2(uint64_t x) { uint64_t b = 0; while ((1ULL << b) < x) b++; return b; }
+    Budget predictor_budget_bits() const {
+        Budget b;
+        b.shct = SHCT_SIZE * ceil_log2(MAX_SHCT + 1);
+        b.sampler = sampled_cache_size * (8 + ceil_log2(timer_size) + SHCT_SIZE_BITS + ceil_log2(sampler_ways) + 1 + 1);
+        uint64_t sampled_sets = num_sets <= 64 ? num_sets : num_sets / 64;
+        b.optgen = sampled_sets * optgen_vector_size * ceil_log2(num_ways - 1);
+        return b;
+    }
+
     inline uint64_t bitmask(uint64_t l) {
         return (((l) == 64) ? (uint64_t)(-1ULL) : ((1ULL << (l))-1ULL));
     }
