@@ -58,24 +58,34 @@ bool POPT::setup(const std::string& trace_path) {
     if (!matrix_dir.empty()) dirs.push_back(matrix_dir);
     dirs.push_back("data/popt");
     dirs.push_back(exe_dir() + "/../data/popt");
-    std::string plain, wd;
+    // Variants: in-neighbour traversal (pull PageRank; .wd adds pr's write at the destination) and out-neighbour
+    // traversal (.out: cc_sv's hook pass). The one whose neighbour prefix matches the trace's gathers is used.
+    std::string plain, wd, out;
     for (const auto& d : dirs) {
         if (plain.empty() && std::ifstream(d + "/" + base + ".popt")) plain = d + "/" + base + ".popt";
         if (wd.empty() && std::ifstream(d + "/" + base + ".wd.popt")) wd = d + "/" + base + ".wd.popt";
+        if (out.empty() && std::ifstream(d + "/" + base + ".out.popt")) out = d + "/" + base + ".out.popt";
     }
-    if (plain.empty() && wd.empty()) {
-        fmt::print(stderr, "POPT: no Rereference Matrix {0}.popt / {0}.wd.popt in --popt-matrix-dir, data/popt or <bin>/../data/popt\n", base);
+    if (plain.empty() && wd.empty() && out.empty()) {
+        fmt::print(stderr, "POPT: no Rereference Matrix {0}.popt / {0}.wd.popt / {0}.out.popt in --popt-matrix-dir, data/popt or "
+                   "<bin>/../data/popt\n", base);
         return false;
     }
-    // Header, starts and the check list (identical in both variants).
-    if (!load(plain.empty() ? wd : plain, false)) return false;
-    if (hdr.elem_size != elem_size) {
-        fmt::print(stderr, "POPT: matrix elem_size {} != --popt-elem-size {}\n", hdr.elem_size, elem_size);
-        return false;
-    }
-    std::vector<int32_t> check(hdr.num_check);
-    std::memcpy(check.data(), matrix.data(), hdr.num_check * sizeof(int32_t));
-    matrix.clear();
+    auto read_check = [&](const std::string& path, std::vector<int32_t>& chk) {
+        if (path.empty() || !load(path, false)) return false;
+        if (hdr.elem_size != elem_size) {
+            fmt::print(stderr, "POPT: {} elem_size {} != --popt-elem-size {}\n", path, hdr.elem_size, elem_size);
+            return false;
+        }
+        chk.assign(hdr.num_check, 0);
+        std::memcpy(chk.data(), matrix.data(), hdr.num_check * sizeof(int32_t));
+        matrix.clear();
+        return true;
+    };
+    std::vector<int32_t> check_in, check_out;
+    bool have_in = read_check(plain.empty() ? wd : plain, check_in);
+    bool have_out = read_check(out, check_out);
+    if (!have_in && !have_out) return false;
 
     // Prescan: reads per PC (+ the first num_check read addresses), writes per PC with their address range.
     struct PcInfo {
@@ -111,18 +121,24 @@ bool POPT::setup(const std::string& trace_path) {
         }
     }
     // Gather PC: num_arcs reads (a few fewer allowed: older traces lose the last gathers at the ROI end marker)
-    // whose first accesses are irreg_base + elem_size * in-neighbour, in traversal order.
+    // whose first accesses are irreg_base + elem_size * neighbour, in traversal order - tried against the
+    // in-neighbour prefix, then the out-neighbour prefix.
     constexpr uint64_t kRoiSlack = 16;
     gather_reads = 0;
-    for (const auto& [p, info] : pcs) {
-        if (info.reads > hdr.num_arcs || info.reads + kRoiSlack < hdr.num_arcs) continue;
-        if (info.first.size() != hdr.num_check || hdr.num_check == 0) continue;
-        uint64_t b = info.first[0] - elem_size * (uint64_t)check[0];
-        bool ok = true;
-        for (uint64_t i = 0; i < hdr.num_check && ok; i++)
-            ok = info.first[i] == b + elem_size * (uint64_t)check[i];
-        if (ok && info.reads > gather_reads) { gather_pc = p; irreg_base = b; gather_reads = info.reads; }
-    }
+    auto detect = [&](const std::vector<int32_t>& check) {
+        for (const auto& [p, info] : pcs) {
+            if (info.reads > hdr.num_arcs || info.reads + kRoiSlack < hdr.num_arcs) continue;
+            if (check.empty() || info.first.size() < check.size()) continue;
+            uint64_t b = info.first[0] - elem_size * (uint64_t)check[0];
+            bool ok = true;
+            for (uint64_t i = 0; i < check.size() && ok; i++)
+                ok = info.first[i] == b + elem_size * (uint64_t)check[i];
+            if (ok && info.reads > gather_reads) { gather_pc = p; irreg_base = b; gather_reads = info.reads; }
+        }
+        return irreg_base != 0;
+    };
+    bool via_out = false;
+    if (!(have_in && detect(check_in)) && have_out && detect(check_out)) via_out = true;
     if (irreg_base && gather_reads != hdr.num_arcs)
         fmt::print("POPT: warning: gather PC has {} reads, {} fewer than the graph's {} arcs (truncated at the ROI end)\n",
             gather_reads, hdr.num_arcs - gather_reads, hdr.num_arcs);
@@ -154,7 +170,11 @@ bool POPT::setup(const std::string& trace_path) {
     bool writes = false;
     for (const auto& [p, info] : pcs)
         if (info.writes == hdr.num_nodes && info.wmin >= irreg_base && info.wmax < irreg_bound) writes = true;
-    const std::string& chosen = writes ? wd : plain;
+    const std::string& chosen = via_out ? out : writes ? wd : plain;
+    if (via_out && writes) {
+        fmt::print(stderr, "POPT: out-neighbour traversal with per-vertex irregData writes is not supported\n");
+        return false;
+    }
     if (chosen.empty()) {
         fmt::print(stderr, "POPT: trace {} irregData writes per vertex; needs {}.{}popt (tools/popt_matrix.cc{})\n",
             writes ? "has" : "has no", base, writes ? "wd." : "", writes ? " --writes-at-dst" : "");

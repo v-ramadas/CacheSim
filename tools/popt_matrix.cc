@@ -25,7 +25,10 @@
 // pr (Gauss-Seidel, PageRankPullGS) also writes srcData[u] while processing destination u: with --writes-at-dst
 // that write counts as a reference to u's line in u's sub-epoch (pr_spmv only reads srcData; leave it off).
 //
-// Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--elem-size N (4)] [--epochs N (256)]
+// --neigh out: the traversal reads srcData[v] for the OUT-neighbours v of each destination u (cc_sv's hook pass:
+// for u: for v in out_neigh(u): comp[v]); default in (pull PageRank: in_neigh). Write to <G>.<order>.out.popt.
+//
+// Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-size N (4)] [--epochs N (256)]
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -58,9 +61,14 @@ int main(int argc, char** argv) {
         return 1;
     }
     uint64_t elem_size = 4, num_epochs = 256;
-    bool writes_at_dst = false;
+    bool writes_at_dst = false, neigh_out = false;
     for (int i = 3; i < argc; i++) {
         if (!std::strcmp(argv[i], "--writes-at-dst")) writes_at_dst = true;
+        else if (!std::strcmp(argv[i], "--neigh") && i + 1 < argc) {
+            const char* d = argv[++i];
+            if (!std::strcmp(d, "out")) neigh_out = true;
+            else if (std::strcmp(d, "in")) { std::fprintf(stderr, "--neigh in|out\n"); return 1; }
+        }
         else if (!std::strcmp(argv[i], "--elem-size") && i + 1 < argc) elem_size = std::strtoull(argv[++i], nullptr, 10);
         else if (!std::strcmp(argv[i], "--epochs") && i + 1 < argc) num_epochs = std::strtoull(argv[++i], nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 1; }
@@ -89,7 +97,7 @@ int main(int argc, char** argv) {
     std::vector<int32_t> neigh(m);
     f.read(reinterpret_cast<char*>(off.data()), (n + 1) * sizeof(int64_t));
     f.read(reinterpret_cast<char*>(neigh.data()), m * sizeof(int32_t));
-    if (directed) {   // replace with the inverse (in-neighbour) CSR
+    if (directed && !neigh_out) {   // replace with the inverse (in-neighbour) CSR
         f.read(reinterpret_cast<char*>(off.data()), (n + 1) * sizeof(int64_t));
         f.read(reinterpret_cast<char*>(neigh.data()), m * sizeof(int32_t));
     }
@@ -159,8 +167,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
-    std::printf("%s%s: %s, %lu vertices, %lu arcs, %lu x %luB lines, %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
-        writes_at_dst ? "[writes-at-dst] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, elem_size, num_epochs, h.epoch_size,
+    std::printf("%s%s%s: %s, %lu vertices, %lu arcs, %lu x %luB lines, %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
+        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, elem_size, num_epochs, h.epoch_size,
         kSub, h.sub_size, argv[2]);
     return 0;
 }
