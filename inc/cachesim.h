@@ -28,6 +28,9 @@ enum class SetDuelingType {
 
 class BaseCache;
 
+// The owning cache's set count, for policies that need it (BaseCache is incomplete here; defined below it).
+inline uint64_t cache_num_sets(const BaseCache* c);
+
 class Set {
     protected:
     BaseCache* cache;
@@ -109,7 +112,7 @@ class Set {
         ways.resize(num_ways, UINT64_MAX);
         tags.resize(num_ways, INVALID_TAG);
         bdi_reset();
-        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
+        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level, cache_num_sets(p)));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         serviced_from_llc.resize(num_ways, 0);
@@ -396,7 +399,7 @@ class SectoredSet: public Set {
         num_lines = num_ways/num_blocks;
         ways.resize(num_ways, UINT64_MAX);
         way_sectors.assign(num_ways, Sector(num_blocks));
-        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level));
+        repl_counter = std::unique_ptr<BasePolicy>(create_policy(policy, set_idx, num_ways, level, cache_num_sets(p)));
         assert(repl_counter != nullptr);
         valid.resize(num_ways, false);
         serviced_from_llc.resize(num_ways, 0);
@@ -489,6 +492,8 @@ class BaseCache {
 
     virtual bool is_eviction_needed(PacketPtr packet) const = 0;
 };
+
+inline uint64_t cache_num_sets(const BaseCache* c) { return c->get_num_sets(); }
 
 template<typename T>
 class Cache: public BaseCache {

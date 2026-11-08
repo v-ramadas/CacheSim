@@ -50,7 +50,7 @@ class HubHawkeye : public Hawkeye {
 
     public:
     static void print_stats();
-    HubHawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : Hawkeye(_set_idx, _num_ways, _level) {
+    HubHawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level, uint64_t _num_sets) : Hawkeye(_set_idx, _num_ways, _level, _num_sets) {
         block_addrs.resize(num_ways, UINT64_MAX);
         if (block_predictor == nullptr) block_predictor = new HawkeyeBlockPredictor();
     }

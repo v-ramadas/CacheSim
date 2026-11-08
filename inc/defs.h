@@ -54,7 +54,8 @@ enum class ReplacementPolicy {
     Amoeba,
 };
 
-inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, CacheLevel level) {
+// num_sets: the owning cache's set count (Hawkeye picks its sampled sets from it).
+inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uint64_t num_ways, CacheLevel level, uint64_t num_sets) {
     switch (policy) {
         case ReplacementPolicy::LRU:
             return new LRU(set_idx, num_ways, level);
@@ -81,9 +82,9 @@ inline BasePolicy* create_policy(ReplacementPolicy policy, uint64_t set_idx, uin
         case ReplacementPolicy::HRRIP:
             return new HRRIP(set_idx, num_ways, level);
         case ReplacementPolicy::Hawkeye:
-            return new Hawkeye(set_idx, num_ways, level);
+            return new Hawkeye(set_idx, num_ways, level, num_sets);
         case ReplacementPolicy::HubHawkeye:
-            return new HubHawkeye(set_idx, num_ways, level);
+            return new HubHawkeye(set_idx, num_ways, level, num_sets);
         case ReplacementPolicy::GRASP:
             return new GRASP(set_idx, num_ways, level);
         case ReplacementPolicy::POPT:

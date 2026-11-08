@@ -144,6 +144,7 @@ class Hawkeye : public BasePolicy {
     protected:
     uint64_t maxRRPV;
     uint64_t mytimer;
+    uint64_t num_sets;   // of the owning cache: picks the sampled sets
     OPTgen optgen;
     std::vector<uint64_t> counter;
     std::vector<uint64_t> signatures;
@@ -180,8 +181,9 @@ class Hawkeye : public BasePolicy {
 
     public:
     Hawkeye() {}
-    Hawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
+    Hawkeye(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level, uint64_t _num_sets) {
         set_idx = _set_idx;
+        num_sets = _num_sets;
         num_ways = _num_ways;
         maxRRPV = 3;
         counter.resize(num_ways, maxRRPV);
@@ -236,8 +238,14 @@ class Hawkeye : public BasePolicy {
         return (((x) >> (i)) & bitmask(l));
     }
 
+    // Sampled sets: the low 6 index bits equal the top 6 of the cache's own index (ChampSim's Hawkeye rule).
+    // The fields overlap below 4096 sets, so this samples num_sets/64 sets (1024 -> 16, 4096 -> 64); a cache
+    // with 64 sets or fewer samples every set. (Was hardcoded to a 1024-set index: same count, but at 2048/4096
+    // sets it ignored the top index bits and picked a different subset.)
     inline bool is_sampled_set(uint64_t set_idx) {
-        return (bits(set_idx, 0 , 6) == bits(set_idx, ((uint64_t)log2(/*num_sets*/ 1024) - 6), 6));
+        uint64_t lg = (uint64_t)log2(num_sets);
+        if (lg <= 6) return true;
+        return (bits(set_idx, 0 , 6) == bits(set_idx, lg - 6, 6));
     }
 
     void set_breakdown(uint64_t old_block_size, uint64_t new_block_size);
