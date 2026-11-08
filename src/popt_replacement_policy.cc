@@ -60,20 +60,22 @@ bool POPT::setup(const std::string& trace_path) {
     dirs.push_back(exe_dir() + "/../data/popt");
     // Variants: in-neighbour traversal (pull PageRank; .wd adds pr's write at the destination) and out-neighbour
     // traversal (.out: cc_sv's hook pass). The one whose neighbour prefix matches the trace's gathers is used.
-    std::string plain, wd, out;
+    std::string plain, wd, out, bm;
     for (const auto& d : dirs) {
+        if (bm.empty() && std::ifstream(d + "/" + base + ".bm.popt")) bm = d + "/" + base + ".bm.popt";
         if (plain.empty() && std::ifstream(d + "/" + base + ".popt")) plain = d + "/" + base + ".popt";
         if (wd.empty() && std::ifstream(d + "/" + base + ".wd.popt")) wd = d + "/" + base + ".wd.popt";
         if (out.empty() && std::ifstream(d + "/" + base + ".out.popt")) out = d + "/" + base + ".out.popt";
     }
-    if (plain.empty() && wd.empty() && out.empty()) {
-        fmt::print(stderr, "POPT: no Rereference Matrix {0}.popt / {0}.wd.popt / {0}.out.popt in --popt-matrix-dir, data/popt or "
-                   "<bin>/../data/popt\n", base);
-        return false;
+    if (plain.empty() && wd.empty() && out.empty() && bm.empty()) {
+        // Not preprocessed: like the reference code with no matrix registered, run the baseline policy.
+        fmt::print("POPT: inactive - no Rereference Matrix {0}.popt / {0}.wd.popt / {0}.out.popt in --popt-matrix-dir, data/popt "
+                   "or <bin>/../data/popt; running SRRIP with no reserved ways\n", base);
+        return true;
     }
     auto read_check = [&](const std::string& path, std::vector<int32_t>& chk) {
         if (path.empty() || !load(path, false)) return false;
-        if (hdr.elem_size != elem_size) {
+        if (hdr.elem_size != elem_size && hdr.elem_size != 0) {
             fmt::print(stderr, "POPT: {} elem_size {} != --popt-elem-size {}\n", path, hdr.elem_size, elem_size);
             return false;
         }
@@ -82,15 +84,19 @@ bool POPT::setup(const std::string& trace_path) {
         matrix.clear();
         return true;
     };
-    std::vector<int32_t> check_in, check_out;
+    std::vector<int32_t> check_in, check_out, check_bm;
     bool have_in = read_check(plain.empty() ? wd : plain, check_in);
     bool have_out = read_check(out, check_out);
-    if (!have_in && !have_out) return false;
+    bool have_bm = read_check(bm, check_bm);
+    if (!have_in && !have_out && !have_bm) return false;
 
     // Prescan: reads per PC (+ the first num_check read addresses), writes per PC with their address range.
     struct PcInfo {
         uint64_t reads = 0, writes = 0, wmin = UINT64_MAX, wmax = 0; std::vector<uint64_t> first;
         uint64_t first_idx = UINT64_MAX, prev = 0, stride = 0; bool stride_ok = true;   // destination-stream detection
+        uint64_t wraps = 0, run_stride = 0; bool run_ok = true;                         // pass-mode destination stream
+        uint64_t rmin = UINT64_MAX, rmax = 0;                                          // read address span
+        std::map<uint64_t, uint64_t> pages; bool pages_overflow = false;              // 4KB page -> min read address
     };
     uint64_t line_idx = 0;
     std::map<uint64_t, PcInfo> pcs;
@@ -110,9 +116,23 @@ bool POPT::setup(const std::string& trace_path) {
         if (n_before == 0) p.first_idx = line_idx;
         else if (n_before == 1) { p.stride = addr - p.prev; p.stride_ok = addr > p.prev; }
         else if (p.stride_ok && addr - p.prev != p.stride) p.stride_ok = false;
+        if (n_before > 0) {
+            if (addr < p.prev) p.wraps++;
+            else if (p.run_stride == 0) p.run_stride = addr - p.prev;
+            else if (addr - p.prev != p.run_stride) p.run_ok = false;
+        }
+        if (!p.pages_overflow && strcmp(action, "Read") == 0) {
+            auto it = p.pages.find(addr >> 12);
+            if (it == p.pages.end()) {
+                if (p.pages.size() >= 4096) { p.pages_overflow = true; p.pages.clear(); }
+                else p.pages[addr >> 12] = addr;
+            } else if (addr < it->second) it->second = addr;
+        }
         p.prev = addr;
         if (strcmp(action, "Read") == 0) {
             p.reads++;
+            p.rmin = std::min(p.rmin, addr);
+            p.rmax = std::max(p.rmax, addr);
             if (p.first.size() < hdr.num_check) p.first.push_back(addr);
         } else {
             p.writes++;
@@ -142,12 +162,88 @@ bool POPT::setup(const std::string& trace_path) {
     if (irreg_base && gather_reads != hdr.num_arcs)
         fmt::print("POPT: warning: gather PC has {} reads, {} fewer than the graph's {} arcs (truncated at the ROI end)\n",
             gather_reads, hdr.num_arcs - gather_reads, hdr.num_arcs);
-    if (!irreg_base) {
-        fmt::print(stderr, "POPT: no read PC in {} matches the graph's gather sequence ({} arcs, first {} in-neighbours) - "
-                   "the trace and the matrix's graph / vertex order differ\n", trace_path, hdr.num_arcs, hdr.num_check);
-        return false;
+    if (!irreg_base && have_bm) {
+        // Pass mode (bfs bottom-up): destination stream = k runs of n constant-stride accesses; neighbour-array /
+        // bitmap read pair validated against the matrix's neighbour prefix.
+        uint64_t n = hdr.num_nodes;
+        uint64_t best_first = UINT64_MAX;
+        for (const auto& [p, info] : pcs) {
+            uint64_t cnt = info.reads + info.writes;
+            if (info.writes || cnt == 0 || cnt % n || info.wraps + 1 != cnt / n || !info.run_ok || !info.run_stride) continue;
+            if (info.first_idx < best_first) { best_first = info.first_idx; dst_pc = p; dst_total = cnt; }
+        }
+        bm_bytes = (n + 63) / 64 * 8;
+        // Bitmap candidates: reads spread over many words of at most two bitmaps; neighbour-array candidates: same
+        // read count, spanning at least a quarter of an n-entry array of 4B ids. Highest read counts first.
+        std::vector<std::pair<uint64_t, uint64_t>> bms;   // (reads, pc)
+        for (const auto& [p, info] : pcs) {
+            if (info.writes || info.reads < 128 || info.first.size() < 128) continue;
+            uint64_t span = info.rmax - info.rmin;
+            if (span >= bm_bytes / 8 && span <= 2 * bm_bytes + (1 << 20)) bms.push_back({info.reads, p});
+        }
+        std::sort(bms.rbegin(), bms.rend());
+        for (const auto& [reads_b, pb] : bms) {
+            const auto& ib = pcs[pb];
+            if (!dst_pc) break;
+            for (const auto& [pn, in_] : pcs) {
+                if (pn == pb || in_.reads != ib.reads || in_.first.size() < 128) continue;
+                if (in_.rmax - in_.rmin < n) continue;
+                // k0 = neighbour index of the first neighbour-array read; prefix neighbours validate the bitmap word.
+                for (uint64_t k0 = 0; k0 < check_bm.size(); k0++) {
+                    uint64_t bb = ib.first[0] - 8 * ((uint64_t)check_bm[k0] >> 6);
+                    uint64_t matched = 0; bool bad = false;
+                    for (size_t i = 0; i < in_.first.size() && i < ib.first.size() && !bad; i++) {
+                        int64_t d = (int64_t)in_.first[i] - (int64_t)in_.first[0];
+                        if (d % 4) { bad = true; break; }
+                        int64_t k = (int64_t)k0 + d / 4;
+                        if (k < 0) { bad = true; break; }
+                        if ((uint64_t)k >= check_bm.size()) continue;
+                        if (ib.first[i] != bb + 8 * ((uint64_t)check_bm[k] >> 6)) bad = true; else matched++;
+                    }
+                    if (!bad && matched >= 128) {
+                        na_pc = pn; bm_pc = pb; na_base = in_.first[0] - 4 * k0; bm_base[0] = bb; bm_known[0] = true;
+                        break;
+                    }
+                }
+                if (na_pc) break;
+            }
+            if (na_pc) break;
+        }
+        if (na_pc) {
+            // The other bitmap: the lowest read address of bm_pc outside the first bitmap (refined at run time).
+            const auto& ib = pcs[bm_pc];
+            uint64_t other = UINT64_MAX;
+            for (const auto& [pg, a] : ib.pages)
+                if (a < bm_base[0] || a >= bm_base[0] + bm_bytes) other = std::min(other, a);
+            bm_base[1] = other == UINT64_MAX ? bm_base[0] : other;
+            bm_known[1] = other == UINT64_MAX;
+            pass_mode = true;
+            gather_pc = bm_pc;
+            irreg_base = bm_base[0];
+            check_prefix = check_bm;
+        } else {
+            dst_pc = 0; dst_total = 0;
+        }
     }
-    irreg_bound = irreg_base + hdr.num_nodes * elem_size;
+    if (!irreg_base) {
+        // No traversal in this trace that a matrix describes (a kernel P-OPT does not apply to, or a different graph /
+        // vertex order): run the baseline policy.
+        fmt::print("POPT: inactive - no read PC in {} follows a matrix's gather sequence ({} arcs, first {} neighbours); "
+                   "running SRRIP with no reserved ways\n", trace_path, hdr.num_arcs, hdr.num_check);
+        hdr = Header{};
+        return true;
+    }
+    irreg_bound = pass_mode ? irreg_base + bm_bytes : irreg_base + hdr.num_nodes * elem_size;
+    if (pass_mode) {
+        if (!load(bm, true)) return false;
+        active = true;
+        fmt::print("POPT: pass mode (bitmap traversals) | matrix {} | {} vertices, {} lines of 512 vertices | destination "
+                   "stream {:#x} ({} accesses = {} passes, stride {}B) | neighbour array {:#x} at {:#x} | bitmap {:#x} at "
+                   "{:#x} (other bitmap {:#x}{}, {} B each)\n",
+            bm, hdr.num_nodes, hdr.num_lines, dst_pc, dst_total, dst_total / hdr.num_nodes, pcs[dst_pc].run_stride, na_pc,
+            na_base, bm_pc, bm_base[0], bm_base[1], bm_known[1] ? "" : ", from the address cluster", bm_bytes);
+        return true;
+    }
     // Destination stream: one access per vertex (a few fewer allowed at an ROI end), constant positive stride,
     // starting before the first gather; the earliest such PC.
     uint64_t gather_first = pcs[gather_pc].first_idx, best_first = UINT64_MAX;
@@ -210,6 +306,44 @@ void POPT::stream_columns(uint64_t columns) {
     uint64_t transfer = (uint64_t)std::ceil(columns * hdr.num_lines * cpu_mhz / bytes_per_us);
     PerformanceModel::addCycles(latency + transfer);
     stat_stream_cycles += latency + transfer;
+}
+
+void POPT::new_pass() {
+    // A new traversal: epochs restart; the first two columns are streamed in again.
+    stat_passes++;
+    block = 0;
+    cur_col = &matrix[0];
+    nxt_col = hdr.num_epochs > 1 ? &matrix[hdr.num_lines] : nullptr;
+    uint64_t cols = hdr.num_epochs > 1 ? 2 : 1;
+    stat_streamed_lines += cols * ((hdr.num_lines + 63) / 64);
+    stream_columns(cols);
+    in_window = true;
+}
+
+void POPT::on_access_pass(uint64_t pc, uint64_t addr, bool is_read) {
+    if (pc == dst_pc) {
+        uint64_t u = dst_count++ % hdr.num_nodes;
+        if (u == 0) new_pass();
+        uint64_t e = u / hdr.epoch_size;
+        set_block(e * hdr.num_sub + (u - e * hdr.epoch_size) / hdr.sub_size);
+        if (u + 1 == hdr.num_nodes) in_window = false;
+        return;
+    }
+    if (!is_read) return;
+    if (pc == na_pc) { last_na = addr; return; }
+    if (pc != bm_pc) return;
+    gathers++;
+    int which = (addr >= bm_base[0] && addr < bm_base[0] + bm_bytes) ? 0 : 1;
+    // A neighbour inside the matrix's prefix pins the bitmap base exactly.
+    if (last_na >= na_base && (last_na - na_base) % 4 == 0) {
+        uint64_t k = (last_na - na_base) / 4;
+        if (k < check_prefix.size()) {
+            uint64_t b = addr - 8 * ((uint64_t)check_prefix[k] >> 6);
+            if (!bm_known[which]) { if (bm_base[which] != b) stat_bm_refined++; bm_base[which] = b; bm_known[which] = true; }
+            else if (b != bm_base[which]) stat_bm_mismatch++;
+        }
+    }
+    if (irreg_base != bm_base[which]) { irreg_base = bm_base[which]; irreg_bound = irreg_base + bm_bytes; }
 }
 
 void POPT::set_block(uint64_t new_block) {
@@ -277,6 +411,10 @@ uint64_t POPT::reserved_ways(uint64_t num_sets, uint64_t line_size) {
 }
 
 void POPT::print_stats() {
+    if (!active) {
+        fmt::print("POPT inactive (no matching Rereference Matrix): SRRIP, no reserved ways\n");
+        return;
+    }
     uint64_t tot = stat_evict_stream + stat_evict_opt;
     fmt::print("POPT evictions {} | non-irregData first {} ({:.2f}%) | farthest next-ref {} ({:.2f}%), of which SRRIP tie-break {} | "
                "next-ref at OPT evictions 0:{} 1:{} 2-126:{} 127+:{}\n",
@@ -287,6 +425,11 @@ void POPT::print_stats() {
                "stop-the-world cycles\n", gathers, hdr.num_arcs, stat_epochs, stat_streamed_lines,
         stat_streamed_lines * 64.0 / (1 << 20), stat_stream_cycles);
     uint64_t reps = stat_replacements_dram + stat_replacements_nodram;
+    if (pass_mode)
+        fmt::print("POPT pass mode: {} bitmap traversals | bitmap reads {} | bitmap bases {:#x}{} / {:#x}{} | base refined from "
+                   "the cluster guess {} | prefix-validated reads disagreeing with the base {}\n",
+            stat_passes, gathers, bm_base[0], bm_known[0] ? "" : "?", bm_base[1], bm_known[1] ? "" : "?", stat_bm_refined,
+            stat_bm_mismatch);
     fmt::print("POPT currDstID: destination stream {} ({} of {} vertices) | gathers in a different (epoch, sub-epoch) "
                "than the destination stream: {} | evictions outside the pull loop (SRRIP): {}\n",
         dst_pc ? fmt::format("{:#x}", dst_pc) : std::string("none (gather count)"), dst_count, hdr.num_nodes,

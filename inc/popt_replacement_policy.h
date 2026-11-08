@@ -55,6 +55,20 @@ class POPT : public SRRIP {
     inline static uint64_t stat_block_mismatch = 0, stat_evict_outside = 0;
     static void set_block(uint64_t new_block);
     inline static uint64_t irreg_base = 0, irreg_bound = 0, gather_pc = 0;
+    // Pass mode (bfs bottom-up steps, <G>.<order>.bm.popt): several traversals per trace, each a partial pull over
+    // the frontier BITMAP (1 bit per vertex; unvisited u only, early break). dst_pc (parent[u], once per vertex per
+    // step) restarts the epochs at u = 0 and opens the window, closed at u = n-1. na_pc reads in_neigh(u)'s
+    // neighbour array, bm_pc the bitmap word of each neighbour; the pair is validated against the matrix's neighbour
+    // prefix. GAP swaps front/next after each step, so two bitmaps alternate: the step's bitmap sets irreg_base (as
+    // software would update P-OPT's irreg range registers).
+    inline static bool pass_mode = false;
+    inline static uint64_t na_pc = 0, bm_pc = 0, na_base = 0, bm_bytes = 0, last_na = 0;
+    inline static uint64_t bm_base[2] = {0, 0};
+    inline static bool bm_known[2] = {false, false};
+    inline static std::vector<int32_t> check_prefix;
+    inline static uint64_t stat_passes = 0, stat_bm_refined = 0, stat_bm_mismatch = 0;
+    static void new_pass();
+    static void on_access_pass(uint64_t pc, uint64_t addr, bool is_read);
 
     inline static uint64_t stat_evict_stream = 0, stat_evict_opt = 0, stat_evict_tie = 0;
     inline static uint64_t stat_streamed_lines = 0, stat_epochs = 0;
@@ -90,7 +104,8 @@ class POPT : public SRRIP {
     static bool setup(const std::string& trace_path);
     // Called for every trace access before it is simulated: the destination stream sets currDstID; gathers
     // cross-check it (or drive it, without a destination stream).
-    static void on_access(uint64_t pc, bool is_read) {
+    static void on_access(uint64_t pc, uint64_t addr, bool is_read) {
+        if (pass_mode) { on_access_pass(pc, addr, is_read); return; }
         if (!streamed_initial) { streamed_initial = true; stream_columns(hdr.num_epochs > 1 ? 2 : 1); }
         if (dst_pc && pc == dst_pc) {
             uint64_t u = dst_count++;

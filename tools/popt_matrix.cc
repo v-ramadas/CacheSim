@@ -28,7 +28,11 @@
 // --neigh out: the traversal reads srcData[v] for the OUT-neighbours v of each destination u (cc_sv's hook pass:
 // for u: for v in out_neigh(u): comp[v]); default in (pull PageRank: in_neigh). Write to <G>.<order>.out.popt.
 //
-// Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-size N (4)] [--epochs N (256)]
+// --elem-bits 1: srcData is a bitmap (1 bit per vertex, 512 vertices per 64B line; bfs bottom-up steps read the
+// frontier bitmap for in_neigh(u)); the header stores elem_size 0. Write to <G>.<order>.bm.popt.
+//
+// Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-size N (4) | --elem-bits 1]
+//        [--epochs N (256)]
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -61,13 +65,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     uint64_t elem_size = 4, num_epochs = 256;
-    bool writes_at_dst = false, neigh_out = false;
+    bool writes_at_dst = false, neigh_out = false, bitmap = false;
     for (int i = 3; i < argc; i++) {
         if (!std::strcmp(argv[i], "--writes-at-dst")) writes_at_dst = true;
         else if (!std::strcmp(argv[i], "--neigh") && i + 1 < argc) {
             const char* d = argv[++i];
             if (!std::strcmp(d, "out")) neigh_out = true;
             else if (std::strcmp(d, "in")) { std::fprintf(stderr, "--neigh in|out\n"); return 1; }
+        }
+        else if (!std::strcmp(argv[i], "--elem-bits") && i + 1 < argc) {
+            if (std::strcmp(argv[++i], "1")) { std::fprintf(stderr, "--elem-bits supports 1 (bitmap)\n"); return 1; }
+            bitmap = true;
         }
         else if (!std::strcmp(argv[i], "--elem-size") && i + 1 < argc) elem_size = std::strtoull(argv[++i], nullptr, 10);
         else if (!std::strcmp(argv[i], "--epochs") && i + 1 < argc) num_epochs = std::strtoull(argv[++i], nullptr, 10);
@@ -110,16 +118,16 @@ int main(int argc, char** argv) {
     std::memcpy(h.magic, "POPTRM2", 8);
     h.num_nodes = n;
     h.num_arcs = m;
-    h.elem_size = elem_size;
+    h.elem_size = bitmap ? 0 : elem_size;
     h.line_size = kLineSize;
     h.num_epochs = num_epochs;
     h.num_sub = kSub;
     h.epoch_size = (n + num_epochs - 1) / num_epochs;
     h.sub_size = (h.epoch_size + kSub - 1) / kSub;
-    h.num_lines = (n * elem_size + kLineSize - 1) / kLineSize;
+    const uint64_t per_line = bitmap ? kLineSize * 8 : kLineSize / elem_size;   // vertices per 64B line
+    h.num_lines = (n + per_line - 1) / per_line;
     h.num_check = m < kCheck ? m : kCheck;
     h.writes_at_dst = writes_at_dst;
-    const uint64_t per_line = kLineSize / elem_size;
 
     // First gather of each (epoch, sub-epoch) block of destination vertices.
     std::vector<uint64_t> starts(num_epochs * kSub + 1);
@@ -167,8 +175,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
-    std::printf("%s%s%s: %s, %lu vertices, %lu arcs, %lu x %luB lines, %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
-        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, elem_size, num_epochs, h.epoch_size,
+    std::printf("%s%s%s%s: %s, %lu vertices, %lu arcs, %lu lines (%lu B/elem, 0 = bit), %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
+        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", bitmap ? "[bitmap] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, h.elem_size, num_epochs, h.epoch_size,
         kSub, h.sub_size, argv[2]);
     return 0;
 }

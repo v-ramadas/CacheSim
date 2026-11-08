@@ -303,12 +303,13 @@ int main(int argc, char** argv) {
         }
         if (!POPT::setup(tracename))
             return 1;
-        uint64_t reserved = POPT::reserved_ways(llc_num_sets, CACHELINE_SIZE);
+        uint64_t reserved = POPT::active ? POPT::reserved_ways(llc_num_sets, CACHELINE_SIZE) : 0;
         if (reserved >= llc_num_ways) {
             fmt::print(stderr, "popt: rereference matrix needs {} of {} LLC ways\n", reserved, llc_num_ways);
             return 1;
         }
-        fmt::print("POPT: reserving {} of {} LLC ways for the rereference matrix\n", reserved, llc_num_ways);
+        if (POPT::active)
+            fmt::print("POPT: reserving {} of {} LLC ways for the rereference matrix\n", reserved, llc_num_ways);
         llc_num_ways -= reserved;
     }
     cache.push_back(new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy));

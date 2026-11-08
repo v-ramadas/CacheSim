@@ -1104,7 +1104,7 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
                 try {
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "Read") == 0) ? true : false;
-                    if (POPT::active) POPT::on_access(pc, is_read);   // gathers advance P-OPT's currDstID
+                    if (POPT::active) POPT::on_access(pc, address, is_read);   // gathers advance P-OPT's currDstID
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                         predictor, address, pc, is_read, next_reuse, degree, avg_degree);
