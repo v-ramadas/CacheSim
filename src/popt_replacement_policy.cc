@@ -39,6 +39,26 @@ bool POPT::load(const std::string& path, bool with_matrix) {
     return true;
 }
 
+bool POPT::load_samples(const std::string& path) {
+    // Optional trailer after the matrix: "POPTSMP1", stride, count, int32 samples[count].
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    Header h{};
+    f.read(reinterpret_cast<char*>(&h), sizeof(h));
+    f.seekg(sizeof(h) + h.num_check * sizeof(int32_t) + (h.num_epochs * h.num_sub + 1) * sizeof(uint64_t) +
+            h.num_epochs * h.num_lines);
+    char magic[8];
+    uint64_t stride = 0, count = 0;
+    if (!f.read(magic, 8) || std::memcmp(magic, "POPTSMP1", 8) != 0) return false;
+    f.read(reinterpret_cast<char*>(&stride), sizeof(stride));
+    f.read(reinterpret_cast<char*>(&count), sizeof(count));
+    samples.assign(count, 0);
+    f.read(reinterpret_cast<char*>(samples.data()), count * sizeof(int32_t));
+    if (!f) { samples.clear(); return false; }
+    sample_stride = stride;
+    return true;
+}
+
 static std::string exe_dir() {
     char buf[4096];
     ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
@@ -88,6 +108,7 @@ bool POPT::setup(const std::string& trace_path) {
     bool have_in = read_check(plain.empty() ? wd : plain, check_in);
     bool have_out = read_check(out, check_out);
     bool have_bm = read_check(bm, check_bm);
+    if (have_bm) { check_prefix = check_bm; load_samples(bm); }
     if (!have_in && !have_out && !have_bm) return false;
 
     // Prescan: reads per PC (+ the first num_check read addresses), writes per PC with their address range.
@@ -203,6 +224,29 @@ bool POPT::setup(const std::string& trace_path) {
                     if (!bad && matched >= 128) {
                         na_pc = pn; bm_pc = pb; na_base = in_.first[0] - 4 * k0; bm_base[0] = bb; bm_known[0] = true;
                         break;
+                    }
+                }
+                // The first step may never read the prefix (its vertices visited before bottom-up starts): search the
+                // neighbour-array base so that sampled neighbours map the paired bitmap reads consistently.
+                if (!na_pc && sample_stride) {
+                    uint64_t m = hdr.num_arcs;
+                    uint64_t lo = in_.rmax >= 4 * (m - 1) ? in_.rmax - 4 * (m - 1) : 0;
+                    for (uint64_t cand = in_.rmin; cand + 4 > lo && cand >= lo && cand != (uint64_t)-1; cand -= 4) {
+                        uint64_t matched = 0, bb = 0; bool bad = false;
+                        for (size_t i = 0; i < in_.first.size() && i < ib.first.size() && !bad; i++) {
+                            uint64_t a = in_.first[i];
+                            if (a < cand || (a - cand) % 4) { bad = true; break; }
+                            int64_t v = known_neighbour((a - cand) / 4);
+                            if (v < 0) continue;
+                            uint64_t b = ib.first[i] - 8 * ((uint64_t)v >> 6);
+                            if (matched == 0) bb = b; else if (b != bb) bad = true;
+                            matched++;
+                        }
+                        if (!bad && matched >= 24) {
+                            na_pc = pn; bm_pc = pb; na_base = cand; bm_base[0] = bb; bm_known[0] = true;
+                            break;
+                        }
+                        if (cand < 4) break;
                     }
                 }
                 if (na_pc) break;
@@ -336,9 +380,9 @@ void POPT::on_access_pass(uint64_t pc, uint64_t addr, bool is_read) {
     int which = (addr >= bm_base[0] && addr < bm_base[0] + bm_bytes) ? 0 : 1;
     // A neighbour inside the matrix's prefix pins the bitmap base exactly.
     if (last_na >= na_base && (last_na - na_base) % 4 == 0) {
-        uint64_t k = (last_na - na_base) / 4;
-        if (k < check_prefix.size()) {
-            uint64_t b = addr - 8 * ((uint64_t)check_prefix[k] >> 6);
+        int64_t v = known_neighbour((last_na - na_base) / 4);
+        if (v >= 0) {
+            uint64_t b = addr - 8 * ((uint64_t)v >> 6);
             if (!bm_known[which]) { if (bm_base[which] != b) stat_bm_refined++; bm_base[which] = b; bm_known[which] = true; }
             else if (b != bm_base[which]) stat_bm_mismatch++;
         }

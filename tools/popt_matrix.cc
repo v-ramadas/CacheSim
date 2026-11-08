@@ -171,6 +171,18 @@ int main(int argc, char** argv) {
     o.write(reinterpret_cast<const char*>(neigh.data()), h.num_check * sizeof(int32_t));
     o.write(reinterpret_cast<const char*>(starts.data()), starts.size() * sizeof(uint64_t));
     o.write(reinterpret_cast<const char*>(matrix.data()), matrix.size());
+    if (bitmap) {
+        // Trailer (bitmap matrices only): every kSampleStride-th neighbour of the traversal's neighbour array, so the
+        // simulator can validate partial traversals (bfs bottom-up skips visited vertices) beyond the prefix.
+        constexpr uint64_t kSampleStride = 16;
+        std::vector<int32_t> samples;
+        for (uint64_t k = 0; k < m; k += kSampleStride) samples.push_back(neigh[k]);
+        uint64_t stride = kSampleStride, count = samples.size();
+        o.write("POPTSMP1", 8);
+        o.write(reinterpret_cast<const char*>(&stride), sizeof(stride));
+        o.write(reinterpret_cast<const char*>(&count), sizeof(count));
+        o.write(reinterpret_cast<const char*>(samples.data()), count * sizeof(int32_t));
+    }
     if (!o) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;

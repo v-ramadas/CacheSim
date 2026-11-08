@@ -66,6 +66,15 @@ class POPT : public SRRIP {
     inline static uint64_t bm_base[2] = {0, 0};
     inline static bool bm_known[2] = {false, false};
     inline static std::vector<int32_t> check_prefix;
+    inline static std::vector<int32_t> samples;     // every sample_stride-th neighbour (bitmap matrices)
+    inline static uint64_t sample_stride = 0;
+    static bool load_samples(const std::string& path);
+    // Neighbour id of neighbour-array index k when known (prefix or sample), else -1.
+    static int64_t known_neighbour(uint64_t k) {
+        if (k < check_prefix.size()) return check_prefix[k];
+        if (sample_stride && k % sample_stride == 0 && k / sample_stride < samples.size()) return samples[k / sample_stride];
+        return -1;
+    }
     inline static uint64_t stat_passes = 0, stat_bm_refined = 0, stat_bm_mismatch = 0;
     static void new_pass();
     static void on_access_pass(uint64_t pc, uint64_t addr, bool is_read);
