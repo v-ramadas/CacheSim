@@ -425,10 +425,11 @@ uint64_t POPT::find_next_ref(uint64_t line_id, std::vector<uint64_t>* reads) {
 }
 
 uint64_t POPT::next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const {
-    // Matrix lines are 64B chunks of irregData counted from irreg_base; a cache line overlaps one of them, or two
-    // when irreg_base is not 64B-aligned. The line is next needed when any of its elements is.
+    // Matrix lines are 64B chunks of irregData counted from irreg_base; a cache block overlaps one of them, or two
+    // when irreg_base is not 64B-aligned. The block is next needed when any of its matrix lines is. A sub-64B block
+    // inherits its 64B matrix line's next reference (coarse: the matrix stays at 64B granularity).
     uint64_t lo = addr <= irreg_base ? 0 : (addr - irreg_base) / CACHELINE_SIZE;
-    uint64_t hi = std::min<uint64_t>((addr + CACHELINE_SIZE - 1 - irreg_base) / CACHELINE_SIZE, hdr.num_lines - 1);
+    uint64_t hi = std::min<uint64_t>((addr + cachesim::BLOCK_SIZE - 1 - irreg_base) / CACHELINE_SIZE, hdr.num_lines - 1);
     uint64_t best = find_next_ref(lo, reads);
     for (uint64_t l = lo + 1; l <= hi; l++) best = std::min(best, find_next_ref(l, reads));
     return best;
@@ -488,7 +489,7 @@ void POPT::print_stats() {
 
 void POPT::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
     SRRIP::fill_update(way_idx, block_idx, packet, was_accessed);
-    line_addr[way_idx] = align_address(packet->address, CACHELINE_SIZE);
+    line_addr[way_idx] = align_address(packet->address, cachesim::BLOCK_SIZE);
 }
 
 uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
@@ -497,9 +498,10 @@ uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
         stat_evict_outside++;
         return SRRIP::get_eviction_candidate(is_low_priority);
     }
-    // Data outside irregData (streaming) goes first: the first such way.
+    // Data outside irregData (streaming) goes first: the first such way. Empty ways (line_addr UINT64_MAX, e.g. ones
+    // just evicted while a 64B fill makes room for several sub-64B blocks) are never candidates.
     for (uint64_t way = 0; way < num_ways; way++) {
-        if (!is_irreg(line_addr[way])) {
+        if (line_addr[way] != UINT64_MAX && !is_irreg(line_addr[way])) {
             stat_evict_stream++;
             return way;
         }
@@ -508,6 +510,7 @@ uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
     std::vector<uint64_t> dist(num_ways), reads;
     uint64_t max_dist = 0;
     for (uint64_t way = 0; way < num_ways; way++) {
+        if (line_addr[way] == UINT64_MAX) continue;
         dist[way] = next_ref_of(line_addr[way], &reads);
         max_dist = std::max(max_dist, dist[way]);
     }
@@ -518,6 +521,8 @@ uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
     stat_matrix_reads += distinct;
     stat_evict_opt++;
     stat_ref_hist[max_dist == 0 ? 0 : max_dist == 1 ? 1 : max_dist < 127 ? 2 : 3]++;
+    for (uint64_t way = 0; way < num_ways; way++)
+        if (line_addr[way] == UINT64_MAX) dist[way] = UINT64_MAX;   // never matches max_dist below
     if (std::count(dist.begin(), dist.end(), max_dist) > 1) stat_evict_tie++;
     // Ties: the tied way at the distant RRPV, aging only the tied ways.
     while (true) {

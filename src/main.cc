@@ -296,11 +296,8 @@ int main(int argc, char** argv) {
     GRASP::trace_path = tracename;
     GRASP::llc_bytes = llc_num_sets * llc_num_ways * CACHELINE_SIZE;
     if (replacement_policy == ReplacementPolicy::POPT) {
-        // P-OPT gives up LLC ways for two epochs of its rereference matrix.
-        if (cachesim::BLOCK_SIZE != CACHELINE_SIZE) {
-            fmt::print(stderr, "popt models a 64B LLC; use --cache-block-size 64\n");
-            return 1;
-        }
+        // P-OPT gives up LLC ways for two epochs of its rereference matrix, taken from the 64B-equivalent ways
+        // before iso-area sizing. Sub-64B blocks use the same 64B-granularity matrix (coarse next references).
         if (!POPT::setup(tracename))
             return 1;
         uint64_t reserved = POPT::active ? POPT::reserved_ways(llc_num_sets, CACHELINE_SIZE) : 0;

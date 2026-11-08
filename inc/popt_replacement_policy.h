@@ -29,7 +29,7 @@
 // [irreg_base, irreg_bound)); otherwise the way whose next reference (Algorithm 2) is farthest, ties broken by
 // SRRIP among the tied ways. Insertion and hits are SRRIP.
 class POPT : public SRRIP {
-    std::vector<uint64_t> line_addr;   // 64B line address held by each way (UINT64_MAX = none)
+    std::vector<uint64_t> line_addr;   // block address held by each way (UINT64_MAX = none)
 
     struct Header {
         char magic[8];
@@ -102,7 +102,7 @@ class POPT : public SRRIP {
     uint64_t next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const;
 
     // A 64B line holds irregData if it overlaps [irreg_base, irreg_bound).
-    bool is_irreg(uint64_t addr) const { return addr != UINT64_MAX && addr + CACHELINE_SIZE > irreg_base && addr < irreg_bound; }
+    bool is_irreg(uint64_t addr) const { return addr != UINT64_MAX && addr + cachesim::BLOCK_SIZE > irreg_base && addr < irreg_bound; }
 
     public:
     inline static bool active = false;
@@ -156,6 +156,7 @@ class POPT : public SRRIP {
     void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
     uint64_t get_eviction_candidate(bool is_low_priority);
     void evict(uint64_t way_idx);
+    void invalidate(uint64_t way_idx) { SRRIP::invalidate(way_idx); line_addr[way_idx] = UINT64_MAX; }   // emptied without an eviction
 };
 
 #endif
