@@ -39,21 +39,16 @@ psel:  --cache-block-size 8 --set-dueling --dueling-mode psel  --dueling-period 
 ztest: --cache-block-size 8 --set-dueling --dueling-mode ztest --conf-margin 1 --conf-epoch 10000
 ```
 
-## Known caveat: HRUpp/PHRUpp iso-area gap
+## Known caveat: HRUpp/PHRUpp are not iso-area
 
-`HRU` and `PHRU` set `isoArea=true` at 8B (`src/main.cc`'s replacement-policy
-switch), giving them the real tag-cost-aware way count (160 ways for our
-standard 1024x32 config). `HRUpp` does not set `isoArea`, and `PHRUpp` isn't
-in that switch at all - both fall back to the naive, tag-free 256-way scale
-unless a future change adds them to the switch or passes
-`--iso-area-ratio 0.625` explicitly.
+Every policy sizes a smaller-block LLC iso-area with the 64B LLC by default (`src/main.cc`). For our standard
+1024x32 config, `HRU` and `PHRU` at 8B get 216 ways with the default Base+Delta tag compression, or 160 ways with
+`--tag-bdi-bases 0`. `HRUpp` and `PHRUpp` turn iso-area off (`isoArea = false` in the same switch) and get the
+tag-free 256 ways: they are the non-iso-area upper bounds of HRU and PHRU, not separate algorithms.
 
-This is why `performance` mode never compares HRU against HRUpp (or PHRU
-against PHRUpp) directly - only each policy against the universal
-LRU/SRRIP anchors and against its own history. A direct cross-policy
-comparison would silently be comparing unequal physical capacities. If that
-comparison is ever needed, fix the capacity gap first (either via the switch
-statement or `--iso-area-ratio`).
+This is why `performance` mode never compares HRU against HRUpp (or PHRU against PHRUpp) directly - only each
+policy against the universal LRU/SRRIP anchors and against its own history. A direct comparison would compare
+unequal physical capacities.
 
 ## Parsing convention
 

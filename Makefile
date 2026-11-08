@@ -78,6 +78,12 @@ cachesim: $(CACHESIM_BIN)
 
 cachesim_multi: $(CACHESIM_MULTI_BIN)
 
+# popt_matrix: P-OPT Rereference Matrix builder (tools/README.md); standalone, not part of `all`.
+popt_matrix: $(BIN_DIR)/popt_matrix
+$(BIN_DIR)/popt_matrix: tools/popt_matrix.cc
+	@mkdir -p $(dir $@)
+	$(CXX) -O2 -std=c++17 -o $@ $< -lstdc++ -lm
+
 $(CACHESIM_BIN): $(OBJS_BASE)
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
@@ -108,4 +114,4 @@ $(BUILD_OBJ_DIR)/multi/%.o: $(SRC_DIR)/%.cc
 clean:
 	rm -rf $(OBJ_DIR) $(BIN_DIR)
 
-.PHONY: all both release debug asan cachesim cachesim_multi clean
+.PHONY: all both release debug asan cachesim cachesim_multi popt_matrix clean

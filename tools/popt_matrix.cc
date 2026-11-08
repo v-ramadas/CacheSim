@@ -61,7 +61,8 @@ struct PoptHeader {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <graph.sg> <out.popt> [--writes-at-dst] [--elem-size N] [--epochs N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-bits 1] "
+                             "[--elem-size N] [--epochs N]\n", argv[0]);
         return 1;
     }
     uint64_t elem_size = 4, num_epochs = 256;
