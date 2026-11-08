@@ -329,6 +329,15 @@ int main(int argc, char** argv) {
     Packet* eviction_packet = new Packet();
     Packet* fill_packet = new Packet();
     Packet* invalidation_packet = new Packet();
+    if (replacement_policy == ReplacementPolicy::Belady) {
+        // OPT needs the future. 64B blocks: the trace's per-64B NextReuse (carried with each line) is exact. Smaller
+        // blocks: per-word next uses are not in the trace, so build the 8B next-use oracle (instruction traces).
+        Belady::block_size = cachesim::BLOCK_SIZE;
+        if (trace_format == TraceFormat::INSTRUCTIONS && cachesim::BLOCK_SIZE < CACHELINE_SIZE && !Belady::prescan(tracename)) {
+            fmt::print(stderr, "Belady: cannot read trace {} for the next-use oracle\n", tracename);
+            return 1;
+        }
+    }
     if (trace_format == TraceFormat::ADDRESSES) {
         useAddressTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
     } else if (trace_format == TraceFormat::INSTRUCTIONS) {
@@ -362,6 +371,8 @@ int main(int argc, char** argv) {
         GRASP::print_stats();
     if (replacement_policy == ReplacementPolicy::POPT)
         POPT::print_stats();
+    if (replacement_policy == ReplacementPolicy::Belady)
+        Belady::print_stats();
     if (replacement_policy == ReplacementPolicy::LRU && cachesim::BLOCK_SIZE < CACHELINE_SIZE)
         LRU::print_stats();
     if (replacement_policy == ReplacementPolicy::Amoeba)

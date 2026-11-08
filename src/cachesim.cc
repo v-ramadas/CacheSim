@@ -2,6 +2,7 @@
 
 #include "cachesim.h"
 #include "popt_replacement_policy.h"
+#include "belady_replacement_policy.h"
 #include "performance_model.h"
 #include "msl/bits.h"
 #include "trace_file.h"
@@ -350,6 +351,15 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     eviction_packet->aligned_address = fill_packet->aligned_address;
     if (eviction_packet->size == 0)
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+    if constexpr (std::is_same_v<T, Set>) {
+        // Bypassing policies (Belady) evict only for the blocks they keep.
+        if (sets[set_idx]->get_replacement_policy()->evict_only_kept()) {
+            uint64_t kept = std::count_if(fill_packet->blocks.begin(), fill_packet->blocks.end(),
+                                          [](uint64_t a) { return a != UINT64_MAX; });
+            if (kept == 0) return;
+            eviction_packet->size = kept * sets[set_idx]->get_block_size();
+        }
+    }
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     if constexpr (std::is_same_v<T, Set>) {
@@ -410,6 +420,15 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     }
     if (eviction_packet->size == 0)
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+    if constexpr (std::is_same_v<T, Set>) {
+        // Bypassing policies (Belady) evict only for the blocks they keep.
+        if (sets[set_idx]->get_replacement_policy()->evict_only_kept()) {
+            uint64_t kept = std::count_if(fill_packet->blocks.begin(), fill_packet->blocks.end(),
+                                          [](uint64_t a) { return a != UINT64_MAX; });
+            if (kept == 0) return;
+            eviction_packet->size = kept * sets[set_idx]->get_block_size();
+        }
+    }
     eviction_packet->clear_blocks();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
@@ -573,6 +592,8 @@ void Cache<T>::populate_line(PacketPtr fill_packet) {
 template<typename T>
 void Cache<T>::populate_blocks(PacketPtr fill_packet) {
     assert(fill_packet->blocks.size() != 0);
+    if constexpr (std::is_same_v<T, Set>)
+        sets[get_set_idx(fill_packet->address)]->get_replacement_policy()->begin_fill(fill_packet);
     //auto is_high_reuse = fill_packet->is_high_reuse;
     int idx = 0;
     for ( auto it = fill_packet->blocks.begin(); it != fill_packet->blocks.end();) {
@@ -616,6 +637,9 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
         if constexpr (std::is_same_v<T, Set>) {
             // Amoeba-Cache stores only the words its insertion mode selects.
             if (try_hit == ways.end() && sets[set_idx]->amoeba_active() && !sets[set_idx]->amoeba_keep(fill_packet, *it))
+                dropBlock = true;
+            // Belady (OPT) bypasses a block whose next use is beyond every block it would compete with.
+            if (try_hit == ways.end() && !dropBlock && sets[set_idx]->get_replacement_policy()->bypass(fill_packet, *it))
                 dropBlock = true;
         }
 
@@ -1105,6 +1129,7 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "Read") == 0) ? true : false;
                     if (POPT::active) POPT::on_access(pc, address, is_read);   // gathers advance P-OPT's currDstID
+                    if (Belady::oracle_active) Belady::on_access(address);      // next-use oracle
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                         predictor, address, pc, is_read, next_reuse, degree, avg_degree);

@@ -29,6 +29,13 @@ class BasePolicy {
     virtual void evict(uint64_t way_idx) = 0;
     // A way was invalidated without an eviction (e.g. an exclusive LLC hit moving the line up). No-op by default.
     virtual void invalidate(uint64_t /*way_idx*/) {}
+    // Bypass on fill (only Belady uses these): begin_fill once per fill packet, then bypass(block) for each block not
+    // already present; true drops the block (it is never inserted). No-ops by default.
+    virtual void begin_fill(PacketPtr /*packet*/) {}
+    virtual bool bypass(PacketPtr /*packet*/, uint64_t /*block_addr*/) { return false; }
+    // True: a fill evicts only for the blocks it keeps (none kept: no eviction). False (default, golden behaviour):
+    // the eviction is sized by the fill's nominal size even when blocks were dropped.
+    virtual bool evict_only_kept() const { return false; }
     virtual uint64_t get_counter_value(uint64_t way_idx) = 0;
     virtual uint64_t count_distance(uint64_t threshold) = 0;
     virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;
