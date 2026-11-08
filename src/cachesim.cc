@@ -1,6 +1,7 @@
 #include "defs.h"
 
 #include "cachesim.h"
+#include "popt_replacement_policy.h"
 #include "performance_model.h"
 #include "msl/bits.h"
 #include "trace_file.h"
@@ -962,12 +963,20 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         const bool served_by_llc = hit_at_level < num_levels && cache[hit_at_level]->get_level() == CacheLevel::LLC;
         if (num_levels > 2)
             PerformanceModel::processL2(fill_packet->address, served_by_l2, false);
+        uint64_t dram_cycles = 0;
         if (served_by_llc) {
             PerformanceModel::processLLC(fill_packet->address, true, false);
         } else if (!served_by_l2) {
             PerformanceModel::processLLC(fill_packet->address, false, false);
+            uint64_t before = PerformanceModel::getCycles();
             PerformanceModel::processMemory(fill_packet->address);
+            dram_cycles = PerformanceModel::getCycles() - before;
         }
+        // P-OPT: the next-ref engine's reads of the pinned columns for this access's LLC replacements. The
+        // exclusive LLC is filled only by L1D victims (writebacks), so the engine is off the critical path:
+        // counted, not charged (paper V-C hides it even on demand fills, behind the DRAM fetch).
+        (void)dram_cycles;
+        if (POPT::active) POPT::charge_engine(dram_cycles, true);
     }
 }
 #else
@@ -1095,6 +1104,7 @@ void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filen
                 try {
                     // Extract from the start of "0x" to the end of the line
                     bool is_read = (strcmp(action, "Read") == 0) ? true : false;
+                    if (POPT::active) POPT::on_access(pc, is_read);   // gathers advance P-OPT's currDstID
 #ifdef MULTI_LEVEL
                     access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
                         predictor, address, pc, is_read, next_reuse, degree, avg_degree);

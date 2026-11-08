@@ -186,6 +186,8 @@ class PerformanceModel {
     static void printParams();
 
     static uint64_t getCycles() {return PerformanceModel::numCycles;}
+    // Extra cycles from outside the per-level model (P-OPT's next-ref engine).
+    static void addCycles(uint64_t cycles) {PerformanceModel::numCycles += cycles;}
 
     static void updateCycles(const std::string& action, uint64_t numInstructions = 1);
 

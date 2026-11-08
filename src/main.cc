@@ -182,7 +182,8 @@ int main(int argc, char** argv) {
     std::string l1_amoeba_record, l1_amoeba_oracle;
     app.add_option("--l1-amoeba-record", l1_amoeba_record, "--l1-amoeba: write every L1 residency's used-word mask per line to this file (input for --l1-amoeba-oracle)");
     app.add_option("--l1-amoeba-oracle", l1_amoeba_oracle, "--l1-amoeba-fetch oracle: per-residency used-word masks recorded by --l1-amoeba-record");
-    app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4)");
+    app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4; must match the matrix)");
+    app.add_option("--popt-matrix-dir", POPT::matrix_dir, "popt: directory holding <G>.<order>[.wd].popt Rereference Matrices (tools/popt_matrix.cc); also searched: data/popt, <bin>/../data/popt");
 
 
     CLI11_PARSE(app, argc, argv);
@@ -300,7 +301,7 @@ int main(int argc, char** argv) {
             fmt::print(stderr, "popt models a 64B LLC; use --cache-block-size 64\n");
             return 1;
         }
-        if (!POPT::prescan(tracename))
+        if (!POPT::setup(tracename))
             return 1;
         uint64_t reserved = POPT::reserved_ways(llc_num_sets, CACHELINE_SIZE);
         if (reserved >= llc_num_ways) {

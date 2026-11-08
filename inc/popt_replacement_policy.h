@@ -3,57 +3,105 @@
 
 #include "srrip_replacement_policy.h"
 #include <string>
+#include <vector>
 
-// Approximation of P-OPT (Balaji, Crago, Jaleel, Lucia, HPCA 2021), 64B LLC.
-// P-OPT evicts the irregularly accessed line whose next reference is farthest
-// away, using a "rereference matrix" quantized to 256 epochs of the traversal
-// (distance in epochs, 0 = referenced again this epoch, capped at 127), and
-// reserves LLC capacity for two epochs of that matrix. Here the next
-// reference comes from the trace's NextReuse field (absolute trace-line
-// index of the next access to the same 64B block), quantized to 256 equal
-// epochs of trace lines, so this is P-OPT with exact rather than CSR-derived
-// rereference information. Lines with a degree label stand in for P-OPT's
-// irregular data. As in the paper, the matrix spans
-// numLines = numVertices * elemSize / 64 lines; numVertices comes from the
-// GRAPH_INFO table in defs.h (the graph the trace is named after), elemSize
-// from --popt-elem-size.
+// P-OPT (Balaji, Crago, Jaleel, Lucia, HPCA 2021) for pull PageRank traces (pr, pr_spmv), 64B LLC, on SRRIP.
 //
-// Eviction (P-OPT's getReplacementIndex): first a way holding unlabelled
-// data; otherwise the largest epoch distance, ties broken by RRIP (aging only
-// the tied ways). Insertion and hits follow SRRIP.
+// Rereference Matrix: built offline from the graph (tools/popt_matrix.cc -> <G>.<order>[.wd].popt): one byte per
+// (irregData line, epoch), 256 epochs of EpochSize = ceil(n/256) destination vertices, Fig. 6 format (MSB 1: not
+// referenced this epoch, low 7 bits = epochs to the next reference, 127 = none; MSB 0: referenced this epoch, low
+// 7 bits = sub-epoch of the last reference, 127 sub-epochs). irregData = outgoing_contrib, read once per in-arc
+// (the gather); the .wd matrix also counts pr's (Gauss-Seidel) write of outgoing_contrib[u] at destination u.
+//
+// Only the current and next epoch columns are visible to the policy (the columns P-OPT pins in reserved LLC ways;
+// the reserved capacity is taken out of the LLC by main via reserved_ways()). At each epoch boundary the next
+// column becomes current and column epoch+1 is streamed in from memory (counted in stat_streamed_lines, not as
+// demand misses).
+//
+// currDstID (P-OPT's update_index): the trace has no vertex ids, so the (epoch, sub-epoch) of the destination
+// being processed is tracked by counting gathers - the matrix file holds the index of the first gather of every
+// (epoch, sub-epoch) block. setup() finds the gather PC (the read PC with exactly num_arcs accesses whose first
+// accesses follow the graph's in-neighbour order) and irreg_base (first gather address - elem_size * first
+// in-neighbour), checks the first 1024 gathers against the graph, and picks the .wd matrix if and only if the
+// trace writes one element per vertex inside irregData.
+//
+// Eviction (P-OPT's next-ref engine): the first way not holding irregData (address outside
+// [irreg_base, irreg_bound)); otherwise the way whose next reference (Algorithm 2) is farthest, ties broken by
+// SRRIP among the tied ways. Insertion and hits are SRRIP.
 class POPT : public SRRIP {
-    static constexpr uint64_t NUM_EPOCHS = 256;
-    static constexpr uint64_t MAX_REREF = 127;
+    std::vector<uint64_t> line_addr;   // 64B line address held by each way (UINT64_MAX = none)
 
-    std::vector<uint64_t> next_use;    // absolute trace line of the next access
-    std::vector<bool> irregular;       // way holds degree-labelled data
+    struct Header {
+        char magic[8];
+        uint64_t num_nodes, num_arcs, elem_size, line_size, num_epochs, num_sub, epoch_size, sub_size, num_lines,
+                 num_check, writes_at_dst;
+    };
+    inline static Header hdr{};
+    inline static std::vector<uint64_t> starts;   // first gather of each (epoch, sub-epoch) block, + num_arcs
+    inline static std::vector<uint8_t> matrix;    // num_epochs columns of num_lines bytes (memory copy)
+    inline static const uint8_t* cur_col = nullptr;   // pinned current-epoch column
+    inline static const uint8_t* nxt_col = nullptr;   // pinned next-epoch column (nullptr in the last epoch)
+    inline static uint64_t block = 0;             // current (epoch, sub-epoch) block = epoch * num_sub + sub
+    inline static uint64_t gathers = 0;
+    inline static uint64_t irreg_base = 0, irreg_bound = 0, gather_pc = 0;
 
-    uint64_t epoch_distance(uint64_t next) const;
+    inline static uint64_t stat_evict_stream = 0, stat_evict_opt = 0, stat_evict_tie = 0;
+    inline static uint64_t stat_streamed_lines = 0, stat_epochs = 0;
+    inline static uint64_t stat_ref_hist[4] = {};   // next refs at OPT evictions: 0, 1, 2..126, 127
+    // Next-ref engine (paper V-C): each OPT replacement reads the pinned columns' 64B blocks holding the eviction
+    // set's entries (current column; next column too when Algorithm 2 falls through). Reads of this access are
+    // charged by charge_engine() after the access, hidden behind the access's own DRAM fetch.
+    inline static uint64_t pending_reads = 0;
+    inline static uint64_t stat_matrix_reads = 0, stat_engine_cycles = 0, stat_exposed_cycles = 0;
+    inline static uint64_t stat_replacements_dram = 0, stat_replacements_nodram = 0, stat_replacements_wb = 0;
+    // Streaming engine (paper V-D): stop-the-world transfer of a column (num_lines bytes) at peak DRAM bandwidth,
+    // at the start (current + next column) and at every epoch boundary (the new next column).
+    inline static bool streamed_initial = false;
+    inline static uint64_t stat_stream_cycles = 0;
+    static void stream_columns(uint64_t columns);
 
-    inline static uint64_t stat_evict_regular = 0, stat_evict_opt = 0, stat_evict_tie = 0;
+    static bool load(const std::string& path, bool with_matrix);
+    static void enter_epoch(uint64_t epoch);
+    static uint64_t find_next_ref(uint64_t line_id, std::vector<uint64_t>* reads = nullptr);
+    // Next ref of a 64B cache line address: the nearest over the matrix lines it overlaps (two when irregData
+    // does not start on a 64B boundary).
+    uint64_t next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const;
+
+    // A 64B line holds irregData if it overlaps [irreg_base, irreg_bound).
+    bool is_irreg(uint64_t addr) const { return addr != UINT64_MAX && addr + CACHELINE_SIZE > irreg_base && addr < irreg_bound; }
 
     public:
-    // Set by main from --popt-elem-size.
-    inline static uint64_t elem_size = 4;
-    // Set by prescan(): trace length in lines; irregular-array lines from the
-    // graph's GRAPH_INFO entry.
-    inline static uint64_t trace_lines = 0;
-    inline static uint64_t num_vertices = 0;
-    inline static uint64_t irregular_lines = 0;
-    // Looks up the graph's size and makes one pass over the trace before the
-    // LLC is built. Returns false if the graph is not in GRAPH_INFO.
-    static bool prescan(const std::string& trace_path);
-    // Ways P-OPT reserves per set for two epochs of the rereference matrix
-    // (one byte per irregular line per epoch).
+    inline static bool active = false;
+    inline static uint64_t elem_size = 4;     // --popt-elem-size: must match the matrix
+    inline static std::string matrix_dir;     // --popt-matrix-dir
+
+    // Finds and validates the matrix for this trace and prescans the trace (gather PC, irreg range, pr writes).
+    static bool setup(const std::string& trace_path);
+    // Called for every trace access before it is simulated: gathers advance currDstID.
+    static void on_access(uint64_t pc, bool is_read) {
+        if (!streamed_initial) { streamed_initial = true; stream_columns(hdr.num_epochs > 1 ? 2 : 1); }
+        if (pc != gather_pc || !is_read) return;
+        uint64_t last_block = starts.size() - 2;
+        while (block < last_block && gathers >= starts[block + 1]) {
+            uint64_t e = block / hdr.num_sub;
+            block++;
+            if (block / hdr.num_sub != e) enter_epoch(block / hdr.num_sub);
+        }
+        gathers++;
+    }
+    static uint64_t num_lines() { return hdr.num_lines; }
+    // After each access: account the next-ref engine's matrix reads. A replacement made while filling a writeback
+    // (an L1D victim into the exclusive LLC) is off the critical path: reads and engine cycles are counted, no
+    // cycles are added. A demand fill adds what the access's own DRAM fetch does not hide.
+    static void charge_engine(uint64_t dram_cycles, bool writeback);
+    // Ways P-OPT reserves per set for the current and next epoch columns (num_lines bytes each).
     static uint64_t reserved_ways(uint64_t num_sets, uint64_t line_size);
     static void print_stats();
 
     POPT(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) : SRRIP(_set_idx, _num_ways, _level) {
-        next_use.resize(num_ways, UINT64_MAX);
-        irregular.resize(num_ways, false);
+        line_addr.resize(num_ways, UINT64_MAX);
     }
 
-    void hit_update(PacketPtr packet, uint64_t way_idx);
     void fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed);
     uint64_t get_eviction_candidate(bool is_low_priority);
     void evict(uint64_t way_idx);
