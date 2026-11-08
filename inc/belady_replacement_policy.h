@@ -3,6 +3,7 @@
 
 #include "replacement_policy.h"
 #include <climits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -21,16 +22,36 @@
 // a lookup of every way at every decision, at one lookup per inserted (or re-referenced) block.
 //
 // Oracle storage: a radix table over 8B words (1GB regions -> 4KB pages -> 512 words), 4B per word of every
-// touched page, plus 4B per trace line.
+// touched page, plus 4B per trace line. The large arrays are chunked (never reallocated or copied, so the peak is
+// their size plus one partial chunk), and the per-line chunks behind the simulated line are freed as it advances
+// (on_access reads next_line only at TRACE_LINE, in order).
+struct ChunkedU32 {
+    static constexpr uint64_t SHIFT = 26, CHUNK = 1ULL << SHIFT, MASK = CHUNK - 1;   // 64M entries = 256MB
+    std::vector<std::unique_ptr<uint32_t[]>> chunks;
+    uint64_t n = 0, freed = 0;   // entries; chunks [0, freed) released
+    uint32_t& operator[](uint64_t i) { return chunks[i >> SHIFT][i & MASK]; }
+    uint32_t operator[](uint64_t i) const { return chunks[i >> SHIFT][i & MASK]; }
+    // Appends k entries set to v (k divides CHUNK, so a run never straddles chunks).
+    void append(uint64_t k, uint32_t v) {
+        if ((n & MASK) == 0) chunks.emplace_back(new uint32_t[CHUNK]);
+        std::fill_n(&chunks.back()[n & MASK], k, v);
+        n += k;
+    }
+    // Releases the chunks entirely below entry i.
+    void release_below(uint64_t i) { for (; freed < (i >> SHIFT) && freed < chunks.size(); freed++) chunks[freed].reset(); }
+    void clear() { chunks.clear(); n = freed = 0; }
+    uint64_t bytes() const { return (n - std::min(n, freed * CHUNK)) * 4; }   // entries in use (an untouched chunk tail is never paged in)
+};
+
 struct BeladyOracle {
     static constexpr uint64_t PAGE_WORDS = 512, PAGE_SHIFT = 9;           // 4KB pages of 8B words
     static constexpr uint64_t MID_BITS = 18, TOP_ENTRIES = 1ULL << 20;    // 1GB regions; 2^50 B address space
     static constexpr uint32_t NONE = UINT32_MAX;
-    std::vector<uint32_t> next_line;   // per trace line: next line touching the same 8B word (NONE = none)
+    ChunkedU32 next_line;              // per trace line: next line touching the same 8B word (NONE = none)
     std::vector<uint32_t> top;         // region -> mid table index (NONE = untouched)
     std::vector<uint32_t> mid;         // mid tables of 2^MID_BITS pages: page -> leaf index (NONE = untouched)
-    std::vector<uint32_t> next_use;    // leaves of PAGE_WORDS words: line of the word's next access (prescan: first)
-    std::vector<uint32_t> last;        // prescan only, parallel to next_use: last line seen
+    ChunkedU32 next_use;               // leaves of PAGE_WORDS words: line of the word's next access (prescan: first)
+    ChunkedU32 last;                   // prescan only, parallel to next_use: last line seen
     uint64_t pages = 0, words = 0;
     // Index of a word in next_use; UINT64_MAX if its page was never touched (insert=false).
     uint64_t slot(uint64_t word, bool insert) {
@@ -48,13 +69,13 @@ struct BeladyOracle {
         if (leaf == NONE) {
             if (!insert) return UINT64_MAX;
             leaf = (uint32_t)pages++;
-            next_use.resize(pages * PAGE_WORDS, NONE);
-            last.resize(pages * PAGE_WORDS, NONE);
+            next_use.append(PAGE_WORDS, NONE);
+            last.append(PAGE_WORDS, NONE);
         }
         return (uint64_t)leaf * PAGE_WORDS + (word & (PAGE_WORDS - 1));
     }
     uint64_t bytes() const {
-        return (next_line.capacity() + top.capacity() + mid.capacity() + next_use.capacity() + last.capacity()) * 4;
+        return next_line.bytes() + next_use.bytes() + last.bytes() + (top.capacity() + mid.capacity()) * 4;
     }
 };
 
@@ -85,6 +106,7 @@ class Belady : public BasePolicy {
     static void on_access(uint64_t address) {
         uint64_t s = oracle.slot(address >> 3, false);
         if (s != UINT64_MAX) oracle.next_use[s] = oracle.next_line[cachesim::TRACE_LINE];
+        if ((cachesim::TRACE_LINE >> ChunkedU32::SHIFT) > oracle.next_line.freed) oracle.next_line.release_below(cachesim::TRACE_LINE);
     }
     static void print_stats();
 

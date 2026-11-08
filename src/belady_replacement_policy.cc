@@ -15,7 +15,7 @@ bool Belady::prescan(const std::string& trace_path) {
     uint64_t inst, pc, addr;
     uint64_t idx = 0;
     while (trace.getline(line)) {
-        oracle.next_line.push_back(BeladyOracle::NONE);
+        oracle.next_line.append(1, BeladyOracle::NONE);
         if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) == 4) {
             uint64_t s = oracle.slot(addr >> 3, true);
             if (oracle.last[s] == BeladyOracle::NONE) {                            // first access
@@ -27,15 +27,14 @@ bool Belady::prescan(const std::string& trace_path) {
         }
         idx++;
     }
+    uint64_t prescan_peak = oracle.bytes();
     if (idx >= UINT32_MAX) {
         fmt::print(stderr, "Belady: trace has {} lines, more than the oracle's 32-bit line indices\n", idx);
         return false;
     }
-    std::vector<uint32_t>().swap(oracle.last);   // prescan-only
-    oracle.next_line.shrink_to_fit();
-    oracle.next_use.shrink_to_fit();
-    oracle.mid.shrink_to_fit();
+    oracle.last.clear();   // prescan-only
     oracle_active = true;
+    fmt::print("Belady: prescan peak {:.2f} GB\n", prescan_peak / double(1ULL << 30));
     fmt::print("Belady: next-use oracle from {} trace lines, {} distinct 8B words in {} 4KB pages ({:.2f} GB)\n",
         idx, oracle.words, oracle.pages, oracle.bytes() / double(1ULL << 30));
     return true;
