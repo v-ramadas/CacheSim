@@ -43,6 +43,17 @@ class POPT : public SRRIP {
     inline static const uint8_t* nxt_col = nullptr;   // pinned next-epoch column (nullptr in the last epoch)
     inline static uint64_t block = 0;             // current (epoch, sub-epoch) block = epoch * num_sub + sub
     inline static uint64_t gathers = 0;
+    // currDstID (paper: update_index at the start of each destination): a per-destination stream - the earliest
+    // PC with one access per vertex, constant stride, starting before the first gather (GAP: the CSR offset read
+    // of in_neigh(u)) - gives u exactly. Gather counting (via starts[]) cross-checks it; it drives the epochs only
+    // if no such stream exists.
+    inline static uint64_t dst_pc = 0, dst_total = 0, dst_count = 0, gather_reads = 0;
+    inline static uint64_t gblock = 0;            // block implied by the gather count (cross-check)
+    // P-OPT runs only over the pull loop (reference code: UpdateIrregRanges around it): from the first destination
+    // to the end of both streams; elsewhere eviction is plain SRRIP.
+    inline static bool in_window = false, window_done = false;
+    inline static uint64_t stat_block_mismatch = 0, stat_evict_outside = 0;
+    static void set_block(uint64_t new_block);
     inline static uint64_t irreg_base = 0, irreg_bound = 0, gather_pc = 0;
 
     inline static uint64_t stat_evict_stream = 0, stat_evict_opt = 0, stat_evict_tie = 0;
@@ -77,17 +88,33 @@ class POPT : public SRRIP {
 
     // Finds and validates the matrix for this trace and prescans the trace (gather PC, irreg range, pr writes).
     static bool setup(const std::string& trace_path);
-    // Called for every trace access before it is simulated: gathers advance currDstID.
+    // Called for every trace access before it is simulated: the destination stream sets currDstID; gathers
+    // cross-check it (or drive it, without a destination stream).
     static void on_access(uint64_t pc, bool is_read) {
         if (!streamed_initial) { streamed_initial = true; stream_columns(hdr.num_epochs > 1 ? 2 : 1); }
-        if (pc != gather_pc || !is_read) return;
-        uint64_t last_block = starts.size() - 2;
-        while (block < last_block && gathers >= starts[block + 1]) {
-            uint64_t e = block / hdr.num_sub;
-            block++;
-            if (block / hdr.num_sub != e) enter_epoch(block / hdr.num_sub);
+        if (dst_pc && pc == dst_pc) {
+            uint64_t u = dst_count++;
+            if (!window_done) in_window = true;
+            if (u < hdr.num_nodes) {
+                uint64_t e = u / hdr.epoch_size;
+                set_block(e * hdr.num_sub + (u - e * hdr.epoch_size) / hdr.sub_size);
+            }
         }
-        gathers++;
+        if (pc == gather_pc && is_read) {
+            uint64_t last_block = starts.size() - 2;
+            while (gblock < last_block && gathers >= starts[gblock + 1]) gblock++;   // gather's (epoch, sub-epoch)
+            if (!dst_pc) {
+                if (!window_done) in_window = true;
+                set_block(gblock);
+            } else if (gblock != block) {
+                stat_block_mismatch++;
+            }
+            gathers++;
+        }
+        if (in_window && gathers >= gather_reads && (!dst_pc || dst_count >= dst_total)) {
+            in_window = false;
+            window_done = true;
+        }
     }
     static uint64_t num_lines() { return hdr.num_lines; }
     // After each access: account the next-ref engine's matrix reads. A replacement made while filling a writeback

@@ -78,7 +78,11 @@ bool POPT::setup(const std::string& trace_path) {
     matrix.clear();
 
     // Prescan: reads per PC (+ the first num_check read addresses), writes per PC with their address range.
-    struct PcInfo { uint64_t reads = 0, writes = 0, wmin = UINT64_MAX, wmax = 0; std::vector<uint64_t> first; };
+    struct PcInfo {
+        uint64_t reads = 0, writes = 0, wmin = UINT64_MAX, wmax = 0; std::vector<uint64_t> first;
+        uint64_t first_idx = UINT64_MAX, prev = 0, stride = 0; bool stride_ok = true;   // destination-stream detection
+    };
+    uint64_t line_idx = 0;
     std::map<uint64_t, PcInfo> pcs;
     TraceFile trace(trace_path);
     if (!trace.is_open()) {
@@ -89,8 +93,14 @@ bool POPT::setup(const std::string& trace_path) {
     char action[16];
     uint64_t inst, pc, addr;
     while (trace.getline(line)) {
+        line_idx++;
         if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) != 4) continue;
         auto& p = pcs[pc];
+        uint64_t n_before = p.reads + p.writes;
+        if (n_before == 0) p.first_idx = line_idx;
+        else if (n_before == 1) { p.stride = addr - p.prev; p.stride_ok = addr > p.prev; }
+        else if (p.stride_ok && addr - p.prev != p.stride) p.stride_ok = false;
+        p.prev = addr;
         if (strcmp(action, "Read") == 0) {
             p.reads++;
             if (p.first.size() < hdr.num_check) p.first.push_back(addr);
@@ -103,7 +113,7 @@ bool POPT::setup(const std::string& trace_path) {
     // Gather PC: num_arcs reads (a few fewer allowed: older traces lose the last gathers at the ROI end marker)
     // whose first accesses are irreg_base + elem_size * in-neighbour, in traversal order.
     constexpr uint64_t kRoiSlack = 16;
-    uint64_t gather_reads = 0;
+    gather_reads = 0;
     for (const auto& [p, info] : pcs) {
         if (info.reads > hdr.num_arcs || info.reads + kRoiSlack < hdr.num_arcs) continue;
         if (info.first.size() != hdr.num_check || hdr.num_check == 0) continue;
@@ -122,6 +132,21 @@ bool POPT::setup(const std::string& trace_path) {
         return false;
     }
     irreg_bound = irreg_base + hdr.num_nodes * elem_size;
+    // Destination stream: one access per vertex (a few fewer allowed at an ROI end), constant positive stride,
+    // starting before the first gather; the earliest such PC.
+    uint64_t gather_first = pcs[gather_pc].first_idx, best_first = UINT64_MAX;
+    for (const auto& [p, info] : pcs) {
+        uint64_t n = info.reads + info.writes;
+        if (p == gather_pc || n > hdr.num_nodes || n + kRoiSlack < hdr.num_nodes || !info.stride_ok) continue;
+        if (info.first_idx > gather_first || info.first_idx >= best_first) continue;
+        best_first = info.first_idx; dst_pc = p; dst_total = n;
+    }
+    if (dst_pc)
+        fmt::print("POPT: destination stream PC {:#x} ({} accesses, stride {}B) sets currDstID; gathers cross-check it\n",
+            dst_pc, dst_total, pcs[dst_pc].stride);
+    else
+        fmt::print("POPT: warning: no per-destination stream found; currDstID follows the gather count (sub-epoch "
+                   "granularity, lags across destinations without in-edges)\n");
     if (irreg_base % CACHELINE_SIZE)
         fmt::print("POPT: note: irregData starts at {:#x}, not 64B-aligned; a cache line's next ref is the nearest of the "
                    "two matrix lines it overlaps\n", irreg_base);
@@ -165,6 +190,13 @@ void POPT::stream_columns(uint64_t columns) {
     uint64_t transfer = (uint64_t)std::ceil(columns * hdr.num_lines * cpu_mhz / bytes_per_us);
     PerformanceModel::addCycles(latency + transfer);
     stat_stream_cycles += latency + transfer;
+}
+
+void POPT::set_block(uint64_t new_block) {
+    // Advance only (destinations ascend); stream a column at every epoch boundary crossed.
+    if (new_block <= block) return;
+    for (uint64_t e = block / hdr.num_sub; e < new_block / hdr.num_sub; e++) enter_epoch(e + 1);
+    block = new_block;
 }
 
 void POPT::enter_epoch(uint64_t epoch) {
@@ -235,6 +267,10 @@ void POPT::print_stats() {
                "stop-the-world cycles\n", gathers, hdr.num_arcs, stat_epochs, stat_streamed_lines,
         stat_streamed_lines * 64.0 / (1 << 20), stat_stream_cycles);
     uint64_t reps = stat_replacements_dram + stat_replacements_nodram;
+    fmt::print("POPT currDstID: destination stream {} ({} of {} vertices) | gathers in a different (epoch, sub-epoch) "
+               "than the destination stream: {} | evictions outside the pull loop (SRRIP): {}\n",
+        dst_pc ? fmt::format("{:#x}", dst_pc) : std::string("none (gather count)"), dst_count, hdr.num_nodes,
+        stat_block_mismatch, stat_evict_outside);
     fmt::print("POPT next-ref engine: {} pinned-column block reads ({:.2f} per OPT replacement) = {} cycles, {} exposed "
                "| accesses with OPT replacements: {} on writeback fills (off the critical path), {} demand fills with a "
                "DRAM fetch, {} without\n",
@@ -248,7 +284,12 @@ void POPT::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, b
     line_addr[way_idx] = align_address(packet->address, CACHELINE_SIZE);
 }
 
-uint64_t POPT::get_eviction_candidate(bool /*is_low_priority*/) {
+uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
+    // Outside the pull loop P-OPT is off: plain SRRIP (the reserved ways stay reserved).
+    if (!in_window) {
+        stat_evict_outside++;
+        return SRRIP::get_eviction_candidate(is_low_priority);
+    }
     // Data outside irregData (streaming) goes first: the first such way.
     for (uint64_t way = 0; way < num_ways; way++) {
         if (!is_irreg(line_addr[way])) {
