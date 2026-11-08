@@ -27,6 +27,8 @@ class BasePolicy {
     virtual uint64_t get_eviction_candidate(bool) = 0;
     virtual uint64_t get_reserved_eviction_candidate(bool) = 0;
     virtual void evict(uint64_t way_idx) = 0;
+    // A way was invalidated without an eviction (e.g. an exclusive LLC hit moving the line up). No-op by default.
+    virtual void invalidate(uint64_t /*way_idx*/) {}
     virtual uint64_t get_counter_value(uint64_t way_idx) = 0;
     virtual uint64_t count_distance(uint64_t threshold) = 0;
     virtual void repartition_ways(uint64_t num_ways_to_reserve) = 0;

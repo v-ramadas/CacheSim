@@ -12,7 +12,9 @@ class Belady : public BasePolicy {
     Belady(uint64_t _set_idx, uint64_t _num_ways, CacheLevel _level) {
         set_idx = _set_idx;
         num_ways = _num_ways;
-        counter.resize(num_ways, UINT64_MAX);
+        // counter = next-use trace line of the way's block; invalid ways hold 0 so they are never picked as a
+        // victim (Set::handle_evict asks for candidates even when some ways are already free).
+        counter.resize(num_ways, 0);
         insertion_clock.resize(num_ways, 0);
         level = _level;
         reserved_ways = 0;
@@ -29,6 +31,8 @@ class Belady : public BasePolicy {
     uint64_t get_reserved_eviction_candidate(bool is_low_priority);
 
     void evict(uint64_t way_idx);
+
+    void invalidate(uint64_t way_idx) { counter[way_idx] = 0; }
 
     uint64_t get_counter_value(uint64_t way_idx);
 

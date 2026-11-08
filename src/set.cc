@@ -249,6 +249,7 @@ void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
 
 void Set::invalidate_way(uint64_t way_idx) {
     eff_close(way_idx);
+    repl_counter->invalidate(way_idx);
     if (amoeba_active())
         amoeba_release_way(way_idx);
     set_way_address(way_idx, UINT64_MAX);

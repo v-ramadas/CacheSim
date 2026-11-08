@@ -4,7 +4,9 @@
 void Belady::init_counter(PacketPtr /*packet*/) {
 }
 
-void Belady::hit_update(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
+void Belady::hit_update(PacketPtr packet, uint64_t way_idx) {
+    // The block's next use is now the one after this access (the stored one was this access).
+    counter[way_idx] = packet->next_reuse;
 }
 
 void Belady::fill_update(uint64_t way_idx, uint64_t /*block_idx*/, PacketPtr packet, bool /*was_accessed*/) {
