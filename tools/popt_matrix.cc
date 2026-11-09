@@ -31,8 +31,12 @@
 // --elem-bits 1: srcData is a bitmap (1 bit per vertex, 512 vertices per 64B line; bfs bottom-up steps read the
 // frontier bitmap for in_neigh(u)); the header stores elem_size 0. Write to <G>.<order>.bm.popt.
 //
+// --line-size N (default 64): bytes of srcData per matrix line (8, 16, 32 or 64). 8 gives one entry per 8B block,
+// for a sub-64B LLC; the matrix (and the LLC space P-OPT pins for it) grows by 64/N. Write to
+// <G>.<order>[.variant].l<N>.popt (no suffix for 64).
+//
 // Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-size N (4) | --elem-bits 1]
-//        [--epochs N (256)]
+//        [--epochs N (256)] [--line-size N (64)]
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -42,7 +46,6 @@
 
 static constexpr uint32_t kSub = 127;
 static constexpr uint32_t kCheck = 1024;
-static constexpr uint32_t kLineSize = 64;
 
 struct PoptHeader {
     char magic[8];            // "POPTRM2\0"
@@ -62,10 +65,10 @@ struct PoptHeader {
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-bits 1] "
-                             "[--elem-size N] [--epochs N]\n", argv[0]);
+                             "[--elem-size N] [--epochs N] [--line-size N]\n", argv[0]);
         return 1;
     }
-    uint64_t elem_size = 4, num_epochs = 256;
+    uint64_t elem_size = 4, num_epochs = 256, line_size = 64;
     bool writes_at_dst = false, neigh_out = false, bitmap = false;
     for (int i = 3; i < argc; i++) {
         if (!std::strcmp(argv[i], "--writes-at-dst")) writes_at_dst = true;
@@ -80,10 +83,15 @@ int main(int argc, char** argv) {
         }
         else if (!std::strcmp(argv[i], "--elem-size") && i + 1 < argc) elem_size = std::strtoull(argv[++i], nullptr, 10);
         else if (!std::strcmp(argv[i], "--epochs") && i + 1 < argc) num_epochs = std::strtoull(argv[++i], nullptr, 10);
+        else if (!std::strcmp(argv[i], "--line-size") && i + 1 < argc) line_size = std::strtoull(argv[++i], nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 1; }
     }
-    if (num_epochs < 2 || num_epochs > 1024 || elem_size == 0 || kLineSize % elem_size) {
-        std::fprintf(stderr, "bad --epochs / --elem-size\n");
+    if (line_size != 8 && line_size != 16 && line_size != 32 && line_size != 64) {
+        std::fprintf(stderr, "--line-size must be 8, 16, 32 or 64\n");
+        return 1;
+    }
+    if (num_epochs < 2 || num_epochs > 1024 || elem_size == 0 || (!bitmap && line_size % elem_size)) {
+        std::fprintf(stderr, "bad --epochs / --elem-size (must divide --line-size)\n");
         return 1;
     }
 
@@ -120,12 +128,12 @@ int main(int argc, char** argv) {
     h.num_nodes = n;
     h.num_arcs = m;
     h.elem_size = bitmap ? 0 : elem_size;
-    h.line_size = kLineSize;
+    h.line_size = line_size;
     h.num_epochs = num_epochs;
     h.num_sub = kSub;
     h.epoch_size = (n + num_epochs - 1) / num_epochs;
     h.sub_size = (h.epoch_size + kSub - 1) / kSub;
-    const uint64_t per_line = bitmap ? kLineSize * 8 : kLineSize / elem_size;   // vertices per 64B line
+    const uint64_t per_line = bitmap ? line_size * 8 : line_size / elem_size;   // vertices per matrix line
     h.num_lines = (n + per_line - 1) / per_line;
     h.num_check = m < kCheck ? m : kCheck;
     h.writes_at_dst = writes_at_dst;
@@ -188,8 +196,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
-    std::printf("%s%s%s%s: %s, %lu vertices, %lu arcs, %lu lines (%lu B/elem, 0 = bit), %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
-        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", bitmap ? "[bitmap] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, h.elem_size, num_epochs, h.epoch_size,
+    std::printf("%s%s%s%s: %s, %lu vertices, %lu arcs, %lu lines of %lu B (%lu B/elem, 0 = bit), %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
+        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", bitmap ? "[bitmap] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, line_size, h.elem_size, num_epochs, h.epoch_size,
         kSub, h.sub_size, argv[2]);
     return 0;
 }

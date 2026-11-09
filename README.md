@@ -107,6 +107,12 @@ algorithms.
 
 `--popt-elem-size` must match the matrix.
 
+**Matrix line size (`--popt-line-size`):** by default the simulator uses matrices whose line size equals the LLC block
+size (`.l8.popt` for 8B), and falls back to the 64B matrices if those don't exist. With a 64B matrix on an 8B LLC
+each block inherits its 64B line's next reference (coarse). An 8B matrix is exact per block but 8x larger: it pins
+2 bytes per 8B of the array, so it does not fit a 2 MB LLC for sx-stackoverflow or kron21 (the run stops with
+`popt: rereference matrix needs N of M LLC ways`). Pass `--popt-line-size 64` to force the coarse variant.
+
 ## Common options
 
 | option | meaning |

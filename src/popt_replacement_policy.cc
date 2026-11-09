@@ -80,21 +80,43 @@ bool POPT::setup(const std::string& trace_path) {
     dirs.push_back(exe_dir() + "/../data/popt");
     // Variants: in-neighbour traversal (pull PageRank; .wd adds pr's write at the destination) and out-neighbour
     // traversal (.out: cc_sv's hook pass). The one whose neighbour prefix matches the trace's gathers is used.
+    // Matrix line size: --popt-line-size, or (0) the LLC block size. Matrices for N != 64 are named
+    // <G>.<order>[.variant].l<N>.popt. With the default, a sub-64B LLC without such matrices uses the 64B ones
+    // (coarse: a block inherits its 64B line's next reference).
     std::string plain, wd, out, bm;
-    for (const auto& d : dirs) {
-        if (bm.empty() && std::ifstream(d + "/" + base + ".bm.popt")) bm = d + "/" + base + ".bm.popt";
-        if (plain.empty() && std::ifstream(d + "/" + base + ".popt")) plain = d + "/" + base + ".popt";
-        if (wd.empty() && std::ifstream(d + "/" + base + ".wd.popt")) wd = d + "/" + base + ".wd.popt";
-        if (out.empty() && std::ifstream(d + "/" + base + ".out.popt")) out = d + "/" + base + ".out.popt";
+    auto search = [&](uint64_t ls) {
+        std::string tag = ls == CACHELINE_SIZE ? "" : ".l" + std::to_string(ls);
+        plain.clear(); wd.clear(); out.clear(); bm.clear();
+        for (const auto& d : dirs) {
+            std::string p = d + "/" + base;
+            if (bm.empty() && std::ifstream(p + ".bm" + tag + ".popt")) bm = p + ".bm" + tag + ".popt";
+            if (plain.empty() && std::ifstream(p + tag + ".popt")) plain = p + tag + ".popt";
+            if (wd.empty() && std::ifstream(p + ".wd" + tag + ".popt")) wd = p + ".wd" + tag + ".popt";
+            if (out.empty() && std::ifstream(p + ".out" + tag + ".popt")) out = p + ".out" + tag + ".popt";
+        }
+        return !(plain.empty() && wd.empty() && out.empty() && bm.empty());
+    };
+    uint64_t want_ls = line_size ? line_size : cachesim::BLOCK_SIZE;
+    bool found = search(want_ls);
+    if (!found && line_size == 0 && want_ls != CACHELINE_SIZE && search(CACHELINE_SIZE)) {
+        fmt::print("POPT: no {0}B-line matrices (<G>.<order>[.variant].l{0}.popt) for {1}; using the 64B-line ones (coarse)\n",
+            want_ls, base);
+        want_ls = CACHELINE_SIZE;
+        found = true;
     }
-    if (plain.empty() && wd.empty() && out.empty() && bm.empty()) {
+    if (!found) {
         // Not preprocessed: like the reference code with no matrix registered, run the baseline policy.
-        fmt::print("POPT: inactive - no Rereference Matrix {0}.popt / {0}.wd.popt / {0}.out.popt in --popt-matrix-dir, data/popt "
-                   "or <bin>/../data/popt; running SRRIP with no reserved ways\n", base);
+        std::string tag = want_ls == CACHELINE_SIZE ? "" : ".l" + std::to_string(want_ls);
+        fmt::print("POPT: inactive - no Rereference Matrix {0}[.wd|.out|.bm]{1}.popt in --popt-matrix-dir, data/popt "
+                   "or <bin>/../data/popt; running SRRIP with no reserved ways\n", base, tag);
         return true;
     }
     auto read_check = [&](const std::string& path, std::vector<int32_t>& chk) {
         if (path.empty() || !load(path, false)) return false;
+        if (hdr.line_size != want_ls) {
+            fmt::print(stderr, "POPT: {} has {}B matrix lines, expected {}B\n", path, hdr.line_size, want_ls);
+            return false;
+        }
         if (hdr.elem_size != elem_size && hdr.elem_size != 0) {
             fmt::print(stderr, "POPT: {} elem_size {} != --popt-elem-size {}\n", path, hdr.elem_size, elem_size);
             return false;
@@ -281,10 +303,10 @@ bool POPT::setup(const std::string& trace_path) {
     if (pass_mode) {
         if (!load(bm, true)) return false;
         active = true;
-        fmt::print("POPT: pass mode (bitmap traversals) | matrix {} | {} vertices, {} lines of 512 vertices | destination "
+        fmt::print("POPT: pass mode (bitmap traversals) | matrix {} | {} vertices, {} lines of {} vertices | destination "
                    "stream {:#x} ({} accesses = {} passes, stride {}B) | neighbour array {:#x} at {:#x} | bitmap {:#x} at "
                    "{:#x} (other bitmap {:#x}{}, {} B each)\n",
-            bm, hdr.num_nodes, hdr.num_lines, dst_pc, dst_total, dst_total / hdr.num_nodes, pcs[dst_pc].run_stride, na_pc,
+            bm, hdr.num_nodes, hdr.num_lines, hdr.line_size * 8, dst_pc, dst_total, dst_total / hdr.num_nodes, pcs[dst_pc].run_stride, na_pc,
             na_base, bm_pc, bm_base[0], bm_base[1], bm_known[1] ? "" : ", from the address cluster", bm_bytes);
         return true;
     }
@@ -303,9 +325,9 @@ bool POPT::setup(const std::string& trace_path) {
     else
         fmt::print("POPT: warning: no per-destination stream found; currDstID follows the gather count (sub-epoch "
                    "granularity, lags across destinations without in-edges)\n");
-    if (irreg_base % CACHELINE_SIZE)
-        fmt::print("POPT: note: irregData starts at {:#x}, not 64B-aligned; a cache line's next ref is the nearest of the "
-                   "two matrix lines it overlaps\n", irreg_base);
+    if (irreg_base % std::max<uint64_t>(hdr.line_size, cachesim::BLOCK_SIZE))
+        fmt::print("POPT: note: irregData starts at {:#x}, not aligned to the {}B matrix lines / {}B blocks; a block's next "
+                   "ref is the nearest of the matrix lines it overlaps\n", irreg_base, hdr.line_size, cachesim::BLOCK_SIZE);
     // pr (Gauss-Seidel) writes irregData once per vertex while processing it.
     bool writes = false;
     for (const auto& [p, info] : pcs)
@@ -331,9 +353,9 @@ bool POPT::setup(const std::string& trace_path) {
     cur_col = &matrix[0];
     nxt_col = hdr.num_epochs > 1 ? &matrix[hdr.num_lines] : nullptr;
     stat_streamed_lines = 2 * ((hdr.num_lines + 63) / 64);   // the first two columns
-    fmt::print("POPT: matrix {} | {} vertices, {} arcs, {} x {}B irregData lines | {} epochs of {} vertices, {} sub-epochs of {} | "
+    fmt::print("POPT: matrix {} | {} vertices, {} arcs, {} x {}B irregData lines of {}B | {} epochs of {} vertices, {} sub-epochs of {} | "
                "gather PC {:#x}, irregData {:#x}..{:#x}{}\n",
-        chosen, hdr.num_nodes, hdr.num_arcs, hdr.num_lines, hdr.elem_size, hdr.num_epochs, hdr.epoch_size, hdr.num_sub,
+        chosen, hdr.num_nodes, hdr.num_arcs, hdr.num_lines, hdr.elem_size, hdr.line_size, hdr.num_epochs, hdr.epoch_size, hdr.num_sub,
         hdr.sub_size, gather_pc, irreg_base, irreg_bound, writes ? " (+ writes at dst)" : "");
     return true;
 }
@@ -425,11 +447,12 @@ uint64_t POPT::find_next_ref(uint64_t line_id, std::vector<uint64_t>* reads) {
 }
 
 uint64_t POPT::next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const {
-    // Matrix lines are 64B chunks of irregData counted from irreg_base; a cache block overlaps one of them, or two
-    // when irreg_base is not 64B-aligned. The block is next needed when any of its matrix lines is. A sub-64B block
-    // inherits its 64B matrix line's next reference (coarse: the matrix stays at 64B granularity).
-    uint64_t lo = addr <= irreg_base ? 0 : (addr - irreg_base) / CACHELINE_SIZE;
-    uint64_t hi = std::min<uint64_t>((addr + cachesim::BLOCK_SIZE - 1 - irreg_base) / CACHELINE_SIZE, hdr.num_lines - 1);
+    // Matrix lines are hdr.line_size-byte chunks of irregData counted from irreg_base. The block is next needed when
+    // any matrix line it overlaps is: a block smaller than a matrix line inherits that line's next reference (coarse),
+    // a larger one takes the nearest of its lines.
+    const uint64_t ls = hdr.line_size;
+    uint64_t lo = addr <= irreg_base ? 0 : (addr - irreg_base) / ls;
+    uint64_t hi = std::min<uint64_t>((addr + cachesim::BLOCK_SIZE - 1 - irreg_base) / ls, hdr.num_lines - 1);
     uint64_t best = find_next_ref(lo, reads);
     for (uint64_t l = lo + 1; l <= hi; l++) best = std::min(best, find_next_ref(l, reads));
     return best;

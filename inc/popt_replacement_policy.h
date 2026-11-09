@@ -107,6 +107,7 @@ class POPT : public SRRIP {
     public:
     inline static bool active = false;
     inline static uint64_t elem_size = 4;     // --popt-elem-size: must match the matrix
+    inline static uint64_t line_size = 0;     // --popt-line-size: matrix line bytes (0 = the LLC block size, else 64B)
     inline static std::string matrix_dir;     // --popt-matrix-dir
 
     // Finds and validates the matrix for this trace and prescans the trace (gather PC, irreg range, pr writes).

@@ -18,13 +18,14 @@ make popt_matrix        # -> bin/popt_matrix (not built by the default `make`)
 ### Usage
 
 ```
-bin/popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-bits 1] [--elem-size N] [--epochs N]
+bin/popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-bits 1] [--elem-size N] [--epochs N] [--line-size N]
 ```
 
 | option | default | meaning |
 |---|---|---|
 | `--elem-size N` | 4 | bytes per element of the irregularly read array; must divide 64 |
 | `--epochs N` | 256 | number of epochs (2-1024); each epoch is split into 127 sub-epochs |
+| `--line-size N` | 64 | bytes of the array per matrix line: 8, 16, 32 or 64. 8 gives one entry per 8B block, for an 8B LLC; the matrix, and the LLC space it pins, grows by 64/N |
 | `--writes-at-dst` | off | also count pr's (Gauss-Seidel) write of `outgoing_contrib[u]` at destination u |
 | `--neigh in\|out` | `in` | neighbours read per destination: `in` = pull PageRank, `out` = cc_sv's hook pass |
 | `--elem-bits 1` | off | the irregular array is a bitmap (1 bit per vertex), as in bfs bottom-up steps; also stores every 16th neighbour so the simulator can validate the trace |
@@ -40,6 +41,8 @@ The simulator finds a matrix from the trace name. For a trace `<dir>/<G>.<order>
 | pr (Gauss-Seidel pull) | `<G>.<order>.wd.popt` | `--writes-at-dst` |
 | cc_sv (hook pass) | `<G>.<order>.out.popt` | `--neigh out` |
 | bfs (bottom-up steps) | `<G>.<order>.bm.popt` | `--elem-bits 1` |
+
+Matrices with `--line-size N` other than 64 add `.l<N>` before `.popt`, e.g. `<G>.<order>.wd.l8.popt`.
 
 The simulator validates each trace against the matrix and picks the variant that fits. Kernels with no matching
 matrix fall back to SRRIP, as the run's output reports. Kernels without a matrix include bc, sssp and Afforest cc.
