@@ -51,10 +51,8 @@ uint64_t Belady::block_next_use(uint64_t block_addr) {
 }
 
 void Belady::print_stats() {
-    uint64_t tot = stat_bypassed + stat_inserted;
-    fmt::print("Belady (OPT, next use from {}): blocks offered to the LLC {} | inserted {} | bypassed {} ({:.2f}%)\n",
-        oracle_active ? "the 8B oracle" : "the trace's 64B NextReuse", tot, stat_inserted, stat_bypassed,
-        tot ? 100.0 * stat_bypassed / tot : 0.0);
+    fmt::print("Belady (MIN, next use from {}): blocks inserted {}\n",
+        oracle_active ? "the 8B oracle" : "the trace's 64B NextReuse", stat_inserted);
 }
 
 // ---------------------------------------------------------------- policy
@@ -75,39 +73,8 @@ void Belady::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet,
     uint64_t addr = (block_idx < packet->blocks.size() && packet->blocks[block_idx] != UINT64_MAX)
                         ? packet->blocks[block_idx] : align_block(packet->address, block_size);
     way_addr[way_idx] = align_block(addr, block_size);
-    if (!oracle_active) counter[way_idx] = packet->next_reuse;
-    else if (way_addr[way_idx] == pending_addr && pending_line == cachesim::TRACE_LINE) counter[way_idx] = pending_nu;
-    else counter[way_idx] = block_next_use(way_addr[way_idx]);
-    pending_addr = UINT64_MAX;
+    counter[way_idx] = oracle_active ? block_next_use(way_addr[way_idx]) : packet->next_reuse;
     stat_inserted++;
-}
-
-void Belady::begin_fill(PacketPtr /*packet*/) {
-    fill_set.clear();
-    fill_free = 0;
-    for (uint64_t w = 0; w < num_ways; w++) {
-        if (way_addr[w] == UINT64_MAX) fill_free++;
-        else fill_set.push_back(way_next_use(w));
-    }
-}
-
-bool Belady::bypass(PacketPtr packet, uint64_t block_addr) {
-    if (fill_free) { fill_free--; return false; }          // free way: inserting never hurts
-    // Oracle (sub-64B blocks): the block's exact next use; otherwise the trace's per-64B NextReuse the fill carries
-    // (refreshed by the L1D on every hit, so it is the line's next use after its last access).
-    uint64_t nu = packet->next_reuse;
-    if (oracle_active) {
-        pending_addr = align_block(block_addr, block_size);
-        nu = pending_nu = block_next_use(pending_addr);
-        pending_line = cachesim::TRACE_LINE;
-    }
-    auto far = std::max_element(fill_set.begin(), fill_set.end());
-    if (far == fill_set.end() || nu >= *far) {             // it would be the farthest: OPT does not keep it
-        stat_bypassed++;
-        return true;
-    }
-    *far = nu;                                             // kept; the farthest resident goes instead
-    return false;
 }
 
 uint64_t Belady::get_eviction_candidate(bool /*is_low_priority=false*/) {

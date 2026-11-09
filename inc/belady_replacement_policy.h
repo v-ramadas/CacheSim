@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-// Belady's MIN (OPT) for the LLC.
+// Belady's MIN for the LLC: every block is inserted; the victim is the resident with the farthest next use.
 //
 // Next use: for 64B blocks, the trace's per-64B NextReuse, carried with the line (the L1D refreshes it on every hit)
 // and kept per way. For smaller blocks, the next-use oracle (built by prescan() from the trace, at 8B granularity):
@@ -79,18 +79,10 @@ struct BeladyOracle {
     }
 };
 
-// OPT inserts only what it keeps: on a fill, if the set has no free way, a block is inserted only if its next use
-// is earlier than the farthest of the blocks it competes with (residents and the fill's blocks already kept);
-// otherwise it is bypassed (dropped). Evictions take the resident with the farthest next use.
+// MIN: no bypass. Every fill is inserted; evictions take the resident with the farthest next use.
 class Belady : public BasePolicy {
     // Per-way block address (UINT64_MAX = invalid) for oracle lookups.
     std::vector<uint64_t> way_addr;
-    // Bypass state of the current fill: next uses of the blocks the set would hold (residents, then kept fill
-    // blocks replacing the farthest), and the free ways left.
-    std::vector<uint64_t> fill_set;
-    uint64_t fill_free = 0;
-    // Next use of the block bypass() last evaluated, reused by fill_update() when it is inserted.
-    uint64_t pending_addr = UINT64_MAX, pending_nu = 0, pending_line = UINT64_MAX;
     // Next use of the block in valid way w (oracle: refreshed if stale).
     uint64_t way_next_use(uint64_t w);
 
@@ -100,7 +92,7 @@ class Belady : public BasePolicy {
     public:
     inline static bool oracle_active = false;
     inline static uint64_t block_size = 64;           // LLC block size (set by main)
-    inline static uint64_t stat_bypassed = 0, stat_inserted = 0;
+    inline static uint64_t stat_inserted = 0;
     // Builds the next-use oracle from an instruction trace; false if it cannot read it.
     static bool prescan(const std::string& trace_path);
     static void on_access(uint64_t address) {
@@ -138,9 +130,6 @@ class Belady : public BasePolicy {
 
     void invalidate(uint64_t way_idx) { counter[way_idx] = 0; way_addr[way_idx] = UINT64_MAX; }
 
-    void begin_fill(PacketPtr packet) override;
-    bool bypass(PacketPtr packet, uint64_t block_addr) override;
-    bool evict_only_kept() const override { return true; }
 
     uint64_t get_counter_value(uint64_t way_idx);
 

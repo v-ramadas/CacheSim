@@ -79,7 +79,7 @@ algorithms.
 | `grasp` | GRASP (software-marked hub range gets priority) |
 | `hru`, `phru`, `hrrip`, `hub_oracle` | hub-aware policies from this project (`hub_oracle` uses the trace's degree labels) |
 | `hrupp`, `phrupp` | non-iso-area upper bounds of `hru` / `phru` |
-| `belady` | Belady OPT with bypass (see below) |
+| `belady` | Belady's MIN (see below) |
 | `popt` | P-OPT (HPCA'21) from a Rereference Matrix (see below) |
 | `amoeba` | Amoeba-Cache (variable-size blocks; `--amoeba-*`, `--l1-amoeba*`) |
 
@@ -88,7 +88,7 @@ algorithms.
 - **64B:** the next use comes from the trace's `NextReuse`.
 - **Sub-64B blocks (instruction traces):** the next use comes from an exact 8B next-use oracle. A prescan reads
   the trace once before simulating. No flag is needed.
-- **Bypass:** a block whose next use is beyond every competitor's is not inserted, and causes no eviction.
+- **No bypass (MIN):** every block is inserted; the victim is the resident with the farthest next use.
 - **Cost:** the oracle needs about 4 B per trace line plus 4 B per touched word.
 
 | trace (8B) | peak memory | run time |
@@ -128,7 +128,7 @@ Run `bin/cachesim_multi --help` for the full list.
 Each level prints a `Cache L1D` / `Cache LLC` block (plus `Cache L2` with `--l2`) with hits, misses, `MPKI` and
 `Num Cycles`. Parse by the level header, not by position. A per-PC table of hub, non-hub and regular accesses and
 misses per level is always printed. Policy-specific statistics follow, for example
-`Belady (OPT, ...)`, `HubHawkeye ...` or P-OPT's epoch and engine counters.
+`Belady (MIN, ...)`, `HubHawkeye ...` or P-OPT's epoch and engine counters.
 
 ## Regression tests
 
