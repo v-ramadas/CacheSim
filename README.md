@@ -107,11 +107,14 @@ algorithms.
 
 `--popt-elem-size` must match the matrix.
 
-**Matrix line size (`--popt-line-size`):** by default the simulator uses matrices whose line size equals the LLC block
-size (`.l8.popt` for 8B), and falls back to the 64B matrices if those don't exist. With a 64B matrix on an 8B LLC
-each block inherits its 64B line's next reference (coarse). An 8B matrix is exact per block but 8x larger: it pins
+**Faithful to the HPCA'21 code:** same matrix (128 sub-epochs, 127 throughout the last epoch), Algorithm 2, tie-break
+and line mapping as `POPT-CacheSim-HPCA21`. pr uses the plain matrix (neighbour reads only), as the paper. The one
+inference: `currDstID` comes from the trace's per-destination stream, since the traces carry no `PIN_UpdateRegIndex`.
+
+**Block size:** the matrix line is the LLC block. A sub-64B LLC needs matrices built with `--line-size <block>`
+(`<G>.<order>[.variant].l8.popt`); without them P-OPT is inactive (SRRIP). An 8B matrix is 8x larger: it pins
 2 bytes per 8B of the array, so it does not fit a 2 MB LLC for sx-stackoverflow or kron21 (the run stops with
-`popt: rereference matrix needs N of M LLC ways`). Pass `--popt-line-size 64` to force the coarse variant.
+`popt: rereference matrix needs N of M LLC ways`).
 
 ## Common options
 

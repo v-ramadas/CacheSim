@@ -4,13 +4,14 @@
 #include "srrip_replacement_policy.h"
 #include <string>
 #include <vector>
+#include <cstdlib>
 
 // P-OPT (Balaji, Crago, Jaleel, Lucia, HPCA 2021) for pull PageRank traces (pr, pr_spmv), 64B LLC, on SRRIP.
 //
 // Rereference Matrix: built offline from the graph (tools/popt_matrix.cc -> <G>.<order>[.wd].popt): one byte per
 // (irregData line, epoch), 256 epochs of EpochSize = ceil(n/256) destination vertices, Fig. 6 format (MSB 1: not
 // referenced this epoch, low 7 bits = epochs to the next reference, 127 = none; MSB 0: referenced this epoch, low
-// 7 bits = sub-epoch of the last reference, 127 sub-epochs). irregData = outgoing_contrib, read once per in-arc
+// 7 bits = sub-epoch of the last reference, 128 sub-epochs; 127 throughout the last epoch, as the HPCA'21 code). irregData = outgoing_contrib, read once per in-arc
 // (the gather); the .wd matrix also counts pr's (Gauss-Seidel) write of outgoing_contrib[u] at destination u.
 //
 // Only the current and next epoch columns are visible to the policy (the columns P-OPT pins in reserved LLC ways;
@@ -34,7 +35,7 @@ class POPT : public SRRIP {
     struct Header {
         char magic[8];
         uint64_t num_nodes, num_arcs, elem_size, line_size, num_epochs, num_sub, epoch_size, sub_size, num_lines,
-                 num_check, writes_at_dst;
+                 num_check, align_offset;   // align_offset: bytes into a block where irregData starts
     };
     inline static Header hdr{};
     inline static std::vector<uint64_t> starts;   // first gather of each (epoch, sub-epoch) block, + num_arcs
@@ -102,12 +103,11 @@ class POPT : public SRRIP {
     uint64_t next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const;
 
     // A 64B line holds irregData if it overlaps [irreg_base, irreg_bound).
-    bool is_irreg(uint64_t addr) const { return addr != UINT64_MAX && addr + cachesim::BLOCK_SIZE > irreg_base && addr < irreg_bound; }
+    bool is_irreg(uint64_t addr) const { return addr != UINT64_MAX && addr + cachesim::BLOCK_SIZE > irreg_base && addr < irreg_bound; }   // block overlaps irregData   // HPCA'21: block start in range
 
     public:
     inline static bool active = false;
     inline static uint64_t elem_size = 4;     // --popt-elem-size: must match the matrix
-    inline static uint64_t line_size = 0;     // --popt-line-size: matrix line bytes (0 = the LLC block size, else 64B)
     inline static std::string matrix_dir;     // --popt-matrix-dir
 
     // Finds and validates the matrix for this trace and prescans the trace (gather PC, irreg range, pr writes).

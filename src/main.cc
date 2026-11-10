@@ -183,7 +183,6 @@ int main(int argc, char** argv) {
     app.add_option("--l1-amoeba-record", l1_amoeba_record, "--l1-amoeba: write every L1 residency's used-word mask per line to this file (input for --l1-amoeba-oracle)");
     app.add_option("--l1-amoeba-oracle", l1_amoeba_oracle, "--l1-amoeba-fetch oracle: per-residency used-word masks recorded by --l1-amoeba-record");
     app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4; must match the matrix)");
-    app.add_option("--popt-line-size", POPT::line_size, "popt: matrix line size in bytes, 8/16/32/64 (default: the LLC block size if <G>.<order>[.variant].l<N>.popt exist, else 64)");
     app.add_option("--popt-matrix-dir", POPT::matrix_dir, "popt: directory holding <G>.<order>[.wd].popt Rereference Matrices (tools/popt_matrix.cc); also searched: data/popt, <bin>/../data/popt");
 
 

@@ -6,12 +6,14 @@
 // read for every in-neighbour v of the destination u being processed (the
 // outer loop runs u = 0 .. n-1; one gather per in-arc). Epochs are
 // num_epochs equal ranges of destination vertices (EpochSize =
-// ceil(n/num_epochs)), each split into 127 sub-epochs (SubEpochSize =
-// ceil(EpochSize/127)). One byte per (epoch, srcData line), Fig. 6 format:
+// ceil(n/num_epochs)), each split into 128 sub-epochs (SubEpochSize =
+// ceil(EpochSize/128)), as the HPCA'21 code (builder.h makeOffsetMatrix, llc.cpp numSubEpochs = numEpochs/2).
+// One byte per (epoch, srcData line), Fig. 6 format:
 //   MSB 1: line not referenced in the epoch; low 7 bits = distance (in
 //          epochs) to its next referencing epoch, 127 = none (sentinel).
 //   MSB 0: line referenced in the epoch; low 7 bits = sub-epoch of its last
-//          reference in the epoch.
+//          reference in the epoch. In the last epoch a referenced line stores 127
+//          (as the HPCA'21 code: it stays "to be referenced" for the whole epoch).
 //
 // Output (little-endian):
 //   header   PoptHeader below
@@ -22,8 +24,13 @@
 //            entry is num_arcs
 //   matrix   num_epochs columns of num_lines bytes (column e = epoch e)
 //
-// pr (Gauss-Seidel, PageRankPullGS) also writes srcData[u] while processing destination u: with --writes-at-dst
-// that write counts as a reference to u's line in u's sub-epoch (pr_spmv only reads srcData; leave it off).
+// As the HPCA'21 builder, only the neighbour reads count as references (pr's Gauss-Seidel write of srcData[u] at
+// the destination is not encoded).
+//
+// --align-offset B (default 0): the traced array starts B bytes into a line_size block. The HPCA'21 code allocates
+// irregData line-aligned, so each cache block holds exactly one matrix line; with B != 0 the lines follow the cache
+// block grid of the real array instead of starting at vertex 0 (line 0 holds the vertices of the first, partial
+// block). B is stored in the header (align_offset). Write to <G>.<order>[.variant][.l<N>].a<B>.popt.
 //
 // --neigh out: the traversal reads srcData[v] for the OUT-neighbours v of each destination u (cc_sv's hook pass:
 // for u: for v in out_neigh(u): comp[v]); default in (pull PageRank: in_neigh). Write to <G>.<order>.out.popt.
@@ -35,8 +42,8 @@
 // for a sub-64B LLC; the matrix (and the LLC space P-OPT pins for it) grows by 64/N. Write to
 // <G>.<order>[.variant].l<N>.popt (no suffix for 64).
 //
-// Usage: popt_matrix <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-size N (4) | --elem-bits 1]
-//        [--epochs N (256)] [--line-size N (64)]
+// Usage: popt_matrix <graph.sg> <out.popt> [--neigh in|out] [--elem-size N (4) | --elem-bits 1]
+//        [--epochs N (256)] [--line-size N (64)] [--align-offset B (0)]
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -44,11 +51,11 @@
 #include <fstream>
 #include <vector>
 
-static constexpr uint32_t kSub = 127;
+static constexpr uint32_t kSub = 128;
 static constexpr uint32_t kCheck = 1024;
 
 struct PoptHeader {
-    char magic[8];            // "POPTRM2\0"
+    char magic[8];            // "POPTRM3\0" (3: 128 sub-epochs and the HPCA'21 last-epoch rule)
     uint64_t num_nodes;
     uint64_t num_arcs;
     uint64_t elem_size;
@@ -59,20 +66,19 @@ struct PoptHeader {
     uint64_t sub_size;
     uint64_t num_lines;
     uint64_t num_check;
-    uint64_t writes_at_dst;   // 1: srcData[u] is also referenced while processing u (pr Gauss-Seidel)
+    uint64_t align_offset;    // bytes into a line_size block where the array starts (formerly writes_at_dst, always 0)
 };
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        std::fprintf(stderr, "usage: %s <graph.sg> <out.popt> [--writes-at-dst] [--neigh in|out] [--elem-bits 1] "
-                             "[--elem-size N] [--epochs N] [--line-size N]\n", argv[0]);
+        std::fprintf(stderr, "usage: %s <graph.sg> <out.popt> [--neigh in|out] [--elem-bits 1] "
+                             "[--elem-size N] [--epochs N] [--line-size N] [--align-offset B]\n", argv[0]);
         return 1;
     }
-    uint64_t elem_size = 4, num_epochs = 256, line_size = 64;
-    bool writes_at_dst = false, neigh_out = false, bitmap = false;
+    uint64_t elem_size = 4, num_epochs = 256, line_size = 64, align_offset = 0;
+    bool neigh_out = false, bitmap = false;
     for (int i = 3; i < argc; i++) {
-        if (!std::strcmp(argv[i], "--writes-at-dst")) writes_at_dst = true;
-        else if (!std::strcmp(argv[i], "--neigh") && i + 1 < argc) {
+        if (!std::strcmp(argv[i], "--neigh") && i + 1 < argc) {
             const char* d = argv[++i];
             if (!std::strcmp(d, "out")) neigh_out = true;
             else if (std::strcmp(d, "in")) { std::fprintf(stderr, "--neigh in|out\n"); return 1; }
@@ -84,10 +90,15 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--elem-size") && i + 1 < argc) elem_size = std::strtoull(argv[++i], nullptr, 10);
         else if (!std::strcmp(argv[i], "--epochs") && i + 1 < argc) num_epochs = std::strtoull(argv[++i], nullptr, 10);
         else if (!std::strcmp(argv[i], "--line-size") && i + 1 < argc) line_size = std::strtoull(argv[++i], nullptr, 10);
+        else if (!std::strcmp(argv[i], "--align-offset") && i + 1 < argc) align_offset = std::strtoull(argv[++i], nullptr, 10);
         else { std::fprintf(stderr, "unknown argument %s\n", argv[i]); return 1; }
     }
     if (line_size != 8 && line_size != 16 && line_size != 32 && line_size != 64) {
         std::fprintf(stderr, "--line-size must be 8, 16, 32 or 64\n");
+        return 1;
+    }
+    if (align_offset >= line_size || (!bitmap && align_offset % elem_size)) {
+        std::fprintf(stderr, "--align-offset must be below --line-size and a multiple of --elem-size\n");
         return 1;
     }
     if (num_epochs < 2 || num_epochs > 1024 || elem_size == 0 || (!bitmap && line_size % elem_size)) {
@@ -124,7 +135,7 @@ int main(int argc, char** argv) {
     }
 
     PoptHeader h{};
-    std::memcpy(h.magic, "POPTRM2", 8);
+    std::memcpy(h.magic, "POPTRM3", 8);
     h.num_nodes = n;
     h.num_arcs = m;
     h.elem_size = bitmap ? 0 : elem_size;
@@ -134,9 +145,10 @@ int main(int argc, char** argv) {
     h.epoch_size = (n + num_epochs - 1) / num_epochs;
     h.sub_size = (h.epoch_size + kSub - 1) / kSub;
     const uint64_t per_line = bitmap ? line_size * 8 : line_size / elem_size;   // vertices per matrix line
-    h.num_lines = (n + per_line - 1) / per_line;
+    const uint64_t off_v = bitmap ? align_offset * 8 : align_offset / elem_size;   // vertices before line 0's first
+    h.num_lines = (n + off_v + per_line - 1) / per_line;
     h.num_check = m < kCheck ? m : kCheck;
-    h.writes_at_dst = writes_at_dst;
+    h.align_offset = align_offset;
 
     // First gather of each (epoch, sub-epoch) block of destination vertices.
     std::vector<uint64_t> starts(num_epochs * kSub + 1);
@@ -156,9 +168,7 @@ int main(int argc, char** argv) {
         uint64_t e = u / h.epoch_size;
         int8_t s = (int8_t)((u - e * h.epoch_size) / h.sub_size);
         for (int64_t k = off[u]; k < off[u + 1]; k++)
-            last[e * h.num_lines + (uint64_t)neigh[k] / per_line] = s;   // u ascends: the last write is the last reference
-        if (writes_at_dst)
-            last[e * h.num_lines + u / per_line] = s;                    // srcData[u] written after u's gathers
+            last[e * h.num_lines + ((uint64_t)neigh[k] + off_v) / per_line] = s;   // u ascends: the last write is the last reference
     }
     std::vector<uint8_t> matrix(num_epochs * h.num_lines);
     for (uint64_t c = 0; c < h.num_lines; c++) {
@@ -166,7 +176,7 @@ int main(int argc, char** argv) {
         for (uint64_t e = num_epochs; e-- > 0;) {
             int8_t s = last[e * h.num_lines + c];
             if (s >= 0) {
-                matrix[e * h.num_lines + c] = (uint8_t)s;   // MSB 0
+                matrix[e * h.num_lines + c] = e == num_epochs - 1 ? 127 : (uint8_t)s;   // MSB 0; last epoch: 127 (HPCA'21)
                 next = e;
             } else {
                 uint64_t dist = next == UINT64_MAX ? 127 : std::min<uint64_t>(127, next - e);
@@ -196,8 +206,8 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "cannot write %s\n", argv[2]);
         return 1;
     }
-    std::printf("%s%s%s%s: %s, %lu vertices, %lu arcs, %lu lines of %lu B (%lu B/elem, 0 = bit), %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
-        writes_at_dst ? "[writes-at-dst] " : "", neigh_out ? "[out-neighbours] " : "", bitmap ? "[bitmap] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, line_size, h.elem_size, num_epochs, h.epoch_size,
+    std::printf("%s%s%s: %s, %lu vertices, %lu arcs, %lu lines of %lu B (offset %lu, %lu B/elem, 0 = bit), %lu epochs of %lu vertices (%u sub-epochs of %lu) -> %s\n",
+        neigh_out ? "[out-neighbours] " : "", bitmap ? "[bitmap] " : "", argv[1], directed ? "directed" : "undirected", n, m, h.num_lines, line_size, align_offset, h.elem_size, num_epochs, h.epoch_size,
         kSub, h.sub_size, argv[2]);
     return 0;
 }

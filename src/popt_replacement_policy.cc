@@ -14,8 +14,8 @@ bool POPT::load(const std::string& path, bool with_matrix) {
     if (!f) return false;
     Header h{};
     f.read(reinterpret_cast<char*>(&h), sizeof(h));
-    if (!f || std::memcmp(h.magic, "POPTRM2", 8) != 0) {
-        fmt::print(stderr, "POPT: {} is not a version-2 Rereference Matrix (rebuild with tools/popt_matrix.cc)\n", path);
+    if (!f || std::memcmp(h.magic, "POPTRM3", 8) != 0) {   // POPTRM2 (127 sub-epochs) files must be rebuilt
+        fmt::print(stderr, "POPT: {} is not a version-3 Rereference Matrix (rebuild with tools/popt_matrix.cc)\n", path);
         return false;
     }
     std::vector<int32_t> check(h.num_check);
@@ -78,36 +78,31 @@ bool POPT::setup(const std::string& trace_path) {
     if (!matrix_dir.empty()) dirs.push_back(matrix_dir);
     dirs.push_back("data/popt");
     dirs.push_back(exe_dir() + "/../data/popt");
-    // Variants: in-neighbour traversal (pull PageRank; .wd adds pr's write at the destination) and out-neighbour
-    // traversal (.out: cc_sv's hook pass). The one whose neighbour prefix matches the trace's gathers is used.
-    // Matrix line size: --popt-line-size, or (0) the LLC block size. Matrices for N != 64 are named
-    // <G>.<order>[.variant].l<N>.popt. With the default, a sub-64B LLC without such matrices uses the 64B ones
-    // (coarse: a block inherits its 64B line's next reference).
-    std::string plain, wd, out, bm;
-    auto search = [&](uint64_t ls) {
-        std::string tag = ls == CACHELINE_SIZE ? "" : ".l" + std::to_string(ls);
-        plain.clear(); wd.clear(); out.clear(); bm.clear();
-        for (const auto& d : dirs) {
-            std::string p = d + "/" + base;
-            if (bm.empty() && std::ifstream(p + ".bm" + tag + ".popt")) bm = p + ".bm" + tag + ".popt";
-            if (plain.empty() && std::ifstream(p + tag + ".popt")) plain = p + tag + ".popt";
-            if (wd.empty() && std::ifstream(p + ".wd" + tag + ".popt")) wd = p + ".wd" + tag + ".popt";
-            if (out.empty() && std::ifstream(p + ".out" + tag + ".popt")) out = p + ".out" + tag + ".popt";
-        }
-        return !(plain.empty() && wd.empty() && out.empty() && bm.empty());
+    // Variants (as the HPCA'21 code): in-neighbour traversal (pull PageRank: the plain matrix), out-neighbour traversal
+    // (.out: cc_sv's hook pass) and the frontier bitmap (.bm). The one whose neighbour prefix matches the trace's gathers
+    // is used. The matrix line is the LLC block: <G>.<order>[.variant].popt for 64B, [.variant].l<N>.popt for N-byte
+    // blocks (tools/popt_matrix.cc --line-size N).
+    std::string plain, out, bm;
+    const uint64_t want_ls = cachesim::BLOCK_SIZE;
+    const std::string tag = want_ls == CACHELINE_SIZE ? "" : ".l" + std::to_string(want_ls);
+    // Any alignment offset serves for detection (the check prefix does not depend on it); the matrix for the
+    // trace's offset is loaded once irregData's address is known (load_aligned below).
+    auto any_offset = [&](const std::string& stem) -> std::string {
+        if (std::ifstream(stem + ".popt")) return stem + ".popt";
+        for (uint64_t a = 1; a < want_ls; a++)
+            if (std::ifstream(stem + ".a" + std::to_string(a) + ".popt")) return stem + ".a" + std::to_string(a) + ".popt";
+        return "";
     };
-    uint64_t want_ls = line_size ? line_size : cachesim::BLOCK_SIZE;
-    bool found = search(want_ls);
-    if (!found && line_size == 0 && want_ls != CACHELINE_SIZE && search(CACHELINE_SIZE)) {
-        fmt::print("POPT: no {0}B-line matrices (<G>.<order>[.variant].l{0}.popt) for {1}; using the 64B-line ones (coarse)\n",
-            want_ls, base);
-        want_ls = CACHELINE_SIZE;
-        found = true;
+    for (const auto& d : dirs) {
+        std::string p = d + "/" + base;
+        if (bm.empty()) bm = any_offset(p + ".bm" + tag);
+        if (plain.empty()) plain = any_offset(p + tag);
+        if (out.empty()) out = any_offset(p + ".out" + tag);
     }
+    bool found = !(plain.empty() && out.empty() && bm.empty());
     if (!found) {
         // Not preprocessed: like the reference code with no matrix registered, run the baseline policy.
-        std::string tag = want_ls == CACHELINE_SIZE ? "" : ".l" + std::to_string(want_ls);
-        fmt::print("POPT: inactive - no Rereference Matrix {0}[.wd|.out|.bm]{1}.popt in --popt-matrix-dir, data/popt "
+        fmt::print("POPT: inactive - no Rereference Matrix {0}[.out|.bm]{1}.popt in --popt-matrix-dir, data/popt "
                    "or <bin>/../data/popt; running SRRIP with no reserved ways\n", base, tag);
         return true;
     }
@@ -127,7 +122,7 @@ bool POPT::setup(const std::string& trace_path) {
         return true;
     };
     std::vector<int32_t> check_in, check_out, check_bm;
-    bool have_in = read_check(plain.empty() ? wd : plain, check_in);
+    bool have_in = read_check(plain, check_in);
     bool have_out = read_check(out, check_out);
     bool have_bm = read_check(bm, check_bm);
     if (have_bm) { check_prefix = check_bm; load_samples(bm); }
@@ -300,8 +295,37 @@ bool POPT::setup(const std::string& trace_path) {
         return true;
     }
     irreg_bound = pass_mode ? irreg_base + bm_bytes : irreg_base + hdr.num_nodes * elem_size;
+    // The HPCA'21 code allocates irregData block-aligned, so each cache block is one matrix line. Our traces' arrays
+    // may start B bytes into a block: use the matrix whose lines follow that block grid (popt_matrix --align-offset B).
+    const uint64_t align = irreg_base % want_ls;
+    if (pass_mode && bm_base[1] % want_ls != align) {
+        fmt::print(stderr, "POPT: the two frontier bitmaps start at different block offsets ({} and {}B)\n", align,
+            bm_base[1] % want_ls);
+        return false;
+    }
+    std::string loaded;
+    auto load_aligned = [&](const std::string& path) {
+        std::string stem = path.substr(0, path.size() - strlen(".popt"));
+        auto a = stem.rfind(".a");
+        if (a != std::string::npos && a + 2 < stem.size() &&
+            stem.find_first_not_of("0123456789", a + 2) == std::string::npos) stem.resize(a);
+        std::string p = stem + (align ? ".a" + std::to_string(align) : "") + ".popt";
+        if (!std::ifstream(p)) {
+            fmt::print(stderr, "POPT: irregData starts {}B into a {}B block; build {} with tools/popt_matrix.cc "
+                       "--align-offset {} (plus the variant's flags{})\n", align, want_ls, p, align,
+                       want_ls != CACHELINE_SIZE ? " and --line-size " + std::to_string(want_ls) : std::string());
+            return false;
+        }
+        if (!load(p, true)) return false;
+        if (hdr.align_offset != align) {
+            fmt::print(stderr, "POPT: {} has align_offset {}, the trace needs {}\n", p, hdr.align_offset, align);
+            return false;
+        }
+        loaded = p;
+        return true;
+    };
     if (pass_mode) {
-        if (!load(bm, true)) return false;
+        if (!load_aligned(bm)) return false;
         active = true;
         fmt::print("POPT: pass mode (bitmap traversals) | matrix {} | {} vertices, {} lines of {} vertices | destination "
                    "stream {:#x} ({} accesses = {} passes, stride {}B) | neighbour array {:#x} at {:#x} | bitmap {:#x} at "
@@ -325,28 +349,11 @@ bool POPT::setup(const std::string& trace_path) {
     else
         fmt::print("POPT: warning: no per-destination stream found; currDstID follows the gather count (sub-epoch "
                    "granularity, lags across destinations without in-edges)\n");
-    if (irreg_base % std::max<uint64_t>(hdr.line_size, cachesim::BLOCK_SIZE))
-        fmt::print("POPT: note: irregData starts at {:#x}, not aligned to the {}B matrix lines / {}B blocks; a block's next "
-                   "ref is the nearest of the matrix lines it overlaps\n", irreg_base, hdr.line_size, cachesim::BLOCK_SIZE);
-    // pr (Gauss-Seidel) writes irregData once per vertex while processing it.
-    bool writes = false;
-    for (const auto& [p, info] : pcs)
-        if (info.writes == hdr.num_nodes && info.wmin >= irreg_base && info.wmax < irreg_bound) writes = true;
-    const std::string& chosen = via_out ? out : writes ? wd : plain;
-    if (via_out && writes) {
-        fmt::print(stderr, "POPT: out-neighbour traversal with per-vertex irregData writes is not supported\n");
-        return false;
-    }
-    if (chosen.empty()) {
-        fmt::print(stderr, "POPT: trace {} irregData writes per vertex; needs {}.{}popt (tools/popt_matrix.cc{})\n",
-            writes ? "has" : "has no", base, writes ? "wd." : "", writes ? " --writes-at-dst" : "");
-        return false;
-    }
-    if (!load(chosen, true)) return false;
-    if ((hdr.writes_at_dst != 0) != writes) {
-        fmt::print(stderr, "POPT: {} writes_at_dst={} does not match the trace\n", chosen, hdr.writes_at_dst);
-        return false;
-    }
+    if (align)
+        fmt::print("POPT: irregData starts at {:#x}, {}B into a {}B block: matrix lines follow the block grid "
+                   "(align_offset {})\n", irreg_base, align, want_ls, align);
+    if (!load_aligned(via_out ? out : plain)) return false;
+    const std::string& chosen = loaded;
     active = true;
     block = 0;
     gathers = 0;
@@ -356,7 +363,7 @@ bool POPT::setup(const std::string& trace_path) {
     fmt::print("POPT: matrix {} | {} vertices, {} arcs, {} x {}B irregData lines of {}B | {} epochs of {} vertices, {} sub-epochs of {} | "
                "gather PC {:#x}, irregData {:#x}..{:#x}{}\n",
         chosen, hdr.num_nodes, hdr.num_arcs, hdr.num_lines, hdr.elem_size, hdr.line_size, hdr.num_epochs, hdr.epoch_size, hdr.num_sub,
-        hdr.sub_size, gather_pc, irreg_base, irreg_bound, writes ? " (+ writes at dst)" : "");
+        hdr.sub_size, gather_pc, irreg_base, irreg_bound, "");
     return true;
 }
 
@@ -447,15 +454,11 @@ uint64_t POPT::find_next_ref(uint64_t line_id, std::vector<uint64_t>* reads) {
 }
 
 uint64_t POPT::next_ref_of(uint64_t addr, std::vector<uint64_t>* reads) const {
-    // Matrix lines are hdr.line_size-byte chunks of irregData counted from irreg_base. The block is next needed when
-    // any matrix line it overlaps is: a block smaller than a matrix line inherits that line's next reference (coarse),
-    // a larger one takes the nearest of its lines.
-    const uint64_t ls = hdr.line_size;
-    uint64_t lo = addr <= irreg_base ? 0 : (addr - irreg_base) / ls;
-    uint64_t hi = std::min<uint64_t>((addr + cachesim::BLOCK_SIZE - 1 - irreg_base) / ls, hdr.num_lines - 1);
-    uint64_t best = find_next_ref(lo, reads);
-    for (uint64_t l = lo + 1; l <= hi; l++) best = std::min(best, find_next_ref(l, reads));
-    return best;
+    // As the HPCA'21 code (findVtxID + findRereferenceVal): the block's first element gives the vertex, and the
+    // vertex's matrix line (hdr.line_size bytes of irregData from irreg_base) gives the next reference.
+    // Block-aligned matrix lines (align_offset): each cache block is one matrix line, counted from the block holding
+    // irregData's first element - in the HPCA'21 setup (aligned arrays) exactly findVtxID's line.
+    return find_next_ref(std::min<uint64_t>((addr - (irreg_base - hdr.align_offset)) / hdr.line_size, hdr.num_lines - 1), reads);
 }
 
 void POPT::charge_engine(uint64_t dram_cycles, bool writeback) {
@@ -547,14 +550,23 @@ uint64_t POPT::get_eviction_candidate(bool is_low_priority) {
     for (uint64_t way = 0; way < num_ways; way++)
         if (line_addr[way] == UINT64_MAX) dist[way] = UINT64_MAX;   // never matches max_dist below
     if (std::count(dist.begin(), dist.end(), max_dist) > 1) stat_evict_tie++;
-    // Ties: the tied way at the distant RRPV, aging only the tied ways.
-    while (true) {
+    // Ties, exactly as the HPCA'21 code (llc.cpp getReplacementIndex): the first tied way at the distant RRPV, else the
+    // first way with the farthest next reference. Only when every way's next reference is 0 (the code's max loop
+    // leaves evictionWay unset) are the tied ways aged until one reaches the distant RRPV.
+    for (uint64_t way = 0; way < num_ways; way++)
+        if (dist[way] == max_dist && counter[way] >= maxRRPV)
+            return way;
+    if (max_dist > 0)
         for (uint64_t way = 0; way < num_ways; way++)
-            if (dist[way] == max_dist && counter[way] >= maxRRPV)
+            if (dist[way] == max_dist)
                 return way;
+    while (true) {
         for (uint64_t way = 0; way < num_ways; way++)
             if (dist[way] == max_dist && counter[way] < maxRRPV)
                 counter[way]++;
+        for (uint64_t way = 0; way < num_ways; way++)
+            if (dist[way] == max_dist && counter[way] >= maxRRPV)
+                return way;
     }
 }
 
