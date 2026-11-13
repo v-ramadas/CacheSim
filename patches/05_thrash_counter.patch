@@ -1,0 +1,343 @@
+diff --git a/inc/thrash_counter.h b/inc/thrash_counter.h
+new file mode 100644
+index 0000000..0f44265
+--- /dev/null
++++ b/inc/thrash_counter.h
+@@ -0,0 +1,108 @@
++#ifndef __THRASH_COUNTER_H__
++#define __THRASH_COUNTER_H__
++
++#include <cstdint>
++#include <vector>
++#include <deque>
++#include <unordered_map>
++#include <utility>
++
++// Detects "this address was evicted from LLC and missed again soon after"
++// using a small bounded FIFO (same recency mechanism as the victim cache),
++// and on each such event increments a saturating counter for that address
++// in a fixed-size hashed table that persists for the entire run (unlike the
++// FIFO, table entries are never explicitly removed - only decayed). At fill
++// time, any address whose counter has crossed a threshold is treated as a
++// thrash-prone / hub-like signal, even if that particular eviction has long
++// since fallen out of the recency FIFO - the counter is what "remembers"
++// across a longer horizon than the FIFO's window, while still requiring
++// repeated fast re-misses (not a single one, unlike the victim cache) and
++// decaying on ordinary (non-thrashing) misses so it isn't a one-way,
++// never-forgetting signal like a plain Bloom filter.
++class ThrashCounter {
++    std::unordered_map<uint64_t, uint64_t> recent_present;
++    std::deque<std::pair<uint64_t, uint64_t>> recent_fifo;
++    uint64_t next_seq = 0;
++    size_t recency_capacity_ = 0;
++
++    std::vector<uint8_t> table;
++    uint64_t table_size_ = 0;
++    uint8_t max_counter_ = 3;
++    uint64_t threshold_ = 2;
++
++    static uint64_t hash_address(uint64_t address) {
++        uint64_t x = address;
++        x ^= x >> 33;
++        x *= 0xff51afd7ed558ccdULL;
++        x ^= x >> 33;
++        x *= 0xc4ceb9fe1a85ec53ULL;
++        x ^= x >> 33;
++        return x;
++    }
++
++    public:
++    uint64_t debug_evict_marks = 0;
++    uint64_t debug_fast_remiss = 0;
++    uint64_t debug_slow_miss = 0;
++    uint64_t debug_positive_signals = 0;
++    uint64_t debug_lookups = 0;
++
++    void resize(size_t recency_capacity, uint64_t table_size, uint8_t max_counter, uint64_t threshold) {
++        recency_capacity_ = recency_capacity;
++        recent_present.clear();
++        recent_fifo.clear();
++        next_seq = 0;
++        table_size_ = table_size;
++        max_counter_ = max_counter;
++        threshold_ = threshold;
++        table.assign(table_size_, 0);
++        debug_evict_marks = 0;
++        debug_fast_remiss = 0;
++        debug_slow_miss = 0;
++        debug_positive_signals = 0;
++        debug_lookups = 0;
++    }
++
++    // Called on an LLC eviction of a line already gated by the caller
++    // (e.g. serviced_from_llc[way_idx] > 0).
++    void mark_evicted(uint64_t address) {
++        if (recency_capacity_ == 0) return;
++        debug_evict_marks++;
++        uint64_t seq = next_seq++;
++        recent_present[address] = seq;
++        recent_fifo.push_back({address, seq});
++        while (recent_fifo.size() > recency_capacity_) {
++            const auto& front = recent_fifo.front();
++            auto it = recent_present.find(front.first);
++            if (it != recent_present.end() && it->second == front.second) { recent_present.erase(it); }
++            recent_fifo.pop_front();
++        }
++    }
++
++    // Called on every LLC fill (cache miss). Returns whether this address's
++    // persistent counter has crossed the thrash threshold. A fast re-miss
++    // (address was recently evicted) increments the counter; an ordinary
++    // miss with no recent eviction decays it.
++    bool on_fill(uint64_t address) {
++        if (table_size_ == 0) return false;
++        debug_lookups++;
++        uint64_t idx = hash_address(address) % table_size_;
++
++        auto it = recent_present.find(address);
++        bool fast_remiss = (it != recent_present.end());
++        if (fast_remiss) {
++            recent_present.erase(it);
++            debug_fast_remiss++;
++            if (table[idx] < max_counter_) table[idx]++;
++        } else {
++            debug_slow_miss++;
++            if (table[idx] > 0) table[idx]--;
++        }
++
++        bool positive = table[idx] >= threshold_;
++        if (positive) debug_positive_signals++;
++        return positive;
++    }
++};
++
++#endif
+diff --git a/inc/utils.h b/inc/utils.h
+index c47e0d2..d4f00a8 100644
+--- a/inc/utils.h
++++ b/inc/utils.h
+@@ -6,6 +6,7 @@
+ #include <fmt/chrono.h>
+ #include <fmt/core.h>
+ #include "performance_model.h"
++#include "thrash_counter.h"
+ 
+ const uint64_t CACHELINE_SIZE = 64;
+ 
+@@ -64,6 +65,13 @@ namespace cachesim {
+     extern double WINDOW_Z_THRESHOLD;
+ 
+     extern PerformanceModel performanceModel;
++
++    extern bool USE_THRASH_COUNTER;
++    extern uint64_t THRASH_COUNTER_RECENCY;
++    extern uint64_t THRASH_COUNTER_TABLE_SIZE;
++    extern uint64_t THRASH_COUNTER_MAX;
++    extern uint64_t THRASH_COUNTER_THRESHOLD;
++    extern ThrashCounter thrashCounter;
+ };
+ 
+ enum class InsertionPolicy {
+@@ -91,6 +99,7 @@ struct Packet {
+     std::vector<uint64_t> block_degrees;
+     float avg_degree=0.0f;
+     std::vector<uint64_t> block_serviced_from_llc;
++    bool from_thrash_counter = false;
+ 
+     Packet() {
+         clear_pc();
+@@ -118,6 +127,7 @@ struct Packet {
+         block_degrees.clear();
+         avg_degree = 0.0f;
+         block_serviced_from_llc.clear();
++        from_thrash_counter = false;
+     }
+ 
+     void clear_pc() {
+@@ -169,6 +179,7 @@ struct Packet {
+         block_degrees = packet.block_degrees;
+         avg_degree = packet.avg_degree;
+         block_serviced_from_llc = packet.block_serviced_from_llc;
++        from_thrash_counter = packet.from_thrash_counter;
+ 
+         return *this;
+     }
+diff --git a/src/hru_replacement_policy.cc b/src/hru_replacement_policy.cc
+index 141cd0d..7521e71 100644
+--- a/src/hru_replacement_policy.cc
++++ b/src/hru_replacement_policy.cc
+@@ -7,8 +7,8 @@ void HRU::init_counter(PacketPtr /*packet*/) {
+     mru_counter+=num_ways;
+ }
+ 
+-void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {   
+-    if (low_priority[way_idx] && packet->is_hub_node) {
++void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
++    if (low_priority[way_idx] && (packet->is_hub_node || packet->from_thrash_counter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -26,7 +26,10 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+ }
+ 
+ void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_thrash_counter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         //auto counter_value = packet->block_serviced_from_llc[block_idx];
+         if (packet->is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+diff --git a/src/main.cc b/src/main.cc
+index bf0ff69..8882fcf 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -48,6 +48,13 @@ double cachesim::WINDOW_Z_THRESHOLD = 2.5;
+ 
+ PerformanceModel cachesim::performanceModel;
+ 
++bool cachesim::USE_THRASH_COUNTER = false;
++uint64_t cachesim::THRASH_COUNTER_RECENCY = 32;
++uint64_t cachesim::THRASH_COUNTER_TABLE_SIZE = 4096;
++uint64_t cachesim::THRASH_COUNTER_MAX = 3;
++uint64_t cachesim::THRASH_COUNTER_THRESHOLD = 2;
++ThrashCounter cachesim::thrashCounter;
++
+ enum class TraceFormat {
+     CHAMPSIM,
+     ADDRESSES,
+@@ -122,10 +129,20 @@ int main(int argc, char** argv) {
+     app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
+     app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
+     app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
++    app.add_flag("--use-thrash-counter", cachesim::USE_THRASH_COUNTER, "Enable a persistent, address-hashed saturating thrash counter as an extra hub-like signal at fill time");
++    app.add_option("--thrash-counter-recency", cachesim::THRASH_COUNTER_RECENCY, "Size of the short-term recency FIFO used to detect a fast re-miss after eviction");
++    app.add_option("--thrash-counter-table-size", cachesim::THRASH_COUNTER_TABLE_SIZE, "Number of entries in the persistent, address-hashed saturating counter table");
++    app.add_option("--thrash-counter-max", cachesim::THRASH_COUNTER_MAX, "Max value of each saturating counter");
++    app.add_option("--thrash-counter-threshold", cachesim::THRASH_COUNTER_THRESHOLD, "Counter value at/above which an address is treated as thrash-prone at fill time");
+ 
+ 
+     CLI11_PARSE(app, argc, argv);
+ 
++    if (cachesim::USE_THRASH_COUNTER) {
++        cachesim::thrashCounter.resize(cachesim::THRASH_COUNTER_RECENCY, cachesim::THRASH_COUNTER_TABLE_SIZE,
++            (uint8_t)cachesim::THRASH_COUNTER_MAX, cachesim::THRASH_COUNTER_THRESHOLD);
++    }
++
+     switch(replacement_policy) {
+         case ReplacementPolicy::LRU:
+             cachesim::SET_DUELING = false;
+@@ -209,7 +226,12 @@ int main(int argc, char** argv) {
+         PHRU::print_heuristic_stats();
+     if (replacement_policy == ReplacementPolicy::PHRUpp)
+         PHRUpp::print_heuristic_stats();
+-    
++    if (cachesim::USE_THRASH_COUNTER)
++        fmt::print("Thrash counter: table_size {} max {} threshold {} evict_marks {} lookups {} fast_remiss {} slow_miss {} positive_signals {}\n",
++            cachesim::THRASH_COUNTER_TABLE_SIZE, cachesim::THRASH_COUNTER_MAX, cachesim::THRASH_COUNTER_THRESHOLD,
++            cachesim::thrashCounter.debug_evict_marks, cachesim::thrashCounter.debug_lookups,
++            cachesim::thrashCounter.debug_fast_remiss, cachesim::thrashCounter.debug_slow_miss, cachesim::thrashCounter.debug_positive_signals);
++
+     cache.clear();
+ #ifdef MULTI_LEVEL
+     delete predictor;
+diff --git a/src/phru_replacement_policy.cc b/src/phru_replacement_policy.cc
+index 673ca63..ca24296 100644
+--- a/src/phru_replacement_policy.cc
++++ b/src/phru_replacement_policy.cc
+@@ -70,9 +70,14 @@ void PHRU::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count
+ }
+ 
+ void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // block_serviced_from_llc is sized by num_blocks (usually 1), not by
++    // num_ways, so indexing it by way_idx here is an OOB read once way_idx
++    // exceeds the vector's size (caught by ASAN). serviced_from_llc is the
++    // scalar equivalent fill_update's own gate already uses. Verified
++    // MPKI-neutral - this only affects the diagnostic confusion-matrix counts.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+-    if (low_priority[way_idx] && is_hub_node) {
++    if (low_priority[way_idx] && (is_hub_node || packet->from_thrash_counter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -93,7 +98,10 @@ void PHRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, b
+     if (!is_hub_node) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_thrash_counter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/phrupp_replacement_policy.cc b/src/phrupp_replacement_policy.cc
+index 419b595..4ccb1a4 100644
+--- a/src/phrupp_replacement_policy.cc
++++ b/src/phrupp_replacement_policy.cc
+@@ -70,9 +70,14 @@ void PHRUpp::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_cou
+ }
+ 
+ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // block_serviced_from_llc is sized by num_blocks (usually 1), not by
++    // num_ways, so indexing it by way_idx here is an OOB read once way_idx
++    // exceeds the vector's size (caught by ASAN). serviced_from_llc is the
++    // scalar equivalent fill_update's own gate already uses. Verified
++    // MPKI-neutral - this only affects the diagnostic confusion-matrix counts.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+-    if (low_priority[way_idx] && is_hub_node) {
++    if (low_priority[way_idx] && (is_hub_node || packet->from_thrash_counter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -93,7 +98,10 @@ void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet,
+     if (!is_hub_node) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_thrash_counter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/set.cc b/src/set.cc
+index c861c11..a5287ed 100644
+--- a/src/set.cc
++++ b/src/set.cc
+@@ -150,6 +150,13 @@ void Set::handle_fill(PacketPtr packet) {
+         //    fmt::print("Filling block address {:#x} from set {} block {} at level {}. was_accessed {} packet degree {} block degree {} block list size {} serviced_from_llc {}\n", block_address, set_idx, way_idx, level, was_accessed, packet->degree, packet->block_degrees[block_idx], packet->block_degrees.size(), packet->serviced_from_llc);
+         //}
+ 
++        // Consult (and update) the persistent thrash counter for this
++        // address on every fill: a fast re-miss (address recently evicted)
++        // increments its saturating counter, an ordinary miss decays it.
++        // Crossing the threshold is treated as a hub-like signal.
++        packet->from_thrash_counter = (cachesim::USE_THRASH_COUNTER && level == 1 && block_address != UINT64_MAX)
++            ? cachesim::thrashCounter.on_fill(block_address) : false;
++
+         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
+         if (block_address != UINT64_MAX) {
+             ways[way_idx] = block_address;
+@@ -257,6 +264,14 @@ void Set::handle_evict(PacketPtr packet) {
+         //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
+         cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+ 
++        // Only mark lines that have already round-tripped through the LLC
++        // at least once (same cold-line gate as the victim cache/bloom
++        // filter) as candidates for the fast-re-miss detector that feeds
++        // the persistent thrash counter.
++        if (cachesim::USE_THRASH_COUNTER && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > 0) {
++            cachesim::thrashCounter.mark_evicted(ways[way_idx]);
++        }
++
+         invalidate_way(way_idx);
+         num_blocks_evicted++;
+         //cache->update_data_var_evictions(packet->pc,

@@ -1,0 +1,305 @@
+diff --git a/inc/bloom_filter.h b/inc/bloom_filter.h
+new file mode 100644
+index 0000000..af1b69b
+--- /dev/null
++++ b/inc/bloom_filter.h
+@@ -0,0 +1,78 @@
++#ifndef __BLOOM_FILTER_H__
++#define __BLOOM_FILTER_H__
++
++#include <cstdint>
++#include <vector>
++
++// Persistent (never-decaying) bit array of addresses that have previously
++// been evicted from the LLC. Unlike the FIFO victim cache, capacity here is
++// probabilistic rather than exact: entries are never evicted, so an address
++// seen arbitrarily far in the past can still test positive, at the cost of
++// a false-positive rate that grows with the number of distinct addresses
++// inserted relative to num_bits.
++class BloomFilter {
++    std::vector<uint64_t> bits;
++    uint64_t num_bits_ = 0;
++    uint64_t num_hashes_ = 1;
++
++    static uint64_t hash1(uint64_t x) {
++        x ^= x >> 33;
++        x *= 0xff51afd7ed558ccdULL;
++        x ^= x >> 33;
++        x *= 0xc4ceb9fe1a85ec53ULL;
++        x ^= x >> 33;
++        return x;
++    }
++
++    static uint64_t hash2(uint64_t x) {
++        x += 0x9e3779b97f4a7c15ULL;
++        x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
++        x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
++        x ^= (x >> 31);
++        return x | 1; // must be odd/non-zero so double hashing covers all slots
++    }
++
++    public:
++    uint64_t debug_insert_count = 0;
++    uint64_t debug_lookup_count = 0;
++    uint64_t debug_hit_count = 0;
++
++    void resize(uint64_t num_bits, uint64_t num_hashes) {
++        num_bits_ = num_bits;
++        num_hashes_ = num_hashes == 0 ? 1 : num_hashes;
++        bits.assign((num_bits_ + 63) / 64, 0);
++        debug_insert_count = 0;
++        debug_lookup_count = 0;
++        debug_hit_count = 0;
++    }
++
++    uint64_t num_bits() const { return num_bits_; }
++
++    void insert(uint64_t address) {
++        if (num_bits_ == 0) return;
++        debug_insert_count++;
++        uint64_t h1 = hash1(address);
++        uint64_t h2 = hash2(address);
++        for (uint64_t i = 0; i < num_hashes_; ++i) {
++            uint64_t bit_idx = (h1 + i * h2) % num_bits_;
++            bits[bit_idx / 64] |= (1ULL << (bit_idx % 64));
++        }
++    }
++
++    bool possibly_contains(uint64_t address) {
++        if (num_bits_ == 0) return false;
++        debug_lookup_count++;
++        uint64_t h1 = hash1(address);
++        uint64_t h2 = hash2(address);
++        for (uint64_t i = 0; i < num_hashes_; ++i) {
++            uint64_t bit_idx = (h1 + i * h2) % num_bits_;
++            if (!(bits[bit_idx / 64] & (1ULL << (bit_idx % 64)))) {
++                return false;
++            }
++        }
++        debug_hit_count++;
++        return true;
++    }
++};
++
++#endif
+diff --git a/inc/utils.h b/inc/utils.h
+index c47e0d2..052d638 100644
+--- a/inc/utils.h
++++ b/inc/utils.h
+@@ -6,6 +6,7 @@
+ #include <fmt/chrono.h>
+ #include <fmt/core.h>
+ #include "performance_model.h"
++#include "bloom_filter.h"
+ 
+ const uint64_t CACHELINE_SIZE = 64;
+ 
+@@ -64,6 +65,11 @@ namespace cachesim {
+     extern double WINDOW_Z_THRESHOLD;
+ 
+     extern PerformanceModel performanceModel;
++
++    extern bool USE_BLOOM_FILTER;
++    extern uint64_t BLOOM_FILTER_BITS;
++    extern uint64_t BLOOM_FILTER_HASHES;
++    extern BloomFilter bloomFilter;
+ };
+ 
+ enum class InsertionPolicy {
+@@ -91,6 +97,7 @@ struct Packet {
+     std::vector<uint64_t> block_degrees;
+     float avg_degree=0.0f;
+     std::vector<uint64_t> block_serviced_from_llc;
++    bool from_bloom_filter = false;
+ 
+     Packet() {
+         clear_pc();
+@@ -118,6 +125,7 @@ struct Packet {
+         block_degrees.clear();
+         avg_degree = 0.0f;
+         block_serviced_from_llc.clear();
++        from_bloom_filter = false;
+     }
+ 
+     void clear_pc() {
+@@ -169,6 +177,7 @@ struct Packet {
+         block_degrees = packet.block_degrees;
+         avg_degree = packet.avg_degree;
+         block_serviced_from_llc = packet.block_serviced_from_llc;
++        from_bloom_filter = packet.from_bloom_filter;
+ 
+         return *this;
+     }
+diff --git a/src/hru_replacement_policy.cc b/src/hru_replacement_policy.cc
+index 141cd0d..f274e51 100644
+--- a/src/hru_replacement_policy.cc
++++ b/src/hru_replacement_policy.cc
+@@ -7,8 +7,8 @@ void HRU::init_counter(PacketPtr /*packet*/) {
+     mru_counter+=num_ways;
+ }
+ 
+-void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {   
+-    if (low_priority[way_idx] && packet->is_hub_node) {
++void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
++    if (low_priority[way_idx] && (packet->is_hub_node || packet->from_bloom_filter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -26,7 +26,10 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+ }
+ 
+ void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_bloom_filter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         //auto counter_value = packet->block_serviced_from_llc[block_idx];
+         if (packet->is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+diff --git a/src/main.cc b/src/main.cc
+index bf0ff69..79c16ce 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -48,6 +48,11 @@ double cachesim::WINDOW_Z_THRESHOLD = 2.5;
+ 
+ PerformanceModel cachesim::performanceModel;
+ 
++bool cachesim::USE_BLOOM_FILTER = false;
++uint64_t cachesim::BLOOM_FILTER_BITS = 1ULL << 16;
++uint64_t cachesim::BLOOM_FILTER_HASHES = 3;
++BloomFilter cachesim::bloomFilter;
++
+ enum class TraceFormat {
+     CHAMPSIM,
+     ADDRESSES,
+@@ -122,10 +127,17 @@ int main(int argc, char** argv) {
+     app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
+     app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
+     app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
++    app.add_flag("--use-bloom-filter", cachesim::USE_BLOOM_FILTER, "Enable a persistent Bloom filter of LLC-evicted addresses as an extra hub-like signal at fill time");
++    app.add_option("--bloom-filter-bits", cachesim::BLOOM_FILTER_BITS, "Number of bits in the Bloom filter's bit array");
++    app.add_option("--bloom-filter-hashes", cachesim::BLOOM_FILTER_HASHES, "Number of hash functions used by the Bloom filter");
+ 
+ 
+     CLI11_PARSE(app, argc, argv);
+ 
++    if (cachesim::USE_BLOOM_FILTER) {
++        cachesim::bloomFilter.resize(cachesim::BLOOM_FILTER_BITS, cachesim::BLOOM_FILTER_HASHES);
++    }
++
+     switch(replacement_policy) {
+         case ReplacementPolicy::LRU:
+             cachesim::SET_DUELING = false;
+@@ -209,7 +221,11 @@ int main(int argc, char** argv) {
+         PHRU::print_heuristic_stats();
+     if (replacement_policy == ReplacementPolicy::PHRUpp)
+         PHRUpp::print_heuristic_stats();
+-    
++    if (cachesim::USE_BLOOM_FILTER)
++        fmt::print("Bloom filter: bits {} hashes {} inserts {} lookups {} hits {}\n",
++            cachesim::bloomFilter.num_bits(), cachesim::BLOOM_FILTER_HASHES,
++            cachesim::bloomFilter.debug_insert_count, cachesim::bloomFilter.debug_lookup_count, cachesim::bloomFilter.debug_hit_count);
++
+     cache.clear();
+ #ifdef MULTI_LEVEL
+     delete predictor;
+diff --git a/src/phru_replacement_policy.cc b/src/phru_replacement_policy.cc
+index 673ca63..be4cb2e 100644
+--- a/src/phru_replacement_policy.cc
++++ b/src/phru_replacement_policy.cc
+@@ -70,9 +70,14 @@ void PHRU::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count
+ }
+ 
+ void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // block_serviced_from_llc is sized by num_blocks (usually 1), not by
++    // num_ways, so indexing it by way_idx here is an OOB read once way_idx
++    // exceeds the vector's size (caught by ASAN). serviced_from_llc is the
++    // scalar equivalent fill_update's own gate already uses. Verified
++    // MPKI-neutral - this only affects the diagnostic confusion-matrix counts.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+-    if (low_priority[way_idx] && is_hub_node) {
++    if (low_priority[way_idx] && (is_hub_node || packet->from_bloom_filter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -93,7 +98,10 @@ void PHRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, b
+     if (!is_hub_node) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_bloom_filter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/phrupp_replacement_policy.cc b/src/phrupp_replacement_policy.cc
+index 419b595..cbb644d 100644
+--- a/src/phrupp_replacement_policy.cc
++++ b/src/phrupp_replacement_policy.cc
+@@ -70,9 +70,14 @@ void PHRUpp::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_cou
+ }
+ 
+ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // block_serviced_from_llc is sized by num_blocks (usually 1), not by
++    // num_ways, so indexing it by way_idx here is an OOB read once way_idx
++    // exceeds the vector's size (caught by ASAN). serviced_from_llc is the
++    // scalar equivalent fill_update's own gate already uses. Verified
++    // MPKI-neutral - this only affects the diagnostic confusion-matrix counts.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+-    if (low_priority[way_idx] && is_hub_node) {
++    if (low_priority[way_idx] && (is_hub_node || packet->from_bloom_filter)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -93,7 +98,10 @@ void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet,
+     if (!is_hub_node) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_bloom_filter) {
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/set.cc b/src/set.cc
+index c861c11..50eb093 100644
+--- a/src/set.cc
++++ b/src/set.cc
+@@ -150,6 +150,13 @@ void Set::handle_fill(PacketPtr packet) {
+         //    fmt::print("Filling block address {:#x} from set {} block {} at level {}. was_accessed {} packet degree {} block degree {} block list size {} serviced_from_llc {}\n", block_address, set_idx, way_idx, level, was_accessed, packet->degree, packet->block_degrees[block_idx], packet->block_degrees.size(), packet->serviced_from_llc);
+         //}
+ 
++        // A Bloom-filter hit means this exact address was evicted from the
++        // LLC at some earlier point (possibly long ago, unlike the bounded
++        // FIFO victim cache) and is now missing again - treat that as a
++        // hub-like signal at fill time.
++        packet->from_bloom_filter = (cachesim::USE_BLOOM_FILTER && level == 1 && block_address != UINT64_MAX)
++            ? cachesim::bloomFilter.possibly_contains(block_address) : false;
++
+         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
+         if (block_address != UINT64_MAX) {
+             ways[way_idx] = block_address;
+@@ -257,6 +264,14 @@ void Set::handle_evict(PacketPtr packet) {
+         //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
+         cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+ 
++        // Only remember lines that have already round-tripped through the
++        // LLC at least once - filters out the vast majority of cold,
++        // single-touch evictions that would otherwise just add noise/false
++        // positives to the filter (same rationale as the victim cache gate).
++        if (cachesim::USE_BLOOM_FILTER && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > 0) {
++            cachesim::bloomFilter.insert(ways[way_idx]);
++        }
++
+         invalidate_way(way_idx);
+         num_blocks_evicted++;
+         //cache->update_data_var_evictions(packet->pc,

@@ -1,0 +1,349 @@
+diff --git a/inc/utils.h b/inc/utils.h
+index c47e0d2..78229da 100644
+--- a/inc/utils.h
++++ b/inc/utils.h
+@@ -6,6 +6,7 @@
+ #include <fmt/chrono.h>
+ #include <fmt/core.h>
+ #include "performance_model.h"
++#include "victim_cache.h"
+ 
+ const uint64_t CACHELINE_SIZE = 64;
+ 
+@@ -64,6 +65,10 @@ namespace cachesim {
+     extern double WINDOW_Z_THRESHOLD;
+ 
+     extern PerformanceModel performanceModel;
++
++    extern bool USE_VICTIM_CACHE;
++    extern uint64_t VICTIM_CACHE_SIZE;
++    extern VictimCache victimCache;
+ };
+ 
+ enum class InsertionPolicy {
+@@ -91,6 +96,7 @@ struct Packet {
+     std::vector<uint64_t> block_degrees;
+     float avg_degree=0.0f;
+     std::vector<uint64_t> block_serviced_from_llc;
++    bool from_victim_cache = false;
+ 
+     Packet() {
+         clear_pc();
+@@ -118,6 +124,7 @@ struct Packet {
+         block_degrees.clear();
+         avg_degree = 0.0f;
+         block_serviced_from_llc.clear();
++        from_victim_cache = false;
+     }
+ 
+     void clear_pc() {
+@@ -169,6 +176,7 @@ struct Packet {
+         block_degrees = packet.block_degrees;
+         avg_degree = packet.avg_degree;
+         block_serviced_from_llc = packet.block_serviced_from_llc;
++        from_victim_cache = packet.from_victim_cache;
+ 
+         return *this;
+     }
+diff --git a/inc/victim_cache.h b/inc/victim_cache.h
+new file mode 100644
+index 0000000..cdeb5d4
+--- /dev/null
++++ b/inc/victim_cache.h
+@@ -0,0 +1,79 @@
++#ifndef __VICTIM_CACHE_H__
++#define __VICTIM_CACHE_H__
++
++#include <cstdint>
++#include <deque>
++#include <unordered_map>
++#include <utility>
++
++// Small buffer that catches lines evicted from the LLC's main sets. If a
++// line is missed again shortly after being evicted, that's direct proof it
++// was evicted too early - a signal PHRU's local (block_serviced_from_llc)
++// heuristic can never produce, since by definition the line is gone before
++// that proof exists. See notes/phru_hub_heuristic_quality.md for why this is
++// needed: ~93-99% of PHRU's false negatives are lines touched exactly once
++// and evicted before any revisit, with zero local signal available at the
++// point of eviction.
++//
++// FIFO replacement, O(1) insert/lookup via a hashmap + lazy-deletion queue
++// (a naive per-lookup linear scan over `entries` is O(capacity) and doesn't
++// scale - measured tens of billions of comparisons at capacity 8192 on a
++// single trace). `present` maps address -> the sequence number of its most
++// recent insertion; `fifo` is an append-only log of (address, seq) pairs.
++// On eviction we pop the front and only actually remove it from `present`
++// if its sequence number still matches (i.e. it wasn't already removed by a
++// hit, or superseded by a more recent re-insertion) - otherwise it's a
++// stale log entry and we just drop it.
++class VictimCache {
++    std::unordered_map<uint64_t, uint64_t> present;
++    std::deque<std::pair<uint64_t, uint64_t>> fifo;
++    uint64_t next_seq = 0;
++    size_t capacity_ = 0;
++
++    public:
++    uint64_t debug_insert_count = 0;
++    uint64_t debug_hit_count = 0;
++    uint64_t debug_lookup_count = 0;
++
++    void resize(size_t capacity) {
++        capacity_ = capacity;
++        present.clear();
++        fifo.clear();
++        next_seq = 0;
++    }
++
++    size_t capacity() const { return capacity_; }
++
++    void insert(uint64_t address) {
++        if (capacity_ == 0) return;
++        debug_insert_count++;
++        uint64_t seq = next_seq++;
++        present[address] = seq; // overwrite: dedups to the most recent insertion
++        fifo.push_back({address, seq});
++        while (fifo.size() > capacity_) {
++            const auto& [addr, s] = fifo.front();
++            auto it = present.find(addr);
++            if (it != present.end() && it->second == s) {
++                present.erase(it);
++            }
++            fifo.pop_front();
++        }
++    }
++
++    // Returns true (and removes the entry) if address was found - a "victim
++    // cache hit" is a one-shot signal, not a persistent membership test,
++    // matching how a real victim cache reinserts the line into the main
++    // array on a hit rather than leaving a copy behind. The stale (address,
++    // seq) pair left in `fifo` is harmless: it'll be skipped via the
++    // sequence-number check whenever it's eventually popped.
++    bool contains_and_remove(uint64_t address) {
++        debug_lookup_count++;
++        auto it = present.find(address);
++        if (it == present.end()) return false;
++        present.erase(it);
++        debug_hit_count++;
++        return true;
++    }
++};
++
++#endif
+diff --git a/src/hru_replacement_policy.cc b/src/hru_replacement_policy.cc
+index 141cd0d..34da94f 100644
+--- a/src/hru_replacement_policy.cc
++++ b/src/hru_replacement_policy.cc
+@@ -7,8 +7,8 @@ void HRU::init_counter(PacketPtr /*packet*/) {
+     mru_counter+=num_ways;
+ }
+ 
+-void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {   
+-    if (low_priority[way_idx] && packet->is_hub_node) {
++void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
++    if (low_priority[way_idx] && (packet->is_hub_node || packet->from_victim_cache)) {
+         low_priority[way_idx] = false;
+     }
+ 
+@@ -26,7 +26,16 @@ void HRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+ }
+ 
+ void HRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_victim_cache) {
++        // Bypasses the serviced_from_llc gate below, same rationale as
++        // PHRU/PHRUpp (see notes/phru_hub_heuristic_quality.md): a victim-
++        // cache hit is direct, deterministic proof this exact line was
++        // evicted too early moments ago, not a noisy local proxy. Always
++        // false unless --use-victim-cache is passed, so this branch is dead
++        // weight (zero behavior change) when the flag is off.
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         //auto counter_value = packet->block_serviced_from_llc[block_idx];
+         if (packet->is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+diff --git a/src/main.cc b/src/main.cc
+index bf0ff69..40d40b9 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -48,6 +48,10 @@ double cachesim::WINDOW_Z_THRESHOLD = 2.5;
+ 
+ PerformanceModel cachesim::performanceModel;
+ 
++bool cachesim::USE_VICTIM_CACHE = false;
++uint64_t cachesim::VICTIM_CACHE_SIZE = 32;
++VictimCache cachesim::victimCache;
++
+ enum class TraceFormat {
+     CHAMPSIM,
+     ADDRESSES,
+@@ -122,10 +126,16 @@ int main(int argc, char** argv) {
+     app.add_option("--window-size", cachesim::Z_WINDOW_SIZE, "Number of recent checkpoints used for the windowed z-test (ztest mode only)");
+     app.add_option("--window-z-threshold", cachesim::WINDOW_Z_THRESHOLD, "Two-proportion z-score required over the recent window for a checkpoint to count as confidently favoring breakdown (ztest mode only)");
+     app.add_flag("--log-dueling-metrics", cachesim::LOG_DUELING_METRICS, "Print a METRIC,... CSV line every conf-epoch instructions with PSEL, cache MPKI, and cumulative/windowed Leader64 vs Leader8 miss rates");
++    app.add_flag("--use-victim-cache", cachesim::USE_VICTIM_CACHE, "Enable a small victim cache that catches lines evicted from the LLC, so PHRU/PHRUpp can detect a line evicted too early via a fast re-miss instead of relying only on block_serviced_from_llc");
++    app.add_option("--victim-cache-size", cachesim::VICTIM_CACHE_SIZE, "Victim cache capacity in entries (only used if --use-victim-cache is set)");
+ 
+ 
+     CLI11_PARSE(app, argc, argv);
+ 
++    if (cachesim::USE_VICTIM_CACHE) {
++        cachesim::victimCache.resize(cachesim::VICTIM_CACHE_SIZE);
++    }
++
+     switch(replacement_policy) {
+         case ReplacementPolicy::LRU:
+             cachesim::SET_DUELING = false;
+@@ -209,7 +219,11 @@ int main(int argc, char** argv) {
+         PHRU::print_heuristic_stats();
+     if (replacement_policy == ReplacementPolicy::PHRUpp)
+         PHRUpp::print_heuristic_stats();
+-    
++    if (cachesim::USE_VICTIM_CACHE)
++        fmt::print("Victim cache: capacity {} inserts {} lookups {} hits {}\n",
++            cachesim::victimCache.capacity(), cachesim::victimCache.debug_insert_count,
++            cachesim::victimCache.debug_lookup_count, cachesim::victimCache.debug_hit_count);
++
+     cache.clear();
+ #ifdef MULTI_LEVEL
+     delete predictor;
+diff --git a/src/phru_replacement_policy.cc b/src/phru_replacement_policy.cc
+index 673ca63..03d44ec 100644
+--- a/src/phru_replacement_policy.cc
++++ b/src/phru_replacement_policy.cc
+@@ -70,7 +70,16 @@ void PHRU::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_count
+ }
+ 
+ void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // Pre-existing bug, found via ASAN while verifying the victim cache
++    // addition, unrelated to it: block_serviced_from_llc is sized by
++    // num_blocks (sub-blocks per line, e.g. 1 at plain 64B) in
++    // Cache<T>::try_hit(), but way_idx here is a way index (up to
++    // num_ways-1=31 for a 32-way set) - an index-space mismatch that reads
++    // out of bounds for any hit at a way other than 0. packet->serviced_from_llc
++    // (the scalar aggregate) is the safe, semantically equivalent substitute -
++    // it's exactly what fill_update()'s own outer gate already uses for the
++    // same "has this line been serviced from LLC" check.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+     if (low_priority[way_idx] && is_hub_node) {
+         low_priority[way_idx] = false;
+@@ -85,15 +94,26 @@ void PHRU::hit_update(PacketPtr packet, uint64_t way_idx) {
+ 
+ void PHRU::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+     auto is_hub_node = (packet->block_serviced_from_llc[block_idx] >= hub_threshold);
+-    record_heuristic(is_hub_node, packet->is_hub_node);
++    auto final_is_hub = is_hub_node || packet->from_victim_cache;
++    record_heuristic(final_is_hub, packet->is_hub_node);
+     // Diagnostic only, doesn't affect replacement: when the heuristic
+     // correctly/incorrectly says non-hub, log l1_hits/footprint_count so we
+     // can compare the FN distribution against the TN distribution - if
+     // they match, that profile can't be discriminating anything.
+-    if (!is_hub_node) {
++    if (!final_is_hub) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_victim_cache) {
++        // Independent of the serviced_from_llc gate below: a victim-cache
++        // hit is direct, deterministic proof this exact line was evicted
++        // too early moments ago, not a noisy local proxy subject to the
++        // class-overlap problems every other local signal had (see
++        // notes/phru_hub_heuristic_quality.md). packet->from_victim_cache is
++        // always false unless --use-victim-cache is passed, so this branch
++        // is dead weight (zero behavior change) for every prior comparison.
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/phrupp_replacement_policy.cc b/src/phrupp_replacement_policy.cc
+index 419b595..cc69eef 100644
+--- a/src/phrupp_replacement_policy.cc
++++ b/src/phrupp_replacement_policy.cc
+@@ -70,7 +70,11 @@ void PHRUpp::record_pattern(bool is_fn, uint64_t l1_hits, uint64_t footprint_cou
+ }
+ 
+ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
+-    auto is_hub_node = (packet->block_serviced_from_llc[way_idx] >= hub_threshold);
++    // See PHRU::hit_update() - pre-existing OOB bug, unrelated to the
++    // victim cache work, found via ASAN: block_serviced_from_llc is sized by
++    // num_blocks, not num_ways, but way_idx here is a way index.
++    // packet->serviced_from_llc (scalar) is the safe substitute.
++    auto is_hub_node = (packet->serviced_from_llc >= hub_threshold);
+     record_heuristic(is_hub_node, packet->degree > (uint64_t)packet->avg_degree);
+     if (low_priority[way_idx] && is_hub_node) {
+         low_priority[way_idx] = false;
+@@ -85,15 +89,23 @@ void PHRUpp::hit_update(PacketPtr packet, uint64_t way_idx) {
+ 
+ void PHRUpp::fill_update(uint64_t way_idx, uint64_t block_idx, PacketPtr packet, bool was_accessed) {
+     auto is_hub_node = (packet->block_serviced_from_llc[block_idx] >= hub_threshold);
+-    record_heuristic(is_hub_node, packet->is_hub_node);
++    auto final_is_hub = is_hub_node || packet->from_victim_cache;
++    record_heuristic(final_is_hub, packet->is_hub_node);
+     // Diagnostic only, doesn't affect replacement: when the heuristic
+     // correctly/incorrectly says non-hub, log l1_hits/footprint_count so we
+     // can compare the FN distribution against the TN distribution - if
+     // they match, that profile can't be discriminating anything.
+-    if (!is_hub_node) {
++    if (!final_is_hub) {
+         record_pattern(packet->is_hub_node, packet->l1_hits, count_footprint(packet->footprint));
+     }
+-    if (packet->serviced_from_llc > 0) {
++    if (packet->from_victim_cache) {
++        // See PHRU::fill_update() for rationale - a victim-cache hit is
++        // direct, deterministic proof this line was evicted too early, so it
++        // bypasses the serviced_from_llc gate below rather than being
++        // subject to it. Always false unless --use-victim-cache is passed.
++        counter[way_idx] = mru_counter;
++        low_priority[way_idx] = false;
++    } else if (packet->serviced_from_llc > 0) {
+         if (is_hub_node && was_accessed) {
+             counter[way_idx] = mru_counter;
+             low_priority[way_idx] = false;
+diff --git a/src/set.cc b/src/set.cc
+index c861c11..322a2ec 100644
+--- a/src/set.cc
++++ b/src/set.cc
+@@ -150,6 +150,14 @@ void Set::handle_fill(PacketPtr packet) {
+         //    fmt::print("Filling block address {:#x} from set {} block {} at level {}. was_accessed {} packet degree {} block degree {} block list size {} serviced_from_llc {}\n", block_address, set_idx, way_idx, level, was_accessed, packet->degree, packet->block_degrees[block_idx], packet->block_degrees.size(), packet->serviced_from_llc);
+         //}
+ 
++        // A hit here means this exact address was evicted from this LLC set
++        // recently enough to still be in the victim cache, and is now
++        // missing again - direct proof it was evicted too early, which
++        // block_serviced_from_llc alone can't ever produce (see
++        // inc/victim_cache.h). PHRU/PHRUpp use this as an extra hub signal.
++        packet->from_victim_cache = (cachesim::USE_VICTIM_CACHE && level == 1 && block_address != UINT64_MAX)
++            ? cachesim::victimCache.contains_and_remove(block_address) : false;
++
+         repl_counter->fill_update(way_idx, block_idx, packet, was_accessed);
+         if (block_address != UINT64_MAX) {
+             ways[way_idx] = block_address;
+@@ -257,6 +265,23 @@ void Set::handle_evict(PacketPtr packet) {
+         //    fmt::print("Degree {} Avg {:4f}\n", degree[way_idx], avg_degree[way_idx]);
+         cache->update_data_var_hub_evictions((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+ 
++        // Capture the evicted line's address before invalidate_way() clears
++        // it, so a fast re-miss on this same address can be caught as a
++        // "victim cache hit" (see inc/victim_cache.h). LLC only (level 1) -
++        // PHRU/PHRUpp are LLC-level policies, and L1D evictions aren't what
++        // this is meant to catch. Only store lines that already have
++        // serviced_from_llc[way_idx] > 0 - i.e. this exact line has already
++        // round-tripped through LLC at least once before, not a first-time
++        // compulsory fill. The victim cache is small and global (shared
++        // across all 1024 sets); storing every eviction indiscriminately
++        // wastes most of its capacity on the ~93-99% single-touch, never-
++        // revisited cold lines identified in notes/phru_hub_heuristic_quality.md,
++        // which will never generate a hit anyway. Restricting to
++        // already-proven lines makes better use of the limited slots.
++        if (cachesim::USE_VICTIM_CACHE && level == 1 && valid[way_idx] && serviced_from_llc[way_idx] > 0) {
++            cachesim::victimCache.insert(ways[way_idx]);
++        }
++
+         invalidate_way(way_idx);
+         num_blocks_evicted++;
+         //cache->update_data_var_evictions(packet->pc,

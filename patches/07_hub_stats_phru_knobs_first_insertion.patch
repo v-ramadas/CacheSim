@@ -1,0 +1,897 @@
+diff --git a/inc/cachesim.h b/inc/cachesim.h
+index 79b9e4d..2c07ab3 100644
+--- a/inc/cachesim.h
++++ b/inc/cachesim.h
+@@ -112,7 +112,7 @@ class Set {
+ 
+     bool try_hit(PacketPtr packet);
+     void handle_fill(PacketPtr packet);
+-    void handle_evict(PacketPtr eviction_packet);
++    void handle_evict(PacketPtr eviction_packet, PacketPtr incoming = nullptr);
+     void handle_invalidate(PacketPtr packet, uint64_t block_num);
+ 
+     uint64_t get_block_size() const { return block_size; }
+@@ -232,7 +232,7 @@ class SectoredSet: public Set {
+ 
+     bool try_hit(PacketPtr packet);
+     void handle_fill(PacketPtr packet);
+-    void handle_evict(PacketPtr eviction_packet);
++    void handle_evict(PacketPtr eviction_packet, PacketPtr incoming = nullptr);
+     void handle_invalidate(PacketPtr packet, uint64_t block_num);
+     uint64_t get_block_size() const { return block_size; }
+     bool get_footprint(uint64_t way_idx, uint64_t word_idx);
+diff --git a/inc/utils.h b/inc/utils.h
+index 181fd3b..2587716 100644
+--- a/inc/utils.h
++++ b/inc/utils.h
+@@ -7,6 +7,10 @@
+ #include <fmt/core.h>
+ #include "performance_model.h"
+ #include "ghost_cache.h"
++#include "reuse_history.h"
++#include "hub_bitmap.h"
++#include "pc_reuse.h"
++#include <string>
+ 
+ const uint64_t CACHELINE_SIZE = 64;
+ 
+@@ -38,6 +42,7 @@ namespace cachesim {
+     extern bool LLC_DEBUG;
+     extern bool NO_ISO_AREA;
+     extern bool GEN_STATS;
++    extern bool HUB_STATS;
+     extern bool dropBlocks;
+     extern bool useMemSignature;
+     extern bool isoArea;
+@@ -71,6 +76,46 @@ namespace cachesim {
+     extern GhostCache ghostCache;
+     extern bool GHOST_CACHE_DEBUG;
+     extern uint64_t GHOST_CACHE_MIN_SERVICED;
++
++    // PHRU hub-predictor experiments (all off by default = original PHRU).
++    extern uint64_t PHRU_THRESHOLD;          // block_serviced_from_llc >= this -> hub (initial value if adaptive)
++    extern std::string PHRU_ADAPT;           // none | avghits | budget | marginal | meanscale
++    extern double PHRU_ADAPT_SCALE;          // meanscale: threshold = max(threshold, floor(scale * mean reuse of pin candidates))
++    extern bool PHRU_ADAPT_BIDIR;            // allow the threshold to come back down
++    extern double PHRU_ADAPT_BUDGET;         // budget: target max fraction of LLC ways pinned MRU
++    extern uint64_t PHRU_ADAPT_EPOCH;        // LLC block fills per adaptation step
++    extern double PHRU_ADAPT_RAISE;          // avghits/marginal: raise if (marginal) MRU hits/way < RAISE * LRU hits/way
++    extern double PHRU_ADAPT_LOWER;          // avghits/marginal bidir: lower if ... > LOWER * LRU hits/way
++    extern uint64_t PHRU_ADAPT_MAX;
++    extern bool PHRU_ADAPT_LOG;
++    extern bool PHRU_PROMOTE_ACCESSED;       // reused line + accessed block -> MRU even below threshold
++    extern uint64_t PHRU_PA_LINE_MIN;        // promote-accessed only if line serviced_from_llc >= this
++    extern uint64_t PHRU_LINE_THRESHOLD;     // 0 = off; line serviced_from_llc >= this -> every block MRU
++    extern double PHRU_LINE_RATIO;           // 0 = off; pin only if block reuse >= ratio * max reuse in its line
++    extern uint64_t PHRU_LEASE;              // 0 = off (permanent MRU pin); else pin stamp = lru_counter + LEASE
++    extern double PHRU_NA_MRU_PROB;          // pin a would-be-pinned block with this probability (1.0 = always)
++    extern std::string PHRU_NA_SCOPE;        // not_accessed (only !was_accessed blocks) | all
++    extern std::string PHRU_ORACLE;          // DIAGNOSTIC ONLY (uses true degree): none | fix_fn | fix_fp | both | first | all
++    extern bool PHRU_HISTORY;                // address-keyed reuse history
++    extern std::string PHRU_HIST_MODE;       // replace | or | orgated | and
++    extern uint64_t PHRU_HIST_BITS;
++    extern uint64_t PHRU_HIST_THRESHOLD;
++    extern uint64_t PHRU_HIST_AGING;
++    extern ReuseHistory reuseHistory;
++    extern double PHRU_ORACLE_RECALL;        // oracle first/all: pin a true hub of a never-reused line with this probability
++    extern double PHRU_ORACLE_FP;            // oracle first/all: pin a true non-hub of a never-reused line with this probability
++    extern bool HUB_BITMAP;                  // first-insertion hub predictor (measurement only for now)
++    extern std::string HUB_BITMAP_MODE;      // bits | counter
++    extern uint64_t HUB_BITMAP_BITS;         // log2 slots
++    extern uint64_t HUB_BITMAP_WINDOW;       // training events per generation / halving
++    extern uint64_t HUB_BITMAP_THRESHOLD;    // counter mode: counter >= this -> hub
++    extern std::string HUB_BITMAP_TRAIN;     // miss | lookup
++    extern HubBitmap hubBitmap;
++    extern bool PC_REUSE_STATS;              // track + print per-PC LLC reuse rate
++    extern double PC_REUSE_GATE;             // > 0: first-insertion oracle / hub bitmap only for PCs with reuse rate >= this
++    extern uint64_t PC_REUSE_MIN_LOOKUPS;
++    extern uint64_t PC_REUSE_HALVE;
++    extern PcReuse pcReuse;
+ };
+ 
+ enum class InsertionPolicy {
+diff --git a/src/cachesim.cc b/src/cachesim.cc
+index 4d45429..e622ebc 100644
+--- a/src/cachesim.cc
++++ b/src/cachesim.cc
+@@ -299,7 +299,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
+         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
+     eviction_packet->clear_blocks();
+     eviction_packet->footprint = 0;
+-    sets[set_idx]->handle_evict(eviction_packet);
++    sets[set_idx]->handle_evict(eviction_packet, fill_packet);
+     if (eviction_packet->blocks.size() == 0) {
+         eviction_packet->address = UINT64_MAX;
+     } else {
+@@ -580,6 +580,9 @@ void access_multi_level(std::vector<BaseCache*> &cache,
+ 
+     }
+ 
++    if (cachesim::PC_REUSE_STATS && hit_at_level != 0)
++        cachesim::pcReuse.on_lookup(access_packet->pc, hit_at_level == 1);
++
+     if (hit) {
+         eviction_packet->footprint = 0;
+         fill_packet->size = CACHELINE_SIZE;
+@@ -597,6 +600,8 @@ void access_multi_level(std::vector<BaseCache*> &cache,
+             *fill_packet = *invalidation_packet;
+             fill_packet->footprint |= invalidation_packet->footprint;
+             fill_packet->serviced_from_llc += 1;
++            if (cachesim::HUB_BITMAP && cachesim::HUB_BITMAP_TRAIN == "lookup")
++                cachesim::hubBitmap.train(align_address(access_packet->address, 8));
+             cache[0]->handle_fill_blocks(fill_packet, eviction_packet, 0);
+         } else {
+             cache[1]->handle_invalidate(invalidation_packet);
+@@ -609,6 +614,12 @@ void access_multi_level(std::vector<BaseCache*> &cache,
+ 
+             fill_packet->degree = access_packet->degree;
+             fill_packet->avg_degree = access_packet->avg_degree;
++            if (cachesim::HUB_BITMAP) {
++                if (cachesim::PC_REUSE_GATE > 0.0 && !cachesim::pcReuse.is_reuse(access_packet->pc))
++                    cachesim::hubBitmap.clear_line(access_packet->address);
++                else
++                    cachesim::hubBitmap.on_miss(access_packet->address);
++            }
+             cache[0]->handle_fill_line(fill_packet, eviction_packet, 0);
+         }
+ 
+diff --git a/src/main.cc b/src/main.cc
+index e132afd..a96b844 100644
+--- a/src/main.cc
++++ b/src/main.cc
+@@ -1,4 +1,5 @@
+ #include "cachesim.h"
++#include "hub_stats.h"
+ 
+ uint64_t cachesim::instCount = 0;
+ uint64_t cachesim::prevInstCount = 0;
+@@ -12,6 +13,7 @@ bool cachesim::LLC_DEBUG = false;
+ bool cachesim::REPLACEMENT_POLICY_DEBUG = false;
+ bool cachesim::NO_ISO_AREA = false;
+ bool cachesim::GEN_STATS = false;
++bool cachesim::HUB_STATS = false;
+ bool cachesim::ENABLE_PREDICTOR = false;
+ //TODO: Figure out a good value
+ uint64_t cachesim::WARMUP_INSTRUCTIONS = 0;//2*16*2048;
+@@ -53,6 +55,44 @@ uint64_t cachesim::GHOST_CACHE_SIZE = 32;
+ GhostCache cachesim::ghostCache;
+ bool cachesim::GHOST_CACHE_DEBUG = false;
+ uint64_t cachesim::GHOST_CACHE_MIN_SERVICED = 1;
++uint64_t cachesim::PHRU_THRESHOLD = 1;
++std::string cachesim::PHRU_ADAPT = "none";
++bool cachesim::PHRU_ADAPT_BIDIR = false;
++double cachesim::PHRU_ADAPT_BUDGET = 0.7;
++double cachesim::PHRU_ADAPT_SCALE = 0.25;
++uint64_t cachesim::PHRU_ADAPT_EPOCH = 1 << 20;
++double cachesim::PHRU_ADAPT_RAISE = 1.0;
++double cachesim::PHRU_ADAPT_LOWER = 2.0;
++uint64_t cachesim::PHRU_ADAPT_MAX = 64;
++bool cachesim::PHRU_ADAPT_LOG = false;
++bool cachesim::PHRU_PROMOTE_ACCESSED = false;
++uint64_t cachesim::PHRU_PA_LINE_MIN = 1;
++uint64_t cachesim::PHRU_LINE_THRESHOLD = 0;
++double cachesim::PHRU_LINE_RATIO = 0.0;
++uint64_t cachesim::PHRU_LEASE = 0;
++double cachesim::PHRU_NA_MRU_PROB = 1.0;
++std::string cachesim::PHRU_NA_SCOPE = "not_accessed";
++std::string cachesim::PHRU_ORACLE = "none";
++bool cachesim::PHRU_HISTORY = false;
++std::string cachesim::PHRU_HIST_MODE = "replace";
++uint64_t cachesim::PHRU_HIST_BITS = 16;
++uint64_t cachesim::PHRU_HIST_THRESHOLD = 2;
++uint64_t cachesim::PHRU_HIST_AGING = 0;
++ReuseHistory cachesim::reuseHistory;
++double cachesim::PHRU_ORACLE_RECALL = 1.0;
++double cachesim::PHRU_ORACLE_FP = 0.0;
++bool cachesim::HUB_BITMAP = false;
++std::string cachesim::HUB_BITMAP_MODE = "bits";
++uint64_t cachesim::HUB_BITMAP_BITS = 17;
++uint64_t cachesim::HUB_BITMAP_WINDOW = 327680;
++uint64_t cachesim::HUB_BITMAP_THRESHOLD = 2;
++std::string cachesim::HUB_BITMAP_TRAIN = "miss";
++HubBitmap cachesim::hubBitmap;
++bool cachesim::PC_REUSE_STATS = false;
++double cachesim::PC_REUSE_GATE = 0.0;
++uint64_t cachesim::PC_REUSE_MIN_LOOKUPS = 64;
++uint64_t cachesim::PC_REUSE_HALVE = 0;
++PcReuse cachesim::pcReuse;
+ 
+ enum class TraceFormat {
+     CHAMPSIM,
+@@ -110,6 +150,7 @@ int main(int argc, char** argv) {
+     app.add_option("--iters", num_iters, "Number of iterations");
+     app.add_option("--warmup-instructions", cachesim::WARMUP_INSTRUCTIONS, "Warmup instruction count");
+     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");
++    app.add_flag("--hub-stats", cachesim::HUB_STATS, "Print LLC hub eviction/occupancy stats (HUBSTAT lines)");
+     app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Enable predictor (not implemented)");
+     app.add_flag("--detailed-dram", performance::DETAILED_DRAM, "Enable detailed DRAM timing model");
+     app.add_flag("--set-dueling", cachesim::SET_DUELING, "Enable set dueling");
+@@ -132,11 +173,56 @@ int main(int argc, char** argv) {
+     app.add_flag("--use-ghost-cache", cachesim::USE_GHOST_CACHE, "Enable a small ghost cache that catches lines evicted from the LLC, so PHRU/PHRUpp can detect a line evicted too early via a fast re-miss instead of relying only on block_serviced_from_llc");
+     app.add_option("--ghost-cache-size", cachesim::GHOST_CACHE_SIZE, "Ghost cache capacity in entries (only used if --use-ghost-cache is set)");
+     app.add_flag("--debug-ghost-cache", cachesim::GHOST_CACHE_DEBUG, "Print a line for every ghost cache insert/lookup/eviction (only used if --use-ghost-cache is set)");
++    app.add_option("--phru-threshold", cachesim::PHRU_THRESHOLD, "PHRU: block_serviced_from_llc >= this counts as hub (start value if adaptive; default 1)");
++    app.add_option("--phru-adapt", cachesim::PHRU_ADAPT, "PHRU threshold adaptation metric: none | avghits | budget | marginal")->check(CLI::IsMember({"none", "avghits", "budget", "marginal", "meanscale"}));
++    app.add_option("--phru-adapt-scale", cachesim::PHRU_ADAPT_SCALE, "PHRU meanscale mode: threshold follows scale * mean serviced_from_llc of pin candidates (monotone)");
++    app.add_flag("--phru-adapt-bidir", cachesim::PHRU_ADAPT_BIDIR, "PHRU: allow the adaptive threshold to decrease as well");
++    app.add_option("--phru-adapt-budget", cachesim::PHRU_ADAPT_BUDGET, "PHRU budget mode: raise the threshold while more than this fraction of LLC ways is pinned MRU");
++    app.add_option("--phru-adapt-epoch", cachesim::PHRU_ADAPT_EPOCH, "PHRU: LLC block fills per adaptation step");
++    app.add_option("--phru-adapt-raise", cachesim::PHRU_ADAPT_RAISE, "PHRU: raise threshold if MRU hits/way < this * LRU hits/way");
++    app.add_option("--phru-adapt-lower", cachesim::PHRU_ADAPT_LOWER, "PHRU (bidir): lower threshold if MRU hits/way > this * LRU hits/way");
++    app.add_option("--phru-adapt-max", cachesim::PHRU_ADAPT_MAX, "PHRU: maximum adaptive threshold");
++    app.add_flag("--phru-adapt-log", cachesim::PHRU_ADAPT_LOG, "PHRU: print one PHRU_ADAPT line per adaptation epoch");
++    app.add_flag("--phru-promote-accessed", cachesim::PHRU_PROMOTE_ACCESSED, "PHRU: promote accessed blocks of reused lines to MRU even below threshold");
++    app.add_option("--phru-pa-line-min", cachesim::PHRU_PA_LINE_MIN, "PHRU: --phru-promote-accessed applies only if the line's serviced_from_llc >= this (default 1)");
++    app.add_option("--phru-line-threshold", cachesim::PHRU_LINE_THRESHOLD, "PHRU: if the line's serviced_from_llc >= this, every block of the line goes MRU (0 = off)");
++    app.add_option("--phru-line-ratio", cachesim::PHRU_LINE_RATIO, "PHRU: pin a block only if its serviced_from_llc >= ratio * the highest in its line (0 = off)");
++    app.add_option("--phru-lease", cachesim::PHRU_LEASE, "PHRU: pinned blocks get stamp lru_counter + LEASE instead of mru_counter (0 = off, permanent pin)");
++    app.add_option("--phru-na-mru-prob", cachesim::PHRU_NA_MRU_PROB, "PHRU: pin a block the reuse test would pin with this probability; otherwise LRU stamp (default 1.0 = always)");
++    app.add_option("--phru-na-scope", cachesim::PHRU_NA_SCOPE, "PHRU: which pins the coin flip applies to: not_accessed (default) | all")->check(CLI::IsMember({"not_accessed", "all"}));
++    app.add_option("--phru-oracle", cachesim::PHRU_ORACLE, "PHRU DIAGNOSTIC (uses true degree): fix_fn = also pin true hubs of reused lines, fix_fp = never pin true non-hubs, both, first = pin true hubs of never-reused lines, all = both + first")->check(CLI::IsMember({"none", "fix_fn", "fix_fp", "both", "first", "all"}));
++    app.add_option("--phru-oracle-recall", cachesim::PHRU_ORACLE_RECALL, "PHRU DIAGNOSTIC, oracle first/all: pin true hubs of never-reused lines with this probability (default 1)");
++    app.add_option("--phru-oracle-fp", cachesim::PHRU_ORACLE_FP, "PHRU DIAGNOSTIC, oracle first/all: pin true non-hubs of never-reused lines with this probability (default 0)");
++    app.add_flag("--hub-bitmap", cachesim::HUB_BITMAP, "Measure a tagless windowed re-miss bitmap as a first-insertion hub predictor (prints HUBBITMAP lines; no effect on replacement)");
++    app.add_option("--hub-bitmap-mode", cachesim::HUB_BITMAP_MODE, "Hub bitmap: bits (2 generations of 1 bit) | counter (2-bit, halved each window)")->check(CLI::IsMember({"bits", "counter"}));
++    app.add_option("--hub-bitmap-bits", cachesim::HUB_BITMAP_BITS, "Hub bitmap: log2 slots");
++    app.add_option("--hub-bitmap-window", cachesim::HUB_BITMAP_WINDOW, "Hub bitmap: training events per generation (bits) or per halving (counter)");
++    app.add_option("--hub-bitmap-threshold", cachesim::HUB_BITMAP_THRESHOLD, "Hub bitmap counter mode: counter >= this counts as hub");
++    app.add_option("--hub-bitmap-train", cachesim::HUB_BITMAP_TRAIN, "Hub bitmap: train on miss (memory misses) | lookup (also LLC hits)")->check(CLI::IsMember({"miss", "lookup"}));
++    app.add_flag("--pc-reuse-stats", cachesim::PC_REUSE_STATS, "Track and print per-PC LLC reuse rate (LLC hits / LLC lookups) (PCREUSE lines)");
++    app.add_option("--pc-reuse-gate", cachesim::PC_REUSE_GATE, "> 0: apply the first-insertion oracle / hub bitmap only to lines whose PC has LLC reuse rate >= this (implies --pc-reuse-stats)");
++    app.add_option("--pc-reuse-min-lookups", cachesim::PC_REUSE_MIN_LOOKUPS, "PC reuse: lookups before a PC can count as a reuse PC");
++    app.add_option("--pc-reuse-halve", cachesim::PC_REUSE_HALVE, "PC reuse: halve a PC's counts every N of its lookups (0 = cumulative)");
++    app.add_flag("--phru-history", cachesim::PHRU_HISTORY, "PHRU: use an address-keyed LLC reuse history table as the hub signal");
++    app.add_option("--phru-hist-mode", cachesim::PHRU_HIST_MODE, "PHRU history: replace (history only, bypasses reuse gate) | or (history OR threshold) | and (threshold AND history, inside the reuse gate)")->check(CLI::IsMember({"replace", "or", "orgated", "and"}));
++    app.add_option("--phru-hist-bits", cachesim::PHRU_HIST_BITS, "PHRU history: log2 table entries");
++    app.add_option("--phru-hist-threshold", cachesim::PHRU_HIST_THRESHOLD, "PHRU history: counter >= this counts as hub");
++    app.add_option("--phru-hist-aging", cachesim::PHRU_HIST_AGING, "PHRU history: halve all counters every N LLC hits (0 = never)");
+     app.add_option("--ghost-cache-min-serviced", cachesim::GHOST_CACHE_MIN_SERVICED, "A line is only inserted into the ghost cache on LLC eviction if serviced_from_llc exceeds this (only used if --use-ghost-cache is set); default 1 (i.e. requires serviced_from_llc > 1)");
+ 
+ 
+     CLI11_PARSE(app, argc, argv);
+ 
++    if (cachesim::PC_REUSE_GATE > 0.0)
++        cachesim::PC_REUSE_STATS = true;
++    cachesim::pcReuse.gate = cachesim::PC_REUSE_GATE;
++    cachesim::pcReuse.min_lookups = cachesim::PC_REUSE_MIN_LOOKUPS;
++    cachesim::pcReuse.halve = cachesim::PC_REUSE_HALVE;
++    if (cachesim::HUB_BITMAP)
++        cachesim::hubBitmap.init(cachesim::HUB_BITMAP_MODE, cachesim::HUB_BITMAP_BITS,
++            cachesim::HUB_BITMAP_WINDOW, cachesim::HUB_BITMAP_THRESHOLD);
++    if (cachesim::PHRU_HISTORY)
++        cachesim::reuseHistory.init(cachesim::PHRU_HIST_BITS, cachesim::PHRU_HIST_AGING);
+     if (cachesim::USE_GHOST_CACHE) {
+         // A ghost cache entry is one address tag at the LLC's CURRENT block
+         // size. At 8B blocks, the same cacheline needs 8 tag slots instead
+@@ -229,10 +315,18 @@ int main(int argc, char** argv) {
+     }
+     if (cachesim::GEN_STATS)
+         predictor->print_stats();
++    if (cachesim::HUB_STATS)
++        cachesim::hubStats.print();
+     if (replacement_policy == ReplacementPolicy::PHRU)
+         PHRU::print_heuristic_stats();
++    if (replacement_policy == ReplacementPolicy::HubOracle)
++        HubOracle::print_stats();
+     if (replacement_policy == ReplacementPolicy::PHRUpp)
+         PHRUpp::print_heuristic_stats();
++    if (cachesim::HUB_BITMAP)
++        cachesim::hubBitmap.print();
++    if (cachesim::PC_REUSE_STATS)
++        cachesim::pcReuse.print();
+     if (cachesim::USE_GHOST_CACHE)
+         fmt::print("Ghost cache: capacity {} inserts {} lookups {} hits {} evictions {} rejected {}\n",
+             cachesim::ghostCache.capacity(), cachesim::ghostCache.debug_insert_count,
+diff --git a/src/sectored_set.cc b/src/sectored_set.cc
+index cbba0b5..788367a 100644
+--- a/src/sectored_set.cc
++++ b/src/sectored_set.cc
+@@ -190,7 +190,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
+     return;
+ }
+ 
+-void SectoredSet::handle_evict(PacketPtr packet) {
++void SectoredSet::handle_evict(PacketPtr packet, PacketPtr /*incoming*/) {
+     auto try_hit = std::find(ways.begin(), ways.end(), packet->aligned_address);
+     auto num_invalid_blocks = get_num_invalid();
+     bool hit = (try_hit != ways.end());
+diff --git a/src/set.cc b/src/set.cc
+index 1140253..592571b 100644
+--- a/src/set.cc
++++ b/src/set.cc
+@@ -1,5 +1,6 @@
+ #include "cachesim.h"
+ #include "msl/bits.h"
++#include "hub_stats.h"
+ #include <cassert>
+ 
+ 
+@@ -96,6 +97,8 @@ bool Set::try_hit(PacketPtr packet) {
+ 
+             if (ways[way_idx] == align_address(packet->address, block_size)) {
+                 serviced_from_llc[way_idx]++;
++                if (cachesim::PHRU_HISTORY && level == 1)
++                    cachesim::reuseHistory.on_hit(ways[way_idx]);
+                 //cache->update_data_var_hub_hits((degree[way_idx] > avg_degree[way_idx]), serviced_from_llc[way_idx]);
+             }
+         }
+@@ -129,6 +132,16 @@ void Set::handle_fill(PacketPtr packet) {
+     repl_counter->init_counter(packet);
+     uint64_t block_idx = 0;
+ 
++    bool hub_stats = cachesim::HUB_STATS && level == 1;
++    uint64_t hub_ways = 0, valid_ways = 0;
++    if (hub_stats) {
++        for (uint64_t i = 0; i < num_ways; ++i) {
++            if (!valid[i]) continue;
++            valid_ways++;
++            if (HubStats::is_hub(degree[i], avg_degree[i])) hub_ways++;
++        }
++    }
++
+     for (const auto block_address: packet->blocks) {
+         bool was_accessed;
+         if (level == 0) {
+@@ -143,6 +156,13 @@ void Set::handle_fill(PacketPtr packet) {
+             packet->is_hub_node = packet->degree > uint64_t(packet->avg_degree);
+         }
+         //packet->address = block_address;
++        if (hub_stats) {
++            bool block_hub = HubStats::is_hub(packet->block_degrees[block_idx], packet->avg_degree);
++            cachesim::hubStats.record_insertion(block_hub, packet->block_serviced_from_llc[block_idx],
++                hub_ways, valid_ways, num_ways);
++            valid_ways++;
++            if (block_hub) hub_ways++;
++        }
+         way = std::find(way, valid.end(), false);
+         auto way_idx = std::distance(valid.begin(), way);
+ 
+@@ -184,7 +204,7 @@ void Set::handle_fill(PacketPtr packet) {
+ 
+ 
+ 
+-void Set::handle_evict(PacketPtr packet) {
++void Set::handle_evict(PacketPtr packet, PacketPtr incoming) {
+     uint64_t num_blocks_evicted = 0;
+     auto num_invalid_blocks = get_num_invalid();
+     uint64_t num_blocks_to_evict = packet->size/block_size;
+@@ -204,6 +224,14 @@ void Set::handle_evict(PacketPtr packet) {
+         uint64_t way_idx = num_ways;
+         way_idx = repl_counter->get_eviction_candidate(packet->degree < (uint64_t)packet->avg_degree);
+ 
++        if (cachesim::PHRU_HISTORY && level == 1 && valid[way_idx])
++            cachesim::reuseHistory.on_evict(ways[way_idx]);
++
++        if (cachesim::HUB_STATS && level == 1 && incoming && valid[way_idx]) {
++            cachesim::hubStats.record_eviction(HubStats::is_hub(incoming->degree, incoming->avg_degree), incoming->degree,
++                HubStats::is_hub(degree[way_idx], avg_degree[way_idx]), degree[way_idx], serviced_from_llc[way_idx]);
++        }
++
+         if (dirty[way_idx]) {
+             dirty[way_idx] = false;
+         }
+diff --git a/inc/hub_stats.h b/inc/hub_stats.h
+new file mode 100644
+index 0000000..8a9d952
+--- /dev/null
++++ b/inc/hub_stats.h
+@@ -0,0 +1,107 @@
++#ifndef __HUB_STATS_H__
++#define __HUB_STATS_H__
++
++#include <algorithm>
++#include <bit>
++#include <cstdint>
++#include <map>
++#include <utility>
++#include <array>
++#include <unordered_map>
++
++// LLC hub-behavior instrumentation (--hub-stats). Collected in Set at level 1
++// only, so it is policy-agnostic: HRU/HRUpp/PHRU/PHRUpp all see the same
++// definitions. "Hub" is computed here from each block's own degree/avg_degree
++// (see is_hub), not taken from Set::is_hub_node or a policy's own guess.
++//
++// Degree buckets are power-of-two: bucket b = bit_width(degree), i.e.
++// b=0 -> degree 0, b=1 -> 1, b=2 -> 2-3, b=3 -> 4-7, ...
++struct HubStats {
++    // 1. Hub victims with serviced_from_llc == 0 (never reused from the LLC).
++    uint64_t hub_evictions = 0;
++    uint64_t hub_evictions_no_reuse = 0;
++    std::map<uint64_t, uint64_t> hub_evictions_by_bucket;
++    std::map<uint64_t, uint64_t> hub_evictions_no_reuse_by_bucket;
++
++    // 2. Incoming non-hub line evicting a hub.
++    uint64_t evictions = 0;
++    uint64_t nonhub_incoming_evictions = 0;
++    uint64_t nonhub_evicts_hub = 0;
++
++    // 3. Hub occupancy of the set, sampled at each inserted block (before it
++    // is placed).
++    uint64_t insertions = 0;
++    uint64_t sum_hub_ways = 0;
++    uint64_t sum_valid_ways = 0;
++    uint64_t sum_num_ways = 0;
++
++    // 4. Incoming hub evicting a hub of strictly greater degree,
++    // keyed (incoming bucket, victim bucket).
++    uint64_t hub_incoming_evictions = 0;
++    uint64_t hub_evicts_hub = 0;
++    uint64_t hub_evicts_greater_hub = 0;
++    std::map<std::pair<uint64_t, uint64_t>, uint64_t> hub_evicts_greater_hub_hist;
++
++    // 5. Non-hubs with serviced_from_llc > 0, at LLC fill and at LLC eviction.
++    uint64_t nonhub_fills = 0;
++    uint64_t nonhub_fills_serviced = 0;
++    uint64_t nonhub_evictions = 0;
++    uint64_t nonhub_evictions_serviced = 0;
++
++    // 6. PHRU fill_update: blocks stamped MRU, indexed [true_hub][was_accessed],
++    // out of all PHRU fills in the same category.
++    // [0] all fills, [1] block reused (block_serviced_from_llc > 0),
++    // [2] line reused (packet->serviced_from_llc > 0).
++    uint64_t phru_fills[3][2][2] = {};
++    uint64_t phru_mru[3][2][2] = {};
++    void record_phru_fill(bool true_hub, bool was_accessed, bool mru, bool block_reused, bool line_reused) {
++        bool sel[3] = {true, block_reused, line_reused};
++        for (int s = 0; s < 3; ++s) {
++            if (!sel[s]) continue;
++            phru_fills[s][true_hub][was_accessed]++;
++            if (mru) phru_mru[s][true_hub][was_accessed]++;
++        }
++    }
++
++    // 7/8. PHRU diagnostics for blocks of reused lines (--hub-stats).
++    // Index [pinned][true_hub]: [1][0] = false-positive pin, [1][1] = correct pin,
++    // [0][1] = missed hub, [0][0] = correct non-pin.
++    std::unordered_map<uint64_t, std::array<std::array<uint64_t, 2>, 2>> pc_stats;   // 7: per fill-packet PC
++    static constexpr int RATIO_BUCKETS = 5;   // block reuse / line max reuse: [0,.25) [.25,.5) [.5,.75) [.75,1) ==1
++    static constexpr int SIB_BUCKETS = 9;     // other reused sub-blocks in the fill: 0..8
++    static constexpr int SFL_BUCKETS = 7;     // block reuse count: 1,2,3,4-7,8-15,16-31,32+
++    uint64_t diag_ratio[2][RATIO_BUCKETS] = {};   // 8: pinned blocks only, [true_hub][bucket]
++    uint64_t diag_sib[2][SIB_BUCKETS] = {};
++    uint64_t diag_sfl[2][SFL_BUCKETS] = {};
++    void record_phru_diag(uint64_t pc, bool true_hub, bool pinned, uint64_t block_sfl,
++                          uint64_t line_max, uint64_t reused_siblings) {
++        pc_stats[pc][pinned][true_hub]++;
++        if (!pinned || block_sfl == 0) return;
++        // Bucket 4 = this block is (tied for) the most-reused block of its line.
++        int rb = block_sfl >= line_max ? 4 : std::min(3, int(4 * block_sfl / line_max));
++        diag_ratio[true_hub][rb]++;
++        diag_sib[true_hub][reused_siblings < 8 ? reused_siblings : 8]++;
++        int sb = block_sfl <= 3 ? int(block_sfl) - 1 : block_sfl < 8 ? 3 : block_sfl < 16 ? 4 : block_sfl < 32 ? 5 : 6;
++        diag_sfl[true_hub][sb]++;
++    }
++
++    static uint64_t bucket(uint64_t degree) { return std::bit_width(degree); }
++
++    // A block is a hub only if avg_degree is non-zero and degree > avg_degree.
++    // Anything with degree or avg_degree 0 is a non-hub.
++    static bool is_hub(uint64_t degree, float avg_degree) {
++        return avg_degree != 0.0f && degree > uint64_t(avg_degree);
++    }
++
++    void record_eviction(bool incoming_hub, uint64_t incoming_degree,
++                         bool victim_hub, uint64_t victim_degree, uint64_t victim_serviced);
++    void record_insertion(bool is_hub, uint64_t serviced, uint64_t hub_ways,
++                          uint64_t valid_ways, uint64_t num_ways);
++    void print() const;
++};
++
++namespace cachesim {
++    extern HubStats hubStats;
++}
++
++#endif
+diff --git a/src/hub_stats.cc b/src/hub_stats.cc
+new file mode 100644
+index 0000000..0f0f6e3
+--- /dev/null
++++ b/src/hub_stats.cc
+@@ -0,0 +1,143 @@
++#include "hub_stats.h"
++#include <fmt/core.h>
++#include <string>
++#include <vector>
++#include <algorithm>
++
++HubStats cachesim::hubStats;
++
++void HubStats::record_eviction(bool incoming_hub, uint64_t incoming_degree,
++                               bool victim_hub, uint64_t victim_degree, uint64_t victim_serviced) {
++    evictions++;
++    if (victim_hub) {
++        hub_evictions++;
++        hub_evictions_by_bucket[bucket(victim_degree)]++;
++        if (victim_serviced == 0) {
++            hub_evictions_no_reuse++;
++            hub_evictions_no_reuse_by_bucket[bucket(victim_degree)]++;
++        }
++    } else {
++        nonhub_evictions++;
++        if (victim_serviced > 0) nonhub_evictions_serviced++;
++    }
++
++    if (incoming_hub) {
++        hub_incoming_evictions++;
++        if (victim_hub) {
++            hub_evicts_hub++;
++            if (victim_degree > incoming_degree) {
++                hub_evicts_greater_hub++;
++                hub_evicts_greater_hub_hist[{bucket(incoming_degree), bucket(victim_degree)}]++;
++            }
++        }
++    } else {
++        nonhub_incoming_evictions++;
++        if (victim_hub) nonhub_evicts_hub++;
++    }
++}
++
++void HubStats::record_insertion(bool is_hub, uint64_t serviced, uint64_t hub_ways,
++                                uint64_t valid_ways, uint64_t num_ways) {
++    insertions++;
++    sum_hub_ways += hub_ways;
++    sum_valid_ways += valid_ways;
++    sum_num_ways += num_ways;
++    if (!is_hub) {
++        nonhub_fills++;
++        if (serviced > 0) nonhub_fills_serviced++;
++    }
++}
++
++static double pct(uint64_t n, uint64_t d) { return d ? 100.0 * n / d : 0.0; }
++
++static std::string bucket_label(uint64_t b) {
++    if (b == 0) return "0";
++    uint64_t lo = uint64_t(1) << (b - 1), hi = (uint64_t(1) << b) - 1;
++    return lo == hi ? fmt::format("{}", lo) : fmt::format("{}-{}", lo, hi);
++}
++
++void HubStats::print() const {
++    fmt::print("HUBSTAT evictions {} hub_evictions {} ({:.2f}%)\n",
++               evictions, hub_evictions, pct(hub_evictions, evictions));
++
++    fmt::print("HUBSTAT 1 hub_evicted_no_reuse {} ({:.2f}% of hub evictions)\n",
++               hub_evictions_no_reuse, pct(hub_evictions_no_reuse, hub_evictions));
++    for (auto& [b, n]: hub_evictions_by_bucket) {
++        auto it = hub_evictions_no_reuse_by_bucket.find(b);
++        uint64_t nr = it == hub_evictions_no_reuse_by_bucket.end() ? 0 : it->second;
++        fmt::print("HUBSTAT 1 bucket {} degree {} hub_evictions {} no_reuse {} ({:.2f}%)\n",
++                   b, bucket_label(b), n, nr, pct(nr, n));
++    }
++
++    fmt::print("HUBSTAT 2 nonhub_evicts_hub {} ({:.2f}% of non-hub-incoming evictions {}, {:.2f}% of hub evictions)\n",
++               nonhub_evicts_hub, pct(nonhub_evicts_hub, nonhub_incoming_evictions),
++               nonhub_incoming_evictions, pct(nonhub_evicts_hub, hub_evictions));
++
++    double n = insertions ? double(insertions) : 1.0;
++    fmt::print("HUBSTAT 3 insertions {} avg_hub_ways {:.3f} avg_valid_ways {:.3f} avg_num_ways {:.3f} "
++               "hub_frac_of_ways {:.2f}% hub_frac_of_valid {:.2f}%\n",
++               insertions, sum_hub_ways / n, sum_valid_ways / n, sum_num_ways / n,
++               pct(sum_hub_ways, sum_num_ways), pct(sum_hub_ways, sum_valid_ways));
++
++    fmt::print("HUBSTAT 4 hub_evicts_greater_hub {} ({:.2f}% of hub-evicts-hub {}, hub-incoming evictions {})\n",
++               hub_evicts_greater_hub, pct(hub_evicts_greater_hub, hub_evicts_hub),
++               hub_evicts_hub, hub_incoming_evictions);
++    for (auto& [key, cnt]: hub_evicts_greater_hub_hist)
++        fmt::print("HUBSTAT 4 incoming_bucket {} ({}) victim_bucket {} ({}) count {}\n",
++                   key.first, bucket_label(key.first), key.second, bucket_label(key.second), cnt);
++
++    fmt::print("HUBSTAT 5 nonhub_fills_serviced {} ({:.2f}% of non-hub fills {}) "
++               "nonhub_evictions_serviced {} ({:.2f}% of non-hub evictions {})\n",
++               nonhub_fills_serviced, pct(nonhub_fills_serviced, nonhub_fills), nonhub_fills,
++               nonhub_evictions_serviced, pct(nonhub_evictions_serviced, nonhub_evictions), nonhub_evictions);
++
++    if (!pc_stats.empty()) {
++        std::vector<std::pair<uint64_t, std::array<std::array<uint64_t, 2>, 2>>> v(pc_stats.begin(), pc_stats.end());
++        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second[1][0] > b.second[1][0]; });
++        uint64_t fp_total = 0, tp_total = 0;
++        for (auto& [pc, c]: v) { fp_total += c[1][0]; tp_total += c[1][1]; }
++        fmt::print("HUBSTAT 7 pcs {} false_pos_pins {} correct_pins {}\n", v.size(), fp_total, tp_total);
++        uint64_t cum = 0;
++        for (size_t i = 0; i < v.size() && i < 20; ++i) {
++            auto& [pc, c] = v[i];
++            cum += c[1][0];
++            fmt::print("HUBSTAT 7 pc {:#x} false_pos_pins {} correct_pins {} missed_hubs {} correct_nonpins {} "
++                       "pin_precision {:.2f}% cum_fp_share {:.2f}%\n",
++                       pc, c[1][0], c[1][1], c[0][1], c[0][0], pct(c[1][1], c[1][1] + c[1][0]), pct(cum, fp_total));
++        }
++    }
++    {
++        static const char* rlab[RATIO_BUCKETS] = {"<0.25", "0.25-0.5", "0.5-0.75", "0.75-1", "=max"};
++        static const char* slab[SFL_BUCKETS] = {"1", "2", "3", "4-7", "8-15", "16-31", "32+"};
++        uint64_t tot[2] = {};
++        for (int h = 0; h < 2; ++h) for (int b = 0; b < RATIO_BUCKETS; ++b) tot[h] += diag_ratio[h][b];
++        if (tot[0] + tot[1]) {
++            for (int b = 0; b < RATIO_BUCKETS; ++b)
++                fmt::print("HUBSTAT 8 ratio {} pinned_hub {} ({:.2f}%) pinned_nonhub {} ({:.2f}%) nonhub_share {:.2f}%\n", rlab[b],
++                           diag_ratio[1][b], pct(diag_ratio[1][b], tot[1]), diag_ratio[0][b], pct(diag_ratio[0][b], tot[0]),
++                           pct(diag_ratio[0][b], diag_ratio[0][b] + diag_ratio[1][b]));
++            for (int b = 0; b < SIB_BUCKETS; ++b)
++                fmt::print("HUBSTAT 8 reused_siblings {} pinned_hub {} ({:.2f}%) pinned_nonhub {} ({:.2f}%) nonhub_share {:.2f}%\n", b,
++                           diag_sib[1][b], pct(diag_sib[1][b], tot[1]), diag_sib[0][b], pct(diag_sib[0][b], tot[0]),
++                           pct(diag_sib[0][b], diag_sib[0][b] + diag_sib[1][b]));
++            for (int b = 0; b < SFL_BUCKETS; ++b)
++                fmt::print("HUBSTAT 8 block_reuse {} pinned_hub {} ({:.2f}%) pinned_nonhub {} ({:.2f}%) nonhub_share {:.2f}%\n", slab[b],
++                           diag_sfl[1][b], pct(diag_sfl[1][b], tot[1]), diag_sfl[0][b], pct(diag_sfl[0][b], tot[0]),
++                           pct(diag_sfl[0][b], diag_sfl[0][b] + diag_sfl[1][b]));
++        }
++    }
++
++    static const char* scope_name[3] = {"all", "block_reused", "line_reused"};
++    for (int s = 0; s < 3; ++s) {
++        auto& f = phru_fills[s]; auto& m = phru_mru[s];
++        uint64_t fills_total = f[0][0] + f[0][1] + f[1][0] + f[1][1];
++        uint64_t mru_total = m[0][0] + m[0][1] + m[1][0] + m[1][1];
++        if (!fills_total) continue;
++        for (int h = 1; h >= 0; --h)
++            for (int a = 1; a >= 0; --a)
++                fmt::print("HUBSTAT 6 phru_fill scope {} true_hub {} was_accessed {} fills {} set_mru {} "
++                           "({:.2f}% of these fills, {:.2f}% of scope fills, {:.2f}% of scope MRU sets)\n",
++                           scope_name[s], h, a, f[h][a], m[h][a], pct(m[h][a], f[h][a]),
++                           pct(f[h][a], fills_total), pct(m[h][a], mru_total));
++    }
++}
+diff --git a/inc/reuse_history.h b/inc/reuse_history.h
+new file mode 100644
+index 0000000..11f844d
+--- /dev/null
++++ b/inc/reuse_history.h
+@@ -0,0 +1,57 @@
++#ifndef __REUSE_HISTORY_H__
++#define __REUSE_HISTORY_H__
++
++#include <cstdint>
++#include <vector>
++
++// Address-keyed LLC reuse history for PHRU (--phru-history). Unlike
++// block_serviced_from_llc, which is lost once a line leaves the hierarchy,
++// these counters persist across a block's lifetimes, so a block that was
++// reused in an earlier residency is still recognized when it comes back.
++// Untagged, direct-mapped 4-bit saturating counters; aliasing is accepted.
++//   +1 when the requested 8B block hits in the LLC (Set::try_hit, level 1)
++//   -1 when the block is evicted from the LLC (Set::handle_evict, level 1)
++// With aging_period > 0, every counter is halved after that many hits, so the
++// table tracks recent reuse rather than all-time reuse.
++struct ReuseHistory {
++    std::vector<uint8_t> table;
++    uint64_t mask = 0;
++    uint64_t aging_period = 0;
++    uint64_t hits_since_aging = 0;
++    uint64_t num_hits = 0, num_evicts = 0, num_agings = 0;
++
++    void init(uint64_t bits, uint64_t aging) {
++        table.assign(uint64_t(1) << bits, 0);
++        mask = (uint64_t(1) << bits) - 1;
++        aging_period = aging;
++    }
++
++    uint64_t index(uint64_t block_address) const {
++        uint64_t x = block_address >> 3;
++        x ^= x >> 31; x *= 0x7fb5d329728ea185ULL;
++        x ^= x >> 27; x *= 0x81dadef4bc2dd44dULL;
++        x ^= x >> 33;
++        return x & mask;
++    }
++
++    uint8_t get(uint64_t block_address) const { return table[index(block_address)]; }
++
++    void on_hit(uint64_t block_address) {
++        auto& c = table[index(block_address)];
++        if (c < 15) c++;
++        num_hits++;
++        if (aging_period && ++hits_since_aging >= aging_period) {
++            for (auto& v: table) v >>= 1;
++            hits_since_aging = 0;
++            num_agings++;
++        }
++    }
++
++    void on_evict(uint64_t block_address) {
++        auto& c = table[index(block_address)];
++        if (c > 0) c--;
++        num_evicts++;
++    }
++};
++
++#endif
+diff --git a/inc/hub_bitmap.h b/inc/hub_bitmap.h
+new file mode 100644
+index 0000000..fe055b2
+--- /dev/null
++++ b/inc/hub_bitmap.h
+@@ -0,0 +1,118 @@
++#ifndef __HUB_BITMAP_H__
++#define __HUB_BITMAP_H__
++
++#include <cstdint>
++#include <string>
++#include <unordered_set>
++#include <vector>
++#include <fmt/core.h>
++
++// Tagless, windowed first-insertion hub predictor (--hub-bitmap). A block
++// that misses to memory again within a window longer than one LLC residency
++// is treated as a hub - the ghost-cache condition with a longer horizon and
++// bits instead of tags. Unlike the Bloom filter in
++// notes/phru_hub_heuristic_quality.md, entries age out after the window.
++//
++// Train: the requested 8B block of each access that misses both levels
++//   (train=lookup also counts LLC hits).
++// Query: at that miss, all 8B blocks of the line are probed BEFORE the
++//   requested block's own miss is recorded. In hardware the result is one
++//   per-sector bit set at L1D install and carried with the line to its LLC
++//   fill; here it is kept in `pending` (positive blocks only) and consumed
++//   by PHRU's fill_update.
++// mode bits:    two N-bit generations; hub = cur | prev; every `window`
++//               training events prev = cur and cur is cleared. 2N bits.
++// mode counter: N 2-bit saturating counters, all halved every `window`
++//               events; hub = counter >= threshold. 2N bits.
++struct HubBitmap {
++    std::string mode = "bits";
++    uint64_t mask = 0;
++    uint64_t window = 0;
++    uint64_t threshold = 1;
++    std::vector<uint8_t> cur, prev;   // bits: 0/1 per slot; counter: cur holds the 2-bit counter
++    std::unordered_set<uint64_t> pending;
++    uint64_t events = 0, since_rotate = 0, rotations = 0, set_slots = 0;
++    double occupancy_sum = 0.0;
++    uint64_t probes = 0, probe_hits = 0;
++
++    void init(const std::string& m, uint64_t bits, uint64_t win, uint64_t thr) {
++        mode = m;
++        cur.assign(uint64_t(1) << bits, 0);
++        prev.assign(mode == "bits" ? (uint64_t(1) << bits) : 0, 0);
++        mask = (uint64_t(1) << bits) - 1;
++        window = win;
++        threshold = thr;
++    }
++
++    uint64_t index(uint64_t block_address) const {
++        uint64_t x = block_address >> 3;
++        x ^= x >> 31; x *= 0x7fb5d329728ea185ULL;
++        x ^= x >> 27; x *= 0x81dadef4bc2dd44dULL;
++        x ^= x >> 33;
++        return x & mask;
++    }
++
++    bool query(uint64_t block_address) const {
++        uint64_t h = index(block_address);
++        if (mode == "bits") return cur[h] | prev[h];
++        return cur[h] >= threshold;
++    }
++
++    void train(uint64_t block_address) {
++        auto& c = cur[index(block_address)];
++        if (mode == "bits") {
++            if (!c) set_slots++;
++            c = 1;
++        } else {
++            if (!c) set_slots++;
++            if (c < 3) c++;
++        }
++        events++;
++        if (window && ++since_rotate >= window) rotate();
++    }
++
++    void rotate() {
++        occupancy_sum += double(set_slots) / double(cur.size());
++        rotations++;
++        since_rotate = 0;
++        set_slots = 0;
++        if (mode == "bits") {
++            prev.swap(cur);
++            std::fill(cur.begin(), cur.end(), 0);
++        } else {
++            for (auto& v: cur) { v >>= 1; if (v) set_slots++; }
++        }
++    }
++
++    // Miss to memory for the line holding `address`.
++    void on_miss(uint64_t address) {
++        uint64_t line = address & ~uint64_t(63);
++        for (uint64_t b = line; b < line + 64; b += 8) {
++            probes++;
++            if (query(b)) { pending.insert(b); probe_hits++; }
++            else pending.erase(b);
++        }
++        train(address & ~uint64_t(7));
++    }
++
++    // Miss by a PC the gate excludes: no training, no predictions for the line.
++    void clear_line(uint64_t address) {
++        uint64_t line = address & ~uint64_t(63);
++        for (uint64_t b = line; b < line + 64; b += 8) pending.erase(b);
++    }
++
++    // LLC fill of a block: returns (and clears) its carried prediction.
++    bool consume(uint64_t block_address) {
++        return pending.erase(block_address) != 0;
++    }
++
++    void print() const {
++        fmt::print("HUBBITMAP config mode {} slots {} window {} threshold {} | events {} rotations {} "
++                   "avg_occupancy {:4f} probes {} probe_hits {} ({:4f}) pending_left {}\n",
++            mode, cur.size(), window, threshold, events, rotations,
++            rotations ? occupancy_sum / rotations : double(set_slots) / double(cur.size()),
++            probes, probe_hits, probes ? double(probe_hits) / probes : 0.0, pending.size());
++    }
++};
++
++#endif
+diff --git a/inc/pc_reuse.h b/inc/pc_reuse.h
+new file mode 100644
+index 0000000..c4c9bfc
+--- /dev/null
++++ b/inc/pc_reuse.h
+@@ -0,0 +1,70 @@
++#ifndef __PC_REUSE_H__
++#define __PC_REUSE_H__
++
++#include <algorithm>
++#include <cstdint>
++#include <array>
++#include <map>
++#include <unordered_map>
++#include <vector>
++#include <fmt/core.h>
++
++// Per-PC LLC reuse rate (--pc-reuse-gate / --pc-reuse-stats). Trained on
++// every LLC lookup (an L1D miss) with the PC that issued it: reuse rate =
++// LLC hits / LLC lookups. Streaming and one-time PCs sit near 0; PCs that
++// reuse hub data sit well above. With halve > 0 both counts are halved
++// every `halve` lookups of that PC so the rate tracks phase changes.
++// A PC is a reuse PC once it has >= min_lookups lookups and rate >= gate.
++struct PcReuse {
++    struct Entry { uint64_t lookups = 0, hits = 0, total_lookups = 0, total_hits = 0; };
++    std::unordered_map<uint64_t, Entry> table;
++    double gate = 0.0;
++    uint64_t min_lookups = 64;
++    uint64_t halve = 0;
++    // Diagnostics on never-reused LLC fills, per fill PC: [true_hub][gated_in]
++    std::unordered_map<uint64_t, std::array<std::array<uint64_t, 2>, 2>> first_fills;
++
++    void on_lookup(uint64_t pc, bool llc_hit) {
++        auto& e = table[pc];
++        e.lookups++; e.total_lookups++;
++        if (llc_hit) { e.hits++; e.total_hits++; }
++        if (halve && e.lookups >= halve) { e.lookups >>= 1; e.hits >>= 1; }
++    }
++
++    double rate(uint64_t pc) const {
++        auto it = table.find(pc);
++        if (it == table.end() || it->second.lookups == 0) return 0.0;
++        return double(it->second.hits) / double(it->second.lookups);
++    }
++
++    bool is_reuse(uint64_t pc) const {
++        auto it = table.find(pc);
++        if (it == table.end() || it->second.total_lookups < min_lookups) return false;
++        return rate(pc) >= gate;
++    }
++
++    void record_first_fill(uint64_t pc, bool true_hub, bool gated_in) { first_fills[pc][true_hub][gated_in]++; }
++
++    void print() const {
++        std::vector<std::pair<uint64_t, Entry>> v(table.begin(), table.end());
++        std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.second.total_lookups > b.second.total_lookups; });
++        uint64_t hub_in = 0, hub_out = 0, non_in = 0, non_out = 0;
++        for (auto& [pc, c]: first_fills) { hub_in += c[1][1]; hub_out += c[1][0]; non_in += c[0][1]; non_out += c[0][0]; }
++        fmt::print("PCREUSE gate {} min_lookups {} halve {} pcs {} | never-reused fills: hubs gated_in {} out {} "
++                   "(kept {:4f}) nonhubs gated_in {} out {} (kept {:4f})\n", gate, min_lookups, halve, v.size(),
++                   hub_in, hub_out, hub_in + hub_out ? double(hub_in) / (hub_in + hub_out) : 0.0,
++                   non_in, non_out, non_in + non_out ? double(non_in) / (non_in + non_out) : 0.0);
++        for (size_t i = 0; i < v.size() && i < 20; ++i) {
++            auto& [pc, e] = v[i];
++            std::array<std::array<uint64_t, 2>, 2> f{};
++            if (auto it = first_fills.find(pc); it != first_fills.end()) f = it->second;
++            uint64_t hubs = f[1][0] + f[1][1], non = f[0][0] + f[0][1];
++            fmt::print("PCREUSE pc {:#x} lookups {} llc_hits {} reuse_rate {:4f} final_rate {:4f} reuse_pc {} | "
++                       "never-reused fills {} true_hubs {} ({:4f})\n",
++                       pc, e.total_lookups, e.total_hits, e.total_lookups ? double(e.total_hits) / e.total_lookups : 0.0,
++                       rate(pc), is_reuse(pc) ? 1 : 0, hubs + non, hubs, hubs + non ? double(hubs) / (hubs + non) : 0.0);
++        }
++    }
++};
++
++#endif
