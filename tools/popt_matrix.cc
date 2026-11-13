@@ -50,6 +50,7 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+#include "../inc/popt_matrix_build.h"
 
 static constexpr uint32_t kSub = 128;
 static constexpr uint32_t kCheck = 1024;
@@ -161,29 +162,10 @@ int main(int argc, char** argv) {
     }
     starts[num_epochs * kSub] = m;
 
-    // Last referencing sub-epoch of each line in each epoch (-1 = none),
-    // then the Fig. 6 entries.
-    std::vector<int8_t> last(num_epochs * h.num_lines, -1);
-    for (uint64_t u = 0; u < n; u++) {
-        uint64_t e = u / h.epoch_size;
-        int8_t s = (int8_t)((u - e * h.epoch_size) / h.sub_size);
-        for (int64_t k = off[u]; k < off[u + 1]; k++)
-            last[e * h.num_lines + ((uint64_t)neigh[k] + off_v) / per_line] = s;   // u ascends: the last write is the last reference
-    }
-    std::vector<uint8_t> matrix(num_epochs * h.num_lines);
-    for (uint64_t c = 0; c < h.num_lines; c++) {
-        uint64_t next = UINT64_MAX;   // next referencing epoch at or after e
-        for (uint64_t e = num_epochs; e-- > 0;) {
-            int8_t s = last[e * h.num_lines + c];
-            if (s >= 0) {
-                matrix[e * h.num_lines + c] = e == num_epochs - 1 ? 127 : (uint8_t)s;   // MSB 0; last epoch: 127 (HPCA'21)
-                next = e;
-            } else {
-                uint64_t dist = next == UINT64_MAX ? 127 : std::min<uint64_t>(127, next - e);
-                matrix[e * h.num_lines + c] = (uint8_t)(0x80 | dist);
-            }
-        }
-    }
+    // Fig. 6 entries (inc/popt_matrix_build.h, shared with the simulator's transpose mode).
+    std::vector<uint8_t> matrix;
+    popt_build_matrix(n, off.data(), neigh.data(), num_epochs, kSub, h.epoch_size, h.sub_size, per_line, off_v,
+                      h.num_lines, matrix);
 
     std::ofstream o(argv[2], std::ios::binary);
     o.write(reinterpret_cast<const char*>(&h), sizeof(h));

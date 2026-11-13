@@ -99,22 +99,26 @@ algorithms.
 
 ### P-OPT
 
-`popt` reads a precomputed Rereference Matrix per graph, ordering and kernel. Build them with `make popt_matrix` (`bin/popt_matrix`)
-(see `tools/README.md`). The simulator looks in `--popt-matrix-dir`, then `data/popt`, then `<bin>/../data/popt`.
+P-OPT (HPCA'21) following the HPCA'21 code (`POPT-CacheSim-HPCA21`): same matrix (128 sub-epochs, 127 throughout
+the last epoch), Algorithm 2, tie-break and one matrix line per block. `currDstID` (the vertex being processed) is
+inferred from the trace, which has no `PIN_UpdateRegIndex`. Two modes, chosen per trace:
 
-- **Supported:** pr, pr_spmv, cc_sv, and bfs bottom-up steps.
-- **Everything else** falls back to SRRIP.
+| mode | kernels | matrices | clock |
+|---|---|---|---|
+| pull (the paper's case) | pr, pr_spmv, cc_sv | files from `make popt_matrix` (`tools/README.md`), looked up in `--popt-matrix-dir`, then `data/popt`, then `<bin>/../data/popt` | per-destination stream, vertices in id order |
+| transpose | sssp, bc, bfs (top-down and bottom-up steps), Afforest cc | built in memory from the graph (`<G>.<order>.sg`, `--popt-graph-dir`, default `../gapbs_traces/inputs/<G>/`), one per irregular array the trace reads as `x[neighbour]` | each neighbour-array read; the clock jumps, and a jump re-streams the pinned columns (charged) |
 
-`--popt-elem-size` must match the matrix.
+The transpose mode applies the paper's methodology (matrix = compressed transpose, clock = vertex being processed)
+to kernels the paper did not evaluate: label its results that way. A trace neither mode recognises falls back to
+SRRIP (`POPT inactive`).
 
-**Faithful to the HPCA'21 code:** same matrix (128 sub-epochs, 127 throughout the last epoch), Algorithm 2, tie-break
-and line mapping as `POPT-CacheSim-HPCA21`. pr uses the plain matrix (neighbour reads only), as the paper. The one
-inference: `currDstID` comes from the trace's per-destination stream, since the traces carry no `PIN_UpdateRegIndex`.
-
-**Block size:** the matrix line is the LLC block. A sub-64B LLC needs matrices built with `--line-size <block>`
-(`<G>.<order>[.variant].l8.popt`); without them P-OPT is inactive (SRRIP). An 8B matrix is 8x larger: it pins
-2 bytes per 8B of the array, so it does not fit a 2 MB LLC for sx-stackoverflow or kron21 (the run stops with
-`popt: rereference matrix needs N of M LLC ways`).
+- **Alignment:** matrix lines follow the block grid of the traced array. In pull mode an array that starts B bytes
+  into a block needs `<G>.<order>[.variant].a<B>.popt` (`popt_matrix --align-offset B`); the run stops and prints the
+  builder command if it is missing. The transpose mode handles offsets itself.
+- **Block size:** the matrix line is the LLC block. A sub-64B LLC needs `--line-size <block>` matrices
+  (`.l8.popt`) in pull mode; without them P-OPT is inactive. An 8B matrix is 8x larger (2 bytes pinned per 8B of the
+  array), so it does not fit a 2 MB LLC for sx-stackoverflow or kron21 (`popt: rereference matrix needs N of M LLC ways`).
+- `--popt-elem-size` must match the pull-mode matrix.
 
 ## Common options
 
