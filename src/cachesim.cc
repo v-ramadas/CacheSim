@@ -732,7 +732,7 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
     return p;
 }
 
-void access_multi_level(std::vector<BaseCache*> &cache,
+int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
     access_packet->clear();
@@ -979,9 +979,10 @@ void access_multi_level(std::vector<BaseCache*> &cache,
         (void)dram_cycles;
         if (POPT::active) POPT::charge_engine(dram_cycles, true);
     }
+    return hit_at_level;
 }
 #else
-void access_single_level(std::vector<BaseCache*> &cache,
+int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
 
@@ -1009,162 +1010,9 @@ void access_single_level(std::vector<BaseCache*> &cache,
         cache[0]->handle_fill_line(fill_packet, eviction_packet);
     }
     count_pc_hub(pc, degree, avg_degree, hit ? 0 : 1);
-    return;
+    return hit ? 0 : 1;
 }
 #endif
-
-void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
-    while (num_iters > 0) {
-        TraceFile file(filename);
-
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open the file!" << std::endl;
-            return;
-        }
-
-        std::string line;
-        uint64_t line_idx = 0;   // NextReuse indexes lines within one pass
-        while (file.getline(line)) {
-            cachesim::TRACE_LINE = line_idx++;
-            uint64_t pc = 0;
-            uint64_t address = 0;
-            uint64_t next_reuse = UINT64_MAX;
-            uint64_t degree = 0;
-            float avg_degree = 0.0f;
-            int parsed_count = 0;
-            char action[16];
-            if (cachesim::DEBUG_ALL || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-
-                if (cachesim::instCount >  cachesim::END_DEBUG) {
-                    break;
-                }
-                if (cachesim::instCount >= cachesim::START_DEBUG) {
-                    cachesim::DEBUG = true;
-                }
-            }
-
-            parsed_count = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %f", &pc, action, &address, &next_reuse, &degree, &avg_degree);
-            if (parsed_count >= 3) {
-                try {
-                    cachesim::instCount++;
-                    if (next_reuse != UINT64_MAX) next_reuse += cachesim::instCount;
-                    // Extract from the start of "0x" to the end of the line
-                    bool is_read = (strcmp(action, "read") == 0) ? true : false;
-#ifdef MULTI_LEVEL
-                    access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        predictor, address, pc, is_read, next_reuse, degree, avg_degree);
-#else
-                    access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        pc, address, is_read, next_reuse, degree, avg_degree);
-#endif
-
-                } catch (const std::exception& e) {
-                    std::cerr << "Conversion error on line: " << line << " -> " <<e.what() << std::endl;
-                }
-            }
-        }
-        --num_iters;
-    }
-    return;
-}
-
-void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
-    while (num_iters > 0) {
-        TraceFile file(filename);
-
-        if (!file.is_open()) {
-            std::cerr << "Error: Could not open the file!" << std::endl;
-            return;
-        }
-
-        std::string line;
-        uint64_t line_idx = 0;   // NextReuse indexes lines within one pass
-        while (file.getline(line)) {
-            cachesim::TRACE_LINE = line_idx++;
-            uint64_t pc = 0;
-            uint64_t address = 0;
-            uint64_t next_reuse = UINT64_MAX;
-            uint64_t degree = 0;
-            float avg_degree = 0.0f;
-            int parsed_count = 0;
-            char action[16];
-            if (cachesim::DEBUG_ALL || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-
-                if (cachesim::instCount >  cachesim::END_DEBUG) {
-                    break;
-                }
-                if (cachesim::instCount >= cachesim::START_DEBUG) {
-                    cachesim::DEBUG = true;
-                }
-            }
-
-            parsed_count = std::sscanf(line.c_str(), 
-                           "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx,NextReuse:%lu,NodeDegree:%lu,PCAvgDegree:%f", 
-                           &cachesim::instCount, &pc, action, &address, &next_reuse, &degree, &avg_degree);
-            if (parsed_count >= 3) {
-                try {
-                    // Extract from the start of "0x" to the end of the line
-                    bool is_read = (strcmp(action, "Read") == 0) ? true : false;
-                    if (POPT::active) POPT::on_access(pc, address, is_read);   // gathers advance P-OPT's currDstID
-                    if (Belady::oracle_active) Belady::on_access(address);      // next-use oracle
-#ifdef MULTI_LEVEL
-                    access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        predictor, address, pc, is_read, next_reuse, degree, avg_degree);
-#else
-                    access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        pc, address, is_read, next_reuse, degree, avg_degree);
-#endif
-                } catch (const std::exception& e) {
-                    std::cerr << "Conversion error on line: " << line << " -> " <<e.what() << std::endl;
-                }
-            }
-        }
-        --num_iters;
-    }
-    return;
-}
-
-void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename, [[maybe_unused]]SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters) {
-    while (num_iters > 0) {
-        champsim::tracereader trace(get_tracereader(filename, 0, false, false));
-        while (!trace.eof()) {
-            if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-                if (cachesim::instCount > 5000000) {
-                    break;
-                }
-            }
-            cachesim::instCount++;
-            auto inst = trace();
-            access_packet->clear();
-            eviction_packet->clear();
-            fill_packet->clear();
-            invalidation_packet->clear();
-#ifdef MULTI_LEVEL
-            for (auto& smem:inst.source_memory) {
-                access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                    predictor,smem.to<uint64_t>(), inst.ip.to<uint64_t>(), true,
-                    0, 0, 0.0);
-            }
-            for (auto& dmem:inst.destination_memory) {
-                access_multi_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                    predictor, dmem.to<uint64_t>(), inst.ip.to<uint64_t>(), false,
-                    0, 0, 0.0);
-            }
-#else
-            for (auto& smem:inst.source_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), smem.to<uint64_t>(), true, 0, 0, 0.0);
-            }
-            for (auto& dmem:inst.destination_memory) {
-                access_single_level(cache, access_packet, eviction_packet, fill_packet, invalidation_packet,
-                        inst.ip.to<uint64_t>(), dmem.to<uint64_t>(), false, 0, 0, 0.0);
-            }
-#endif
-        }
-        --num_iters;
-    }
-    return;
-}
 
 template<typename T>
 void Cache<T>::incr_psel() {

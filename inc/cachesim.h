@@ -692,12 +692,13 @@ class Cache: public BaseCache {
     const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx)->get_ways();}
 };
 
+// Both return the index of the level that hit (cache.size() = memory).
 #ifdef MULTI_LEVEL
-void access_multi_level(std::vector<BaseCache*> &cache,
+int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
 #else
-void access_single_level(std::vector<BaseCache*> &cache,
+int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
 #endif
@@ -709,10 +710,7 @@ constexpr uint64_t PC_HUB_TOP_N = 10;
 void count_pc_hub(uint64_t pc, uint64_t degree, float avg_degree, int hit_at_level);
 void print_pc_hub_stats(const std::vector<std::string>& level_names, uint64_t top_n);
 
-void useAddressTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters);
 
-void useInstructionTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters);
 
-void useChampsimTrace(std::vector<BaseCache*> cache, const std::string& filename, SparsityPredictor* predictor, PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet, uint64_t num_iters);
 
 #endif

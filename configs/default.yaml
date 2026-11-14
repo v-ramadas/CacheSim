@@ -8,7 +8,9 @@
 # flag mapping: kKeys in src/yaml_config.cc. Timing-model parameters sit in the
 # cpu, l1i, l1d, l2, llc and memory sections (llc.latency = --llc_latency).
 
-# trace: /path/to/trace.xz           # usually given with --trace
+num_cores: 1                         # core ids 0..N-1; L1D and L2 are private per core, the LLC is shared
+# trace: /path/to/trace.xz           # core 0's trace; usually given with --trace
+# traces: [none, /path/to/trace.xz]  # or one per core by id ('none' = idle); at most one active for now
 trace_format: instructions           # champsim | addresses | instructions
 iters: 1
 warmup_instructions: 0

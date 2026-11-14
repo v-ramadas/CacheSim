@@ -17,6 +17,8 @@ static std::map<std::string, std::vector<std::string>> g_text;   // option -> va
 // that is a PerformanceModel parameter (see resolve()).
 static const std::vector<std::pair<std::string, std::string>> kKeys = {
     {"trace",                          "trace"},
+    {"num_cores",                      "num-cores"},
+    {"traces",                         "traces"},
     {"trace_format",                   "trace-format"},
     {"iters",                          "iters"},
     {"warmup_instructions",            "warmup-instructions"},

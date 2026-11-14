@@ -1,5 +1,6 @@
 #include "cachesim.h"
 #include "yaml_config.h"
+#include "core.h"
 
 uint64_t cachesim::instCount = 0;
 uint64_t cachesim::prevInstCount = 0;
@@ -73,12 +74,6 @@ uint64_t cachesim::TRACE_LINE = 0;
 uint64_t cachesim::L2_NUM_SETS = 1024;
 uint64_t cachesim::L2_NUM_WAYS = 16;
 
-enum class TraceFormat {
-    CHAMPSIM,
-    ADDRESSES,
-    INSTRUCTIONS,
-};
-
 int main(int argc, char** argv) {
 
     CLI::App app{"CacheSim"};
@@ -87,6 +82,8 @@ int main(int argc, char** argv) {
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
     uint64_t num_iters = 1;
+    uint32_t num_cores = 1;
+    std::vector<std::string> core_traces;
     ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
     InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     bool dump_config = false;
@@ -97,7 +94,9 @@ int main(int argc, char** argv) {
     app.set_config("--config", "", "YAML system config (configs/default.yaml); command-line flags override it. "
                    "A legacy timing-only .cfg (cpu_frequency: 4000 ...) is accepted too", true);
     app.add_flag("--dump-config", dump_config, "Print the effective configuration (file + flags) as YAML and exit");
-    app.add_option("--trace", tracename, "Path to input trace file (YAML: trace)")->expected(1)->check(CLI::ExistingFile);
+    app.add_option("--trace", tracename, "Path to input trace file, run on core 0 (YAML: trace)")->expected(1)->check(CLI::ExistingFile);
+    app.add_option("--num-cores", num_cores, "Number of cores; each has a unique id 0..N-1 and private L1D (and L2), and all share the LLC (YAML: num_cores)")->check(CLI::Range(1u, 256u));
+    app.add_option("--traces", core_traces, "Trace per core, by core id; 'none' = idle core (YAML: traces). Replaces --trace. Currently at most one core may run a trace");
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
         {"addresses", TraceFormat::ADDRESSES},
@@ -199,10 +198,43 @@ int main(int argc, char** argv) {
         std::cout << app.config_to_str(true, false);
         return 0;
     }
-    if (tracename.empty()) {
-        fmt::print(stderr, "No trace: pass --trace or set 'trace' in the --config YAML\n");
+    // Trace per core: --traces (by core id, 'none' = idle), or --trace on core 0.
+    if (!core_traces.empty() && !tracename.empty()) {
+        fmt::print(stderr, "Give either --trace (core 0) or --traces (one per core), not both\n");
         return 1;
     }
+    if (core_traces.empty() && !tracename.empty())
+        core_traces = {tracename};
+    if (core_traces.size() > num_cores) {
+        fmt::print(stderr, "{} traces for {} cores (--num-cores)\n", core_traces.size(), num_cores);
+        return 1;
+    }
+    core_traces.resize(num_cores, "none");
+    std::vector<uint32_t> active_cores;
+    for (uint32_t c = 0; c < num_cores; ++c) {
+        if (core_traces[c] == "none" || core_traces[c] == "-" || core_traces[c].empty()) {
+            core_traces[c].clear();
+            continue;
+        }
+        if (FILE* f = std::fopen(core_traces[c].c_str(), "r")) std::fclose(f);
+        else {
+            fmt::print(stderr, "core {}: trace '{}' does not exist\n", c, core_traces[c]);
+            return 1;
+        }
+        active_cores.push_back(c);
+    }
+    if (active_cores.empty()) {
+        fmt::print(stderr, "No trace: pass --trace, or --traces / 'traces' in the --config YAML\n");
+        return 1;
+    }
+    if (active_cores.size() > 1) {
+        fmt::print(stderr, "{} cores have traces; running more than one core at a time is not supported yet\n", active_cores.size());
+        return 1;
+    }
+    const uint32_t active_core = active_cores.front();
+    tracename = core_traces[active_core];
+    if (num_cores > 1)
+        fmt::print("System: {} cores; core {} runs {}, the others are idle\n", num_cores, active_core, tracename);
     if (cachesim::PSEL_HYSTERESIS == UINT64_MAX)
         cachesim::PSEL_HYSTERESIS = cachesim::PSEL_MAX / 8;
 
@@ -287,16 +319,24 @@ int main(int argc, char** argv) {
         std::cerr << e.what() << std::endl;
         return 1;
     }
-    std::vector<BaseCache*> cache;
+    // per_core[c] = core c's view of the hierarchy: its private levels, then the shared LLC.
+    std::vector<std::vector<BaseCache*>> per_core(num_cores);
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
 #ifdef MULTI_LEVEL
     //cache[0] = new Cache<Set>("L1D", 128, 16, cachesim::BLOCK_SIZE, 0, false, ReplacementPolicy::LRU, insertion_policy);
+    if (cachesim::L1_AMOEBA && (cachesim::L2_ENABLED || cachesim::SET_DUELING || cachesim::AMOEBA)) {
+        fmt::print(stderr, "--l1-amoeba supports two levels only, without set dueling or an amoeba LLC\n");
+        return 1;
+    }
+    for (auto& view : per_core) {   // private levels of each core
+        if (cachesim::L1_AMOEBA)
+            view.push_back(new Cache<Set>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, false, ReplacementPolicy::Amoeba, insertion_policy));
+        else
+            view.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
+        if (cachesim::L2_ENABLED)
+            view.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
+    }
     if (cachesim::L1_AMOEBA) {
-        if (cachesim::L2_ENABLED || cachesim::SET_DUELING || cachesim::AMOEBA) {
-            fmt::print(stderr, "--l1-amoeba supports two levels only, without set dueling or an amoeba LLC\n");
-            return 1;
-        }
-        cache.push_back(new Cache<Set>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, false, ReplacementPolicy::Amoeba, insertion_policy));
         if (cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::ORACLE && !Set::load_l1_oracle(l1_amoeba_oracle)) {
             fmt::print(stderr, "--l1-amoeba-fetch oracle: cannot read --l1-amoeba-oracle '{}'\n", l1_amoeba_oracle);
             return 1;
@@ -304,11 +344,6 @@ int main(int argc, char** argv) {
         Set::am_l1_recording = !l1_amoeba_record.empty();
         fmt::print("Amoeba L1D: {} sets x {} words (iso-area with {} x 64B ways)\n", cachesim::L1_NUM_SETS,
             get_amoeba_words(cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS), cachesim::L1_NUM_WAYS);
-    } else {
-        cache.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
-    }
-    if (cachesim::L2_ENABLED) {
-        cache.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
     }
     GRASP::trace_path = tracename;
     GRASP::llc_bytes = llc_num_sets * llc_num_ways * CACHELINE_SIZE;
@@ -326,7 +361,9 @@ int main(int argc, char** argv) {
             fmt::print("POPT: reserving {} of {} LLC ways for the rereference matrix\n", reserved, llc_num_ways);
         llc_num_ways -= reserved;
     }
-    cache.push_back(new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy));
+    BaseCache* llc = new Cache<Set>("LLC", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::LLC, false, replacement_policy, insertion_policy);
+    for (auto& view : per_core)
+        view.push_back(llc);
     if (cachesim::ENABLE_PREDICTOR) predictor->enable();
     else predictor->disable();
     if (cachesim::useMemSignature)
@@ -334,15 +371,17 @@ int main(int argc, char** argv) {
     else
         predictor->set_pc_signature();
 #else
-    cache.resize(1);
-    cache[0] = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::L1D, false, replacement_policy, insertion_policy);
+    // Single-level build: one cache, shared by every core.
+    BaseCache* only = new Cache<Set>("L1D", llc_num_sets, llc_num_ways, cachesim::BLOCK_SIZE, CacheLevel::L1D, false, replacement_policy, insertion_policy);
+    for (auto& view : per_core)
+        view.push_back(only);
 #endif
+    std::vector<Core> cores;
+    for (uint32_t c = 0; c < num_cores; ++c)
+        cores.emplace_back(c, core_traces[c], trace_format, per_core[c], predictor, num_iters);
+    std::vector<BaseCache*>& cache = cores[active_core].caches();
 
     std::map<uint64_t, uint64_t> page_count;
-    Packet* access_packet = new Packet();
-    Packet* eviction_packet = new Packet();
-    Packet* fill_packet = new Packet();
-    Packet* invalidation_packet = new Packet();
     if (replacement_policy == ReplacementPolicy::Belady) {
         // MIN needs the future. 64B blocks: the trace's per-64B NextReuse (carried with each line) is exact. Smaller
         // blocks: per-word next uses are not in the trace, so build the 8B next-use oracle (instruction traces).
@@ -352,16 +391,12 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    if (trace_format == TraceFormat::ADDRESSES) {
-        useAddressTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
-    } else if (trace_format == TraceFormat::INSTRUCTIONS) {
-        useInstructionTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
-    } else {
-        useChampsimTrace(cache, tracename, predictor, access_packet, eviction_packet, fill_packet, invalidation_packet, num_iters);
-    }
+    // Each core reads its trace and issues to its view of the hierarchy (idle cores return at once).
+    for (auto& core : cores)
+        core.run();
 
-    // Print L1D, then the LLC, then any middle level (L2), so the LLC stays the
-    // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC.
+    // Print the active core's L1D, then the LLC, then any middle level (L2), so the LLC stays the
+    // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC. Idle cores print nothing.
     std::vector<std::string> level_names;   // print_pc_hub_stats prints after the caches are deleted
     for (auto c: cache) level_names.push_back(c->get_name());
     std::vector<BaseCache*> print_order{cache.front()};
@@ -371,6 +406,9 @@ int main(int argc, char** argv) {
         cache_inst->print_stats(cachesim::instCount, tracename);
         delete cache_inst;
     }
+    if (num_cores > 1)
+        for (const auto& core : cores)
+            core.print_stats();
     if (cachesim::GEN_STATS)
         predictor->print_stats();
     if (replacement_policy == ReplacementPolicy::HRU)
@@ -402,13 +440,14 @@ int main(int argc, char** argv) {
             cachesim::ghostCache.debug_lookup_count, cachesim::ghostCache.debug_hit_count,
             cachesim::ghostCache.debug_eviction_count, cachesim::ghostCache.debug_insert_rejected_count);
 
+    // The active core's levels and the shared LLC were deleted above; free the idle cores' private levels.
+    for (uint32_t c = 0; c < num_cores; ++c)
+        if (c != active_core)
+            for (size_t i = 0; i + 1 < per_core[c].size(); ++i)
+                delete per_core[c][i];
     cache.clear();
 #ifdef MULTI_LEVEL
     delete predictor;
 #endif
-    delete access_packet;
-    delete eviction_packet;
-    delete fill_packet;
-    delete invalidation_packet;
     return 0;
 }

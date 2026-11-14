@@ -69,6 +69,14 @@ Base+Delta tags, P-OPT paths, debug switches, and the timing model (core, cache 
   cache options given as flags. `configs/intel.cfg` uses parameter names the timing model does not have and is
   rejected (it was before this change too).
 
+### Cores
+
+`num_cores` (`--num-cores`) builds that many cores with ids 0..N-1. Each core has a private L1D (and L2 with
+`l2.enabled`); all cores share the LLC. A core reads its trace and issues each access to its own levels, then the LLC
+(`inc/core.h`). `trace` (`--trace`) runs on core 0; `traces` (`--traces t0 t1 ...`, `none` = idle) assigns one trace
+per core id. For now at most one core may run a trace: instruction counts, P-OPT/Belady oracles and the timing model
+are still global. With one active core the results are identical whichever core runs it.
+
 ### Iso-area 8B LLC
 
 A sub-64B LLC holds more, smaller blocks in the same area. Each block needs its own tag, so extra tag storage eats

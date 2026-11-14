@@ -5,7 +5,9 @@
 # L1D 128 x 16 (128 KB), LLC 1024 x 32 (2 MB, 64B-equivalent). Matches the paper two_level runs (results/10_xx/two_level).
 # Flags override any value here; --dump-config prints the effective configuration. All keys: configs/default.yaml.
 
-# trace: /path/to/trace.xz           # usually given with --trace
+num_cores: 1                         # core ids 0..N-1; L1D and L2 are private per core, the LLC is shared
+# trace: /path/to/trace.xz           # core 0's trace; usually given with --trace
+# traces: [none, /path/to/trace.xz]  # or one per core by id ('none' = idle); at most one active for now
 trace_format: instructions           # champsim | addresses | instructions
 iters: 1
 warmup_instructions: 0

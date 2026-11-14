@@ -6,7 +6,9 @@
 # (results/11_04: --l1-sets 32 --l1-ways 16 --l2 --l2-sets 256 --l2-ways 16).
 # Flags override any value here; --dump-config prints the effective configuration. All keys: configs/default.yaml.
 
-# trace: /path/to/trace.xz           # usually given with --trace
+num_cores: 1                         # core ids 0..N-1; L1D and L2 are private per core, the LLC is shared
+# trace: /path/to/trace.xz           # core 0's trace; usually given with --trace
+# traces: [none, /path/to/trace.xz]  # or one per core by id ('none' = idle); at most one active for now
 trace_format: instructions           # champsim | addresses | instructions
 iters: 1
 warmup_instructions: 0
