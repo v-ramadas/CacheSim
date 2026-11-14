@@ -227,14 +227,18 @@ int main(int argc, char** argv) {
         fmt::print(stderr, "No trace: pass --trace, or --traces / 'traces' in the --config YAML\n");
         return 1;
     }
-    if (active_cores.size() > 1) {
-        fmt::print(stderr, "{} cores have traces; running more than one core at a time is not supported yet\n", active_cores.size());
+    if (active_cores.size() > 1 && (replacement_policy == ReplacementPolicy::POPT ||
+                                    replacement_policy == ReplacementPolicy::Belady || cachesim::L1_AMOEBA)) {
+        fmt::print(stderr, "popt, belady and --l1-amoeba read one trace's future or keep one trace's L1 history; "
+                           "run them with a single active core\n");
         return 1;
     }
+    // The first active core's trace names the run (P-OPT/Belady/GRASP setup and the LLC stats header).
     const uint32_t active_core = active_cores.front();
     tracename = core_traces[active_core];
     if (num_cores > 1)
-        fmt::print("System: {} cores; core {} runs {}, the others are idle\n", num_cores, active_core, tracename);
+        for (uint32_t c = 0; c < num_cores; ++c)
+            fmt::print("System: {} cores; core {} runs {}\n", num_cores, c, core_traces[c].empty() ? "nothing (idle)" : core_traces[c]);
     if (cachesim::PSEL_HYSTERESIS == UINT64_MAX)
         cachesim::PSEL_HYSTERESIS = cachesim::PSEL_MAX / 8;
 
@@ -328,13 +332,15 @@ int main(int argc, char** argv) {
         fmt::print(stderr, "--l1-amoeba supports two levels only, without set dueling or an amoeba LLC\n");
         return 1;
     }
-    for (auto& view : per_core) {   // private levels of each core
+    for (uint32_t c = 0; c < num_cores; ++c) {   // private levels of each core: L1D, L2 (core 0), L1D.1, L2.1, ...
+        auto& view = per_core[c];
+        const std::string sfx = c == 0 ? "" : fmt::format(".{}", c);
         if (cachesim::L1_AMOEBA)
-            view.push_back(new Cache<Set>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, false, ReplacementPolicy::Amoeba, insertion_policy));
+            view.push_back(new Cache<Set>("L1D" + sfx, cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, false, ReplacementPolicy::Amoeba, insertion_policy));
         else
-            view.push_back(new Cache<SectoredSet>("L1D", cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
+            view.push_back(new Cache<SectoredSet>("L1D" + sfx, cachesim::L1_NUM_SETS, cachesim::L1_NUM_WAYS, 8, CacheLevel::L1D, true, ReplacementPolicy::LRU, insertion_policy));
         if (cachesim::L2_ENABLED)
-            view.push_back(new Cache<SectoredSet>("L2", cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
+            view.push_back(new Cache<SectoredSet>("L2" + sfx, cachesim::L2_NUM_SETS, cachesim::L2_NUM_WAYS, 8, CacheLevel::L2, true, ReplacementPolicy::LRU, insertion_policy));
     }
     if (cachesim::L1_AMOEBA) {
         if (cachesim::L1_AMOEBA_FETCH == L1AmoebaFetch::ORACLE && !Set::load_l1_oracle(l1_amoeba_oracle)) {
@@ -391,24 +397,42 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    // Each core reads its trace and issues to its view of the hierarchy (idle cores return at once).
-    for (auto& core : cores)
-        core.run();
+    // Each core reads its trace and issues to its view of the hierarchy; run_cores interleaves them.
+    const ScheduleStats sched = run_cores(cores);
 
-    // Print the active core's L1D, then the LLC, then any middle level (L2), so the LLC stays the
-    // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC. Idle cores print nothing.
+    // Print the first active core's L1D, then the LLC, then its middle level (L2), so the LLC stays the
+    // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC. Then the other active
+    // cores' private levels. A private level's MPKI is per its core's instructions; the LLC's is per all
+    // cores' instructions. Idle cores' caches print nothing.
     std::vector<std::string> level_names;   // print_pc_hub_stats prints after the caches are deleted
     for (auto c: cache) level_names.push_back(c->get_name());
-    std::vector<BaseCache*> print_order{cache.front()};
-    if (cache.size() > 1) print_order.push_back(cache.back());
-    for (size_t i = 1; i + 1 < cache.size(); ++i) print_order.push_back(cache[i]);
-    for (auto cache_inst: print_order) {
-        cache_inst->print_stats(cachesim::instCount, tracename);
-        delete cache_inst;
+    BaseCache* shared = cache.back();
+    auto print_private = [&](const Core& core, bool l1_only, bool skip_l1) {
+        const auto& view = per_core[core.id()];
+        for (size_t i = 0; i + 1 < view.size(); ++i)
+            if ((i == 0 || !l1_only) && (i != 0 || !skip_l1))
+                view[i]->print_stats(core.instructions(), core.trace());
+    };
+    const Core& first = cores[active_core];
+    if (cache.size() > 1) {
+        print_private(first, true, false);
+        shared->print_stats(cachesim::instCount, active_cores.size() == 1 ? tracename : fmt::format("({} cores)", active_cores.size()));
+        print_private(first, false, true);
+    } else {
+        shared->print_stats(cachesim::instCount, tracename);
     }
-    if (num_cores > 1)
-        for (const auto& core : cores)
+    for (uint32_t c : active_cores)
+        if (c != active_core && cache.size() > 1)
+            print_private(cores[c], false, false);
+    if (num_cores > 1) {
+        uint64_t end = 0;
+        for (const auto& core : cores) {
             core.print_stats();
+            end = std::max(end, core.cycles());
+        }
+        fmt::print("System: cycles {} (latest core clock) | schedule steps {} switches {} max clock skew {} cycles\n",
+                   end, sched.steps, sched.switches, sched.max_skew);
+    }
     if (cachesim::GEN_STATS)
         predictor->print_stats();
     if (replacement_policy == ReplacementPolicy::HRU)
@@ -440,11 +464,11 @@ int main(int argc, char** argv) {
             cachesim::ghostCache.debug_lookup_count, cachesim::ghostCache.debug_hit_count,
             cachesim::ghostCache.debug_eviction_count, cachesim::ghostCache.debug_insert_rejected_count);
 
-    // The active core's levels and the shared LLC were deleted above; free the idle cores' private levels.
+    // Free every core's private levels, then the shared last level.
     for (uint32_t c = 0; c < num_cores; ++c)
-        if (c != active_core)
-            for (size_t i = 0; i + 1 < per_core[c].size(); ++i)
-                delete per_core[c][i];
+        for (size_t i = 0; i + 1 < per_core[c].size(); ++i)
+            delete per_core[c][i];
+    delete shared;
     cache.clear();
 #ifdef MULTI_LEVEL
     delete predictor;

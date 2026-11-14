@@ -11,8 +11,10 @@
 // PerformanceModel's cycle counter is the sum of all cores' cycles, and a core's
 // cycles are what that counter gained while it was stepping.
 //
-// Current limit: at most one core runs a trace; the others are idle. P-OPT and
-// Belady oracles and the DRAM model's notion of time are still global.
+// Several cores may run traces; run_cores() interleaves them (see below). No
+// coherence yet: cores touching the same line keep duplicate copies. P-OPT,
+// Belady and the L1D Amoeba mode need a single active core; the DRAM model's
+// notion of time is still the global cycle counter.
 
 #include "cachesim.h"
 #include "trace_file.h"
@@ -38,12 +40,13 @@ class Core {
 
     uint32_t id() const { return id_; }
     bool active() const { return !trace_.empty(); }
+    bool runnable() const { return active() && !finished_; }   // has a trace and has not finished it
     const std::string& trace() const { return trace_; }
     std::vector<BaseCache*>& caches() { return caches_; }
 
     // Read one trace record (one line, or one ChampSim instruction) and issue
     // its accesses. Returns false once every iteration of the trace is done.
-    bool step();
+    bool step();                                   // also marks the core finished when it returns false
     void run() { while (step()) {} }
 
     // Per-core statistics.
@@ -72,6 +75,7 @@ class Core {
     SparsityPredictor* predictor_;
     uint64_t iters_left_;
 
+    bool finished_ = false;
     bool pass_open_ = false;
     uint64_t line_idx_ = 0;                          // NextReuse indexes lines within one pass
     std::unique_ptr<TraceFile> text_;                // addresses / instructions formats
@@ -86,5 +90,19 @@ class Core {
 
     Packet access_packet_, eviction_packet_, fill_packet_, invalidation_packet_;
 };
+
+// Interleave the cores. After every step (one trace record: one memory access,
+// or one ChampSim instruction) control moves to the next core in id order
+// (wrapping around) whose clock is not ahead of the current core's; cores that
+// are ahead are skipped. If every other core is ahead, the current core has the
+// smallest clock and keeps running. The core furthest behind is therefore
+// reached within num_cores - 1 switches, which bounds how far clocks drift
+// apart. A finished core hands over to the runnable core with the smallest clock.
+struct ScheduleStats {
+    uint64_t steps = 0;
+    uint64_t switches = 0;
+    uint64_t max_skew = 0;       // largest gap between runnable cores' clocks (sampled every 1024 steps)
+};
+ScheduleStats run_cores(std::vector<Core>& cores);
 
 #endif

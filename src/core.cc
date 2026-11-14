@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <iostream>
 
 Core::Core(uint32_t id, std::string trace, TraceFormat format, std::vector<BaseCache*> caches,
@@ -40,6 +41,7 @@ bool Core::step() {
     while (iters_left_ > 0) {
         if (!pass_open_ && !open_pass()) {
             iters_left_ = 0;
+            finished_ = true;
             return false;
         }
         Read r = format_ == TraceFormat::ADDRESSES    ? step_addresses()
@@ -54,6 +56,7 @@ bool Core::step() {
         champsim_.reset();
         --iters_left_;
     }
+    finished_ = true;
     return false;
 }
 
@@ -180,4 +183,51 @@ Core::Read Core::step_champsim() {
     for (auto& dmem : inst.destination_memory)
         issue(dmem.to<uint64_t>(), pc, false, 0, 0, 0.0f);
     return Read::RECORD;
+}
+
+ScheduleStats run_cores(std::vector<Core>& cores) {
+    ScheduleStats st;
+    const size_t n = cores.size();
+    size_t cur = n;
+    for (size_t c = 0; c < n && cur == n; ++c)
+        if (cores[c].runnable())
+            cur = c;
+    while (cur < n) {
+        cores[cur].step();
+        ++st.steps;
+
+        // Next core: the first one after cur (in id order, wrapping) that is not ahead of cur.
+        size_t next = n;
+        for (size_t k = 1; k < n; ++k) {
+            size_t d = (cur + k) % n;
+            if (cores[d].runnable() && cores[d].cycles() <= cores[cur].cycles()) {
+                next = d;
+                break;
+            }
+        }
+        if (next == n) {
+            if (cores[cur].runnable()) {
+                next = cur;                       // every other core is ahead: keep going
+            } else {
+                for (size_t d = 0; d < n; ++d)    // cur finished: the runnable core furthest behind
+                    if (cores[d].runnable() && (next == n || cores[d].cycles() < cores[next].cycles()))
+                        next = d;
+            }
+        }
+        if (next != cur && next < n)
+            ++st.switches;
+        cur = next;
+
+        if (n > 1 && (st.steps & 1023) == 0) {
+            uint64_t lo = UINT64_MAX, hi = 0;
+            for (const auto& c : cores)
+                if (c.runnable()) {
+                    lo = std::min(lo, c.cycles());
+                    hi = std::max(hi, c.cycles());
+                }
+            if (hi >= lo)
+                st.max_skew = std::max(st.max_skew, hi - lo);
+        }
+    }
+    return st;
 }
