@@ -10,7 +10,9 @@
 
 num_cores: 1                         # core ids 0..N-1; L1D and L2 are private per core, the LLC is shared
 # trace: /path/to/trace.xz           # core 0's trace; usually given with --trace
-# traces: [none, /path/to/trace.xz]  # or one per core by id ('none' = idle); at most one active for now
+# traces: [/path/t0.xz, /path/t1.xz] # or one per core by id ('none' = idle)
+# core_apps: [0, 0]                  # address space per core: same id = threads of one program (shared
+                                     # addresses); default 0, 1, 2, ... over the active cores = separate programs
 trace_format: instructions           # champsim | addresses | instructions
 iters: 1
 warmup_instructions: 0

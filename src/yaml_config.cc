@@ -19,6 +19,7 @@ static const std::vector<std::pair<std::string, std::string>> kKeys = {
     {"trace",                          "trace"},
     {"num_cores",                      "num-cores"},
     {"traces",                         "traces"},
+    {"core_apps",                      "core-apps"},
     {"trace_format",                   "trace-format"},
     {"iters",                          "iters"},
     {"warmup_instructions",            "warmup-instructions"},
@@ -335,7 +336,8 @@ std::string YamlConfig::to_config(const CLI::App* app, bool default_also, bool, 
         if (opt->count() > 0) {
             auto t = g_text.find(opt_name);
             vals = t != g_text.end() ? t->second : opt->results();
-        } else if (default_also && !opt->get_default_str().empty()) {
+        } else if (default_also && !opt->get_default_str().empty() && opt->get_default_str() != "{}" &&
+                   opt->get_default_str() != "[]") {   // CLI11 writes an empty list's default as {}
             vals = {opt->get_default_str()};
         } else if (default_also && opt->get_expected_min() == 0) {
             vals = {"false"};      // unset flag

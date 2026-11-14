@@ -74,8 +74,21 @@ Base+Delta tags, P-OPT paths, debug switches, and the timing model (core, cache 
 `num_cores` (`--num-cores`) builds that many cores with ids 0..N-1. Each core has a private L1D (and L2 with
 `l2.enabled`); all cores share the LLC. A core reads its trace and issues each access to its own levels, then the LLC
 (`inc/core.h`). `trace` (`--trace`) runs on core 0; `traces` (`--traces t0 t1 ...`, `none` = idle) assigns one trace
-per core id. For now at most one core may run a trace: instruction counts, P-OPT/Belady oracles and the timing model
-are still global. With one active core the results are identical whichever core runs it.
+per core id.
+
+- **Scheduling:** after each memory access, control moves to the next core (in id order) whose clock is not ahead of
+  the current one; if every other core is ahead, the current core keeps running. The last `System:` line reports
+  the run time (latest core clock) and the largest clock skew seen.
+- **Address spaces:** `core_apps` (`--core-apps`) gives each core an application id. The physical address the caches
+  use is the id in bits 48-63 plus the low 48 bits of the virtual address (as Sniper's `va2pa`); PCs are tagged the
+  same way. Same id = threads of one program sharing memory; the default numbers the active cores 0, 1, 2, ...
+  (separate programs). Application 0 is the identity, so a single active core gives exactly the 1-core results.
+  No TLB or page table is modeled: this matches Sniper with `general/translation_enabled = false`. Sniper 9.0's
+  default also translates through an MMU (TLBs, walkers) with MimicOS page allocation, which would change LLC set
+  mapping (index bits 12-15 come from the page number) and every existing result; a page allocator may be added
+  later as an option.
+- **Not yet:** coherence (cores sharing a line keep duplicate copies) and barriers. `popt`, `belady`, `grasp` and
+  `--l1-amoeba` need a single active core.
 
 ### Iso-area 8B LLC
 

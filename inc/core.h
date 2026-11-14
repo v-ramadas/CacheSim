@@ -35,10 +35,12 @@ class Core {
   public:
     // caches: this core's view, top to bottom ([L1D, (L2), LLC] or the single
     // level of the single-level build). trace empty = idle core.
+    // app: the application (address space) this core's trace belongs to; see translate() in utils.h.
     Core(uint32_t id, std::string trace, TraceFormat format, std::vector<BaseCache*> caches,
-         SparsityPredictor* predictor, uint64_t num_iters);
+         SparsityPredictor* predictor, uint64_t num_iters, uint32_t app = 0);
 
     uint32_t id() const { return id_; }
+    uint32_t app() const { return app_; }
     bool active() const { return !trace_.empty(); }
     bool runnable() const { return active() && !finished_; }   // has a trace and has not finished it
     const std::string& trace() const { return trace_; }
@@ -69,6 +71,7 @@ class Core {
     void issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
 
     uint32_t id_;
+    uint32_t app_;
     std::string trace_;
     TraceFormat format_;
     std::vector<BaseCache*> caches_;

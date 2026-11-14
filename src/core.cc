@@ -10,8 +10,8 @@
 #include <iostream>
 
 Core::Core(uint32_t id, std::string trace, TraceFormat format, std::vector<BaseCache*> caches,
-           SparsityPredictor* predictor, uint64_t num_iters)
-    : id_(id), trace_(std::move(trace)), format_(format), caches_(std::move(caches)), predictor_(predictor),
+           SparsityPredictor* predictor, uint64_t num_iters, uint32_t app)
+    : id_(id), app_(app), trace_(std::move(trace)), format_(format), caches_(std::move(caches)), predictor_(predictor),
       iters_left_(trace_.empty() ? 0 : num_iters), misses_(caches_.size(), 0) {
     for (auto* c : caches_)
         level_names_.push_back(c->get_name());
@@ -88,6 +88,10 @@ bool Core::debug_stop() {
 }
 
 void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
+    // Into this core's address space: the hierarchy sees physical addresses, and PCs are tagged the
+    // same way so PC-indexed predictors keep different applications apart (identity for app 0).
+    address = translate(address, app_);
+    pc = translate(pc, app_);
     int hit_at_level =
 #ifdef MULTI_LEVEL
     access_multi_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,

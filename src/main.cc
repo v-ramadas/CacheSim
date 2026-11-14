@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
     uint64_t num_iters = 1;
     uint32_t num_cores = 1;
     std::vector<std::string> core_traces;
+    std::vector<uint32_t> core_apps;
     ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
     InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
     bool dump_config = false;
@@ -96,6 +97,7 @@ int main(int argc, char** argv) {
     app.add_flag("--dump-config", dump_config, "Print the effective configuration (file + flags) as YAML and exit");
     app.add_option("--trace", tracename, "Path to input trace file, run on core 0 (YAML: trace)")->expected(1)->check(CLI::ExistingFile);
     app.add_option("--num-cores", num_cores, "Number of cores; each has a unique id 0..N-1 and private L1D (and L2), and all share the LLC (YAML: num_cores)")->check(CLI::Range(1u, 256u));
+    app.add_option("--core-apps", core_apps, "Application (address space) id per core, by core id (YAML: core_apps). Cores with the same id share addresses, as threads of one program; default: active cores get 0, 1, 2, ... in core order, i.e. separate programs. A single active core is app 0, whose addresses are unchanged");
     app.add_option("--traces", core_traces, "Trace per core, by core id; 'none' = idle core (YAML: traces). Replaces --trace. Currently at most one core may run a trace");
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
@@ -227,10 +229,32 @@ int main(int argc, char** argv) {
         fmt::print(stderr, "No trace: pass --trace, or --traces / 'traces' in the --config YAML\n");
         return 1;
     }
-    if (active_cores.size() > 1 && (replacement_policy == ReplacementPolicy::POPT ||
+    if (active_cores.size() > 1 && (replacement_policy == ReplacementPolicy::POPT || replacement_policy == ReplacementPolicy::GRASP ||
                                     replacement_policy == ReplacementPolicy::Belady || cachesim::L1_AMOEBA)) {
-        fmt::print(stderr, "popt, belady and --l1-amoeba read one trace's future or keep one trace's L1 history; "
+        fmt::print(stderr, "popt, belady, grasp and --l1-amoeba are built from one trace (its future, hub map or L1 history); "
                            "run them with a single active core\n");
+        return 1;
+    }
+    // Application id per core: given, or active cores numbered 0, 1, 2, ... (separate programs).
+    if (core_apps.size() > num_cores) {
+        fmt::print(stderr, "{} core_apps for {} cores (--num-cores)\n", core_apps.size(), num_cores);
+        return 1;
+    }
+    if (core_apps.empty()) {
+        core_apps.assign(num_cores, 0);
+        for (size_t i = 0; i < active_cores.size(); ++i)
+            core_apps[active_cores[i]] = static_cast<uint32_t>(i);
+    }
+    core_apps.resize(num_cores, 0);
+    for (uint32_t c = 0; c < num_cores; ++c)
+        if (core_apps[c] >= (1u << (64 - APP_SHIFT))) {
+            fmt::print(stderr, "core {}: application id {} does not fit in {} bits\n", c, core_apps[c], 64 - APP_SHIFT);
+            return 1;
+        }
+    if (active_cores.size() == 1 && core_apps[active_cores.front()] != 0 &&
+        (replacement_policy == ReplacementPolicy::POPT || replacement_policy == ReplacementPolicy::GRASP ||
+         replacement_policy == ReplacementPolicy::Belady)) {
+        fmt::print(stderr, "popt, belady and grasp work on the trace's own addresses: give the active core application id 0\n");
         return 1;
     }
     // The first active core's trace names the run (P-OPT/Belady/GRASP setup and the LLC stats header).
@@ -238,7 +262,8 @@ int main(int argc, char** argv) {
     tracename = core_traces[active_core];
     if (num_cores > 1)
         for (uint32_t c = 0; c < num_cores; ++c)
-            fmt::print("System: {} cores; core {} runs {}\n", num_cores, c, core_traces[c].empty() ? "nothing (idle)" : core_traces[c]);
+            fmt::print("System: {} cores; core {} runs {}\n", num_cores, c,
+                       core_traces[c].empty() ? std::string("nothing (idle)") : fmt::format("{} (app {})", core_traces[c], core_apps[c]));
     if (cachesim::PSEL_HYSTERESIS == UINT64_MAX)
         cachesim::PSEL_HYSTERESIS = cachesim::PSEL_MAX / 8;
 
@@ -384,7 +409,7 @@ int main(int argc, char** argv) {
 #endif
     std::vector<Core> cores;
     for (uint32_t c = 0; c < num_cores; ++c)
-        cores.emplace_back(c, core_traces[c], trace_format, per_core[c], predictor, num_iters);
+        cores.emplace_back(c, core_traces[c], trace_format, per_core[c], predictor, num_iters, core_apps[c]);
     std::vector<BaseCache*>& cache = cores[active_core].caches();
 
     std::map<uint64_t, uint64_t> page_count;
