@@ -26,11 +26,12 @@ The build expects ChampSim's trace reader at `../ChampSim` (`CHAMPSIM_DIR` in th
 ## Quick start
 
 ```
-bin/cachesim_multi --trace <trace.xz> --trace-format instructions --config configs/default.cfg \
-    --num-cache-sets 1024 --num-cache-ways 32 --cache-block-size 8 --replacement-policy srrip
+bin/cachesim_multi --config configs/default.yaml --trace <trace.xz> --cache-block-size 8 --replacement-policy srrip
 ```
 
-`--num-cache-sets` and `--num-cache-ways` describe the 64B-equivalent LLC: 1024 x 32 is 2 MB, and 4096 x 32 is
+All settings live in the YAML config; the flags above override it (see Configuration).
+
+`llc.sets` and `llc.ways` (`--num-cache-sets`, `--num-cache-ways`) describe the 64B-equivalent LLC: 1024 x 32 is 2 MB, and 4096 x 32 is
 8 MB. Smaller blocks are sized from that (see iso-area below).
 
 ## Traces
@@ -51,8 +52,22 @@ may be `.xz`-compressed.
 
 ## Configuration
 
-`--config configs/default.cfg` sets core, cache-latency and DRAM parameters for the timing model. `configs/intel.cfg`
-is an alternative.
+`--config <file>.yaml` (required) holds every simulator setting: trace, cache geometry and policy, set dueling,
+Base+Delta tags, P-OPT paths, debug switches, and the timing model (core, cache latencies, DRAM). Start from
+`configs/default.yaml`, which lists every key with its default.
+
+- **Flags override the file.** Every key maps to one command-line option (`llc.replacement_policy` =
+  `--replacement-policy`; table `kKeys` in `src/yaml_config.cc`), so sweeps keep one YAML and vary flags.
+- **Timing parameters** sit under `cpu`, `l1i`, `l1d`, `l2`, `llc` and `memory`: `llc.latency` is the timing
+  parameter `llc_latency`, also settable as `--llc_latency 24`.
+- **`--dump-config`** prints the effective configuration (file + flags) as YAML and exits. Save it next to results to
+  record exactly what a run used; it can be passed back as `--config`.
+- **Unknown keys are errors**, with the line number, as are tabs, duplicate keys and keys without a value.
+- Supported YAML: nested mappings, plain or quoted scalars, `[a, b]` and `- a` lists, `#` comments. No anchors,
+  flow mappings or multi-line strings.
+- The old flat timing file `configs/default.cfg` (`cpu_frequency: 4000`, ...) is still accepted by `--config`, with the
+  cache options given as flags. `configs/intel.cfg` uses parameter names the timing model does not have and is
+  rejected (it was before this change too).
 
 ### Iso-area 8B LLC
 
@@ -134,7 +149,8 @@ SRRIP (`POPT inactive`).
 | `--detailed-dram` | detailed DRAM timing model |
 | `--debug`, `--debug-llc`, `--debug-l1`, `--debug-replacement-policy`, `--debug-start`, `--debug-end` | debug prints |
 
-Run `bin/cachesim_multi --help` for the full list.
+Each has a YAML key (table `kKeys` in `src/yaml_config.cc`; `--dump-config` shows them all). Run
+`bin/cachesim_multi --help` for the full list.
 
 ## Output
 
@@ -159,7 +175,7 @@ Each mode rebuilds first and compares exact MPKI and cycles against `tests/regre
 | path | contents |
 |---|---|
 | `inc/`, `src/` | simulator: `cachesim.cc` (hierarchy, fills, evictions, dueling), `set.cc` / `sectored_set.cc`, `*_replacement_policy.*` |
-| `configs/` | timing-model configs |
+| `configs/` | YAML system configs (`default.yaml`); legacy timing-only `.cfg` files |
 | `tools/` | offline helpers (`popt_matrix`); see `tools/README.md` |
 | `tests/regression/` | regression harness and golden values |
 | `tests/tag_compression/` | Base+Delta tag tests |

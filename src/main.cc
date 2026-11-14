@@ -1,4 +1,5 @@
 #include "cachesim.h"
+#include "yaml_config.h"
 
 uint64_t cachesim::instCount = 0;
 uint64_t cachesim::prevInstCount = 0;
@@ -82,22 +83,28 @@ int main(int argc, char** argv) {
 
     CLI::App app{"CacheSim"};
     std::string tracename;
-    std::string configFile = "configs/default.cfg";
     TraceFormat trace_format = TraceFormat::CHAMPSIM;
     uint64_t llc_num_sets;
     uint64_t llc_num_ways;
     uint64_t num_iters = 1;
     ReplacementPolicy replacement_policy = ReplacementPolicy::LRU;
     InsertionPolicy insertion_policy = InsertionPolicy::EXCLUSIVE;
-    app.add_option("--trace", tracename, "Path to input trace file")->required()->expected(1)->check(CLI::ExistingFile);
-    app.add_option("--config", configFile, "Path to config file")->required()->expected(1)->check(CLI::ExistingFile);
+    bool dump_config = false;
+    // Every option below can also be set from the YAML system config (--config, include/yaml_config.h);
+    // a flag given on the command line overrides the file. Defaults are captured for --dump-config.
+    app.option_defaults()->always_capture_default();
+    app.config_formatter(std::make_shared<yaml_config::YamlConfig>());
+    app.set_config("--config", "", "YAML system config (configs/default.yaml); command-line flags override it. "
+                   "A legacy timing-only .cfg (cpu_frequency: 4000 ...) is accepted too", true);
+    app.add_flag("--dump-config", dump_config, "Print the effective configuration (file + flags) as YAML and exit");
+    app.add_option("--trace", tracename, "Path to input trace file (YAML: trace)")->expected(1)->check(CLI::ExistingFile);
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
         {"addresses", TraceFormat::ADDRESSES},
         {"instructions", TraceFormat::INSTRUCTIONS},
-    }));
-    app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache")->required();
-    app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache")->required();
+    }))->transform(yaml_config::keep_text("trace-format"))->default_str("champsim");
+    app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache (YAML: llc.sets)")->required();
+    app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache (YAML: llc.ways)")->required();
     app.add_option("--cache-block-size", cachesim::BLOCK_SIZE, "Cache block size");
 
     app.add_option("--replacement-policy", replacement_policy, "Cache replacement policy")->transform(CLI::CheckedTransformer(std::map<std::string, ReplacementPolicy>{
@@ -119,10 +126,10 @@ int main(int argc, char** argv) {
         {"grasp", ReplacementPolicy::GRASP},
         {"popt", ReplacementPolicy::POPT},
         {"amoeba", ReplacementPolicy::Amoeba}
-    }));
+    }))->transform(yaml_config::keep_text("replacement-policy"))->default_str("lru");
     app.add_option("--insertion-policy", insertion_policy, "Cache insertion policy")->transform(CLI::CheckedTransformer(std::map<std::string, InsertionPolicy>{
         {"exclusive", InsertionPolicy::EXCLUSIVE},
-    }));
+    }))->transform(yaml_config::keep_text("insertion-policy"))->default_str("exclusive");
     app.add_flag("--debug", cachesim::DEBUG_ALL, "Enable debug mode");
     app.add_flag("--debug-llc", cachesim::LLC_DEBUG, "Enable debug mode");
     app.add_flag("--debug-l1", cachesim::L1_DEBUG, "Enable debug mode");
@@ -145,7 +152,7 @@ int main(int argc, char** argv) {
         {"psel", DuelingMode::PSEL},
         {"ztest", DuelingMode::ZTEST},
         {"ztest-ratio", DuelingMode::ZTEST_RATIO},
-    }));
+    }))->transform(yaml_config::keep_text("dueling-mode"))->default_str("psel");
     app.add_option("--conf-epoch", cachesim::CONF_EPOCH, "Instructions between set-dueling confidence checkpoints");
     app.add_option("--conf-max", cachesim::CONF_MAX, "Consecutive agreeing checkpoints required to lock a set-dueling winner");
     app.add_option("--conf-margin", cachesim::CONF_MARGIN, "Distance from the PSEL midpoint required for a checkpoint to count as confident (unused by the current decision rule, kept for compatibility)");
@@ -169,7 +176,7 @@ int main(int argc, char** argv) {
     app.add_option("--amoeba-insert", cachesim::AMOEBA_INSERT, "amoeba: words of an L1D victim to store as one block - span (first to last touched word, default), line (whole line)")->transform(CLI::CheckedTransformer(std::map<std::string, AmoebaInsert>{
         {"span", AmoebaInsert::SPAN},
         {"line", AmoebaInsert::LINE},
-    }));
+    }))->transform(yaml_config::keep_text("amoeba-insert"))->default_str("span");
     app.add_option("--amoeba-words", cachesim::AMOEBA_WORDS, "amoeba (debug): words per set, overriding the iso-area / naive size");
     app.add_flag("--amoeba-free-tags", cachesim::AMOEBA_FREE_TAGS, "amoeba (debug): blocks take no tag word, only their data words");
     app.add_flag("--l1-amoeba", cachesim::L1_AMOEBA, "cachesim_multi: make the L1D an Amoeba-Cache (8B words, iso-area with the 64B L1D); a miss fetches the words the line used in its previous L1 residency (the whole line on its first touch), the rest of the line is dropped. Not with --l2, set dueling or an amoeba LLC");
@@ -177,7 +184,7 @@ int main(int argc, char** argv) {
         {"history", L1AmoebaFetch::HISTORY},
         {"line", L1AmoebaFetch::LINE},
         {"oracle", L1AmoebaFetch::ORACLE},
-    }));
+    }))->transform(yaml_config::keep_text("l1-amoeba-fetch"))->default_str("history");
     app.add_flag("--l1-amoeba-keep-llc", cachesim::L1_AMOEBA_KEEP_LLC, "--l1-amoeba: words of a line the L1D does not take stay in / go into the LLC as a partial line instead of being dropped (breaks line-level exclusivity)");
     std::string l1_amoeba_record, l1_amoeba_oracle;
     app.add_option("--l1-amoeba-record", l1_amoeba_record, "--l1-amoeba: write every L1 residency's used-word mask per line to this file (input for --l1-amoeba-oracle)");
@@ -185,9 +192,17 @@ int main(int argc, char** argv) {
     app.add_option("--popt-elem-size", POPT::elem_size, "popt: bytes per element of the irregularly accessed array (default 4; must match the matrix)");
     app.add_option("--popt-graph-dir", POPT::graph_dir, "popt: directory with <G>.<order>.sg or <G>/<G>.<order>.sg, for kernels P-OPT handles with matrices built from the graph (sssp, bc, bfs, cc); also searched: ../gapbs_traces/inputs/<G>, <bin>/../../gapbs_traces/inputs/<G>");
     app.add_option("--popt-matrix-dir", POPT::matrix_dir, "popt: directory holding <G>.<order>[.wd].popt Rereference Matrices (tools/popt_matrix.cc); also searched: data/popt, <bin>/../data/popt");
-
+    yaml_config::add_timing_options(app);
 
     CLI11_PARSE(app, argc, argv);
+    if (dump_config) {
+        std::cout << app.config_to_str(true, false);
+        return 0;
+    }
+    if (tracename.empty()) {
+        fmt::print(stderr, "No trace: pass --trace or set 'trace' in the --config YAML\n");
+        return 1;
+    }
     if (cachesim::PSEL_HYSTERESIS == UINT64_MAX)
         cachesim::PSEL_HYSTERESIS = cachesim::PSEL_MAX / 8;
 
@@ -266,7 +281,8 @@ int main(int argc, char** argv) {
     }
 
     try {
-        PerformanceModel::populateModel(configFile);
+        const auto& timing = yaml_config::timing_params();
+        PerformanceModel::populateModel(std::unordered_map<std::string, ParamType>(timing.begin(), timing.end()), "--config");
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         return 1;

@@ -180,6 +180,10 @@ class PerformanceModel {
     }
 
     static void populateModel(const std::string& filename);
+    // Set the given parameters (others stay 0) and initialise the DRAM model.
+    static void populateModel(const std::unordered_map<std::string, ParamType>& params, const std::string& source);
+    // Timing-parameter names in declaration order (cpu_*, l1i_*, l1d_*, l2_*, llc_*, memory_*).
+    static std::vector<std::string> paramNames();
 
     static ParamType getParam(const std::string& param);
 

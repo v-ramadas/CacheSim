@@ -10,12 +10,15 @@ PerformanceModel::PerformanceModel(const std::string& filename) {
 void PerformanceModel::populateModel(const std::string& filename) {
     //configs.resize(static_cast<size_t>(Params::numParameters)-1, 0);
 
-    auto parsedData = PerformanceModel::parseConfigFile(filename);
-    for (const auto& [param, value]: parsedData) {
+    populateModel(PerformanceModel::parseConfigFile(filename), filename);
+}
+
+void PerformanceModel::populateModel(const std::unordered_map<std::string, ParamType>& params, const std::string& source) {
+    for (const auto& [param, value]: params) {
         if (stringToEnumMap.find(param) == stringToEnumMap.end()) {
             throw std::runtime_error(fmt::format(
                 "Fatal: Unrecognized parameter {} in {}.",
-                    param, filename
+                    param, source
             ));
         } else {
             configs[static_cast<ParamType>(stringToEnumMap.at(param))] = value;
@@ -23,6 +26,13 @@ void PerformanceModel::populateModel(const std::string& filename) {
     }
 
     memory.init();
+}
+
+std::vector<std::string> PerformanceModel::paramNames() {
+    std::vector<std::string> names(static_cast<size_t>(Params::numParameters));
+    for (const auto& [name, id]: stringToEnumMap)
+        names[static_cast<size_t>(id)] = name;
+    return names;
 }
 
 // Helper Functions

@@ -1,0 +1,151 @@
+# CacheSim three-level hierarchy: L1D + L2 + LLC.
+#
+#   bin/cachesim_multi --config configs/three_level.yaml --trace <trace.xz> --cache-block-size 8 --replacement-policy srrip
+#
+# L1D 32 x 16 (32 KB), L2 256 x 16 (256 KB), LLC 1024 x 32 (2 MB). Matches the paper three_level runs
+# (results/11_04: --l1-sets 32 --l1-ways 16 --l2 --l2-sets 256 --l2-ways 16).
+# Flags override any value here; --dump-config prints the effective configuration. All keys: configs/default.yaml.
+
+# trace: /path/to/trace.xz           # usually given with --trace
+trace_format: instructions           # champsim | addresses | instructions
+iters: 1
+warmup_instructions: 0
+gen_stats: false
+enable_predictor: false
+
+cpu:
+  frequency: 4000
+  ifetch_buffer_size: 64
+  decode_buffer_size: 32
+  dispatch_buffer_size: 32
+  register_file_size: 128
+  rob_size: 352
+  lq_size: 128
+  sq_size: 72
+  fetch_width: 6
+  decode_width: 6
+  dispatch_width: 6
+  execute_width: 4
+  lq_width: 2
+  sq_width: 2
+  retire_width: 5
+  scheduler_size: 128
+  decode_latency: 1
+  dispatch_latency: 1
+  schedule_latency: 0
+  execute_latency: 0
+
+l1i:
+  frequency: 4000
+  rq_size: 64
+  wq_size: 64
+  pq_size: 32
+  mshr_size: 8
+  latency: 4
+  max_tag_check: 2
+  max_fill: 2
+
+l1d:
+  sets: 32                           # 64B lines with 8B sectors
+  ways: 16
+  amoeba:                            # cachesim_multi: Amoeba-Cache L1D
+    enabled: false
+    fetch: history                   # history | line | oracle
+    keep_llc: false
+    # record: l1_masks.txt
+    # oracle: l1_masks.txt
+  # timing
+  frequency: 4000
+  rq_size: 64
+  wq_size: 64
+  pq_size: 8
+  mshr_size: 16
+  latency: 5
+  max_tag_check: 2
+  max_fill: 2
+
+l2:
+  enabled: true                      # sectored, exclusive, LRU
+  sets: 256
+  ways: 16
+  latency: 11
+
+llc:
+  sets: 1024
+  ways: 32                           # in 64B ways; smaller blocks are sized iso-area
+  block_size: 64                     # 64 | 8
+  replacement_policy: lru            # lru hru hrupp phru phrupp hub_oracle srrip drrip prrip ship_pc ship_mem
+                                     # belady hrrip hawkeye hub_hawkeye grasp popt amoeba
+  insertion_policy: exclusive
+  no_iso_area: false
+  tag_bdi:                           # Base+Delta tags for iso-area 8B sets (bases 0 = off)
+    bases: 8
+    delta: 10
+    unconstrained: false
+  amoeba:
+    insert: span                     # span | line
+    words: 0                         # debug override of words per set (0 = iso-area)
+    free_tags: false
+  popt:
+    elem_size: 4
+    # graph_dir: /path/to/graphs
+    # matrix_dir: data/popt
+  ghost_cache:
+    enabled: false
+    size: 32
+    min_serviced: 1
+  # timing
+  frequency: 4000
+  rq_size: 32
+  wq_size: 32
+  pq_size: 32
+  mshr_size: 64
+  latency: 20
+  max_tag_check: 1
+  max_fill: 1
+
+set_dueling:                         # 8B LLC only; off for 64B and several policies
+  enabled: false
+  mode: psel                         # psel | ztest | ztest-ratio
+  num_duels: 64
+  period: 1000000
+  psel_max: 4096
+  psel_threshold: 2048
+  # psel_hysteresis: 512             # default psel_max / 8
+  conf_epoch: 10000
+  conf_max: 1
+  conf_margin: 2048
+  z_threshold: 2.0
+  window_size: 1600
+  window_z_threshold: 2.5
+  log_metrics: false
+
+memory:
+  detailed_dram: false
+  frequency: 1600
+  data_rate: 3200
+  channels: 1
+  ranks: 1
+  bankgroups: 8
+  banks: 4
+  bank_rows: 65536
+  bank_columns: 1024
+  channel_width: 8
+  wq_size: 64
+  rq_size: 64
+  tCAS: 24
+  tRCD: 24
+  tRP: 24
+  tRAS: 52
+  refresh_period: 32
+  refreshes_per_period: 8192
+
+debug:
+  all: false
+  llc: false
+  l1: false
+  replacement_policy: false
+  tag_bdi: false
+  ghost_cache: false
+  start: 0
+  end: 10000000
