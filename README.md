@@ -78,7 +78,8 @@ per core id.
 
 - **Scheduling:** after each memory access, control moves to the next core (in id order) whose clock is not ahead of
   the current one; if every other core is ahead, the current core keeps running. The last `System:` line reports
-  the run time (latest core clock) and the largest clock skew seen.
+  the run time (latest core clock) and the largest and mean clock skew: the gap between the running cores' clocks,
+  measured after every step (cores waiting at a barrier or finished are excluded).
 - **Address spaces:** `core_apps` (`--core-apps`) gives each core an application id. The physical address the caches
   use is the id in bits 48-63 plus the low 48 bits of the virtual address (as Sniper's `va2pa`); PCs are tagged the
   same way. Same id = threads of one program sharing memory; the default numbers the active cores 0, 1, 2, ...
@@ -87,7 +88,12 @@ per core id.
   default also translates through an MMU (TLBs, walkers) with MimicOS page allocation, which would change LLC set
   mapping (index bits 12-15 come from the page number) and every existing result; a page allocator may be added
   later as an option.
-- **Not yet:** coherence (cores sharing a line keep duplicate copies) and barriers. `popt`, `belady`, `grasp` and
+- **Barriers:** a text-trace line `BARRIER:<n>` (instructions or addresses format) marks a thread entering barrier
+  n. The core stops being scheduled until every core still running has reached barrier n; then all continue with
+  their clocks set to the latest arrival, and each core reports `barriers` and `barrier_wait_cycles`. A core that has
+  finished its trace counts as arrived; cores waiting at different ids stop the run with an error.
+  `--debug-schedule` logs every step, arrival and release. Tests: `python3 tests/multicore/run_tests.py`.
+- **Not yet:** coherence (cores sharing a line keep duplicate copies). `popt`, `belady`, `grasp` and
   `--l1-amoeba` need a single active core.
 
 ### Iso-area 8B LLC
@@ -200,5 +206,6 @@ Each mode rebuilds first and compares exact MPKI and cycles against `tests/regre
 | `tools/` | offline helpers (`popt_matrix`); see `tools/README.md` |
 | `tests/regression/` | regression harness and golden values |
 | `tests/tag_compression/` | Base+Delta tag tests |
+| `tests/multicore/` | scheduler and barrier tests on hand-written traces (`run_tests.py`) |
 | `scripts/` | analysis and plotting scripts |
 | `data/popt/` | Rereference Matrices (gitignored) |

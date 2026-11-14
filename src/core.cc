@@ -24,8 +24,9 @@ void Core::retire(uint64_t n) {
 
 void Core::print_stats() const {
     auto mpki = [&](uint64_t m) { return instructions_ ? 1000.0 * m / instructions_ : 0.0; };
-    fmt::print("Core {}: instructions {} cycles {} IPC {:.4f} accesses {}", id_, instructions_, cycles_,
-               cycles_ ? (double)instructions_ / cycles_ : 0.0, accesses_);
+    fmt::print("Core {}: instructions {} cycles {} IPC {:.4f} accesses {} barriers {} barrier_wait_cycles {}", id_,
+               instructions_, cycles_, cycles_ ? (double)instructions_ / cycles_ : 0.0, accesses_, barriers_,
+               barrier_wait_cycles_);
     for (size_t i = 0; i < caches_.size(); ++i)
         fmt::print(" | {} misses {} MPKI {:.6f}", level_names_[i], misses_[i], mpki(misses_[i]));
     fmt::print("\n");
@@ -87,6 +88,26 @@ bool Core::debug_stop() {
     return false;
 }
 
+bool Core::barrier_line(const std::string& line) {
+    if (line.rfind("BARRIER", 0) != 0)
+        return false;
+    unsigned long long id = 0;
+    barrier_id_ = std::sscanf(line.c_str(), "BARRIER:%llu", &id) == 1 ? id : barriers_ + 1;
+    at_barrier_ = true;
+    if (debug_schedule)
+        fmt::print("SCHED arrive core {} barrier {} clock {}\n", id_, barrier_id_, cycles_);
+    return true;
+}
+
+void Core::release_barrier(uint64_t clock) {
+    if (clock > cycles_) {
+        barrier_wait_cycles_ += clock - cycles_;
+        cycles_ = clock;
+    }
+    at_barrier_ = false;
+    ++barriers_;
+}
+
 void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
     // Into this core's address space: the hierarchy sees physical addresses, and PCs are tagged the
     // same way so PC-indexed predictors keep different applications apart (identity for app 0).
@@ -113,6 +134,8 @@ Core::Read Core::step_addresses() {
     cachesim::TRACE_LINE = line_idx_++;
     if (debug_stop())
         return Read::END_OF_PASS;
+    if (barrier_line(line))
+        return Read::RECORD;
     uint64_t pc = 0, address = 0, next_reuse = UINT64_MAX, degree = 0;
     float avg_degree = 0.0f;
     char action[16];
@@ -139,6 +162,8 @@ Core::Read Core::step_instructions() {
     cachesim::TRACE_LINE = line_idx_++;
     if (debug_stop())
         return Read::END_OF_PASS;
+    if (barrier_line(line))
+        return Read::RECORD;
     uint64_t pc = 0, address = 0, next_reuse = UINT64_MAX, degree = 0, trace_count = 0;
     float avg_degree = 0.0f;
     char action[16];
@@ -196,9 +221,59 @@ ScheduleStats run_cores(std::vector<Core>& cores) {
     for (size_t c = 0; c < n && cur == n; ++c)
         if (cores[c].runnable())
             cur = c;
+    // No core can run: release the cores waiting at a barrier (finished cores count as arrived). Returns the
+    // core to continue with, or n when nothing is left.
+    auto release = [&]() -> size_t {
+        uint64_t latest = 0, id = 0;
+        bool any = false;
+        for (const auto& c : cores)
+            if (c.at_barrier()) {
+                if (any && c.barrier_id() != id) {
+                    st.error = fmt::format("cores wait at different barriers ({} and {}): the traces do not belong "
+                                           "to one run", id, c.barrier_id());
+                    return n;
+                }
+                any = true;
+                id = c.barrier_id();
+                latest = std::max(latest, c.cycles());
+            }
+        if (!any)
+            return n;
+        ++st.barriers;
+        if (Core::debug_schedule)
+            fmt::print("SCHED release barrier {} clock {}\n", id, latest);
+        for (auto& c : cores)
+            if (c.at_barrier())
+                c.release_barrier(latest);
+        for (size_t d = 0; d < n; ++d)
+            if (cores[d].runnable())
+                return d;
+        return n;
+    };
+    if (cur == n)
+        cur = release();
     while (cur < n) {
         cores[cur].step();
         ++st.steps;
+        if (Core::debug_schedule)
+            fmt::print("SCHED step core {} clock {}\n", cur, cores[cur].cycles());
+        // Clock skew: the gap between the running cores' clocks (waiting and finished cores excluded; waiting
+        // is reported as barrier_wait_cycles). Only the stepped core's clock moved, so measuring after every
+        // step sees every peak.
+        if (n > 1) {
+            uint64_t lo = UINT64_MAX, hi = 0, running = 0;
+            for (const auto& c : cores)
+                if (c.runnable()) {
+                    lo = std::min(lo, c.cycles());
+                    hi = std::max(hi, c.cycles());
+                    ++running;
+                }
+            if (running > 1) {
+                st.max_skew = std::max(st.max_skew, hi - lo);
+                st.skew_sum += hi - lo;
+                ++st.skew_samples;
+            }
+        }
 
         // Next core: the first one after cur (in id order, wrapping) that is not ahead of cur.
         size_t next = n;
@@ -213,25 +288,17 @@ ScheduleStats run_cores(std::vector<Core>& cores) {
             if (cores[cur].runnable()) {
                 next = cur;                       // every other core is ahead: keep going
             } else {
-                for (size_t d = 0; d < n; ++d)    // cur finished: the runnable core furthest behind
+                for (size_t d = 0; d < n; ++d)    // cur finished or waits: the runnable core furthest behind
                     if (cores[d].runnable() && (next == n || cores[d].cycles() < cores[next].cycles()))
                         next = d;
+                if (next == n)
+                    next = release();             // nobody can run: everyone left is at the barrier
             }
         }
         if (next != cur && next < n)
             ++st.switches;
         cur = next;
 
-        if (n > 1 && (st.steps & 1023) == 0) {
-            uint64_t lo = UINT64_MAX, hi = 0;
-            for (const auto& c : cores)
-                if (c.runnable()) {
-                    lo = std::min(lo, c.cycles());
-                    hi = std::max(hi, c.cycles());
-                }
-            if (hi >= lo)
-                st.max_skew = std::max(st.max_skew, hi - lo);
-        }
     }
     return st;
 }

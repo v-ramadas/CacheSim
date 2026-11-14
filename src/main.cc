@@ -173,6 +173,7 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets");
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
+    app.add_flag("--debug-schedule", Core::debug_schedule, "Print a SCHED line for every core step, barrier arrival and release (multicore)");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
     app.add_option("--amoeba-insert", cachesim::AMOEBA_INSERT, "amoeba: words of an L1D victim to store as one block - span (first to last touched word, default), line (whole line)")->transform(CLI::CheckedTransformer(std::map<std::string, AmoebaInsert>{
         {"span", AmoebaInsert::SPAN},
@@ -424,6 +425,10 @@ int main(int argc, char** argv) {
     }
     // Each core reads its trace and issues to its view of the hierarchy; run_cores interleaves them.
     const ScheduleStats sched = run_cores(cores);
+    if (!sched.error.empty()) {
+        fmt::print(stderr, "{}\n", sched.error);
+        return 1;
+    }
 
     // Print the first active core's L1D, then the LLC, then its middle level (L2), so the LLC stays the
     // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC. Then the other active
@@ -455,8 +460,9 @@ int main(int argc, char** argv) {
             core.print_stats();
             end = std::max(end, core.cycles());
         }
-        fmt::print("System: cycles {} (latest core clock) | schedule steps {} switches {} max clock skew {} cycles\n",
-                   end, sched.steps, sched.switches, sched.max_skew);
+        fmt::print("System: cycles {} (latest core clock) | schedule steps {} switches {} max clock skew {} cycles "
+                   "mean {:.1f} | barriers {}\n", end, sched.steps, sched.switches, sched.max_skew, sched.mean_skew(),
+                   sched.barriers);
     }
     if (cachesim::GEN_STATS)
         predictor->print_stats();
