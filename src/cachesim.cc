@@ -734,7 +734,7 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
 
 int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time) {
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -772,12 +772,28 @@ int access_multi_level(std::vector<BaseCache*> &cache,
 
     PerformanceModel::processCPU(cachesim::instCount - cachesim::prevInstCount);
     cachesim::prevInstCount = cachesim::instCount;
+    // Event time: the L1D access happens at the issue time; each level missed adds its lookup cycles, so before
+    // level i's lookup t is the time of that lookup (kept in a local: cache code may copy packets over it).
+    auto lookup_cycles = [&](int lvl) {
+        switch (cache[lvl]->get_level()) {
+            case CacheLevel::L1D: return PerformanceModel::l1LookupCycles();
+            case CacheLevel::L2:  return PerformanceModel::l2LookupCycles();
+            default:              return PerformanceModel::llcLookupCycles();
+        }
+    };
+    uint64_t t = issue_time;
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
+        access_packet->event_time = t;
+        if (cache[i]->get_level() == CacheLevel::LLC)
+            cachesim::llc_order.arrive(t);
+        if (cachesim::DEBUG_TIMING)
+            fmt::print("TIME {:#x} {} @{}\n", access_packet->address, cache[i]->get_name(), t);
         access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
         //access_packet->aligned_address = align_address(access_packet->aligned_address, access_packet->size);
         hit = cache[i]->try_hit(access_packet);
 
+        t += lookup_cycles(i);   // hit: data back after this level; miss: next level's lookup time
         if (hit) {
             hit_at_level = i;
             break;
@@ -969,9 +985,12 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             PerformanceModel::processLLC(fill_packet->address, true, false);
         } else if (!served_by_l2) {
             PerformanceModel::processLLC(fill_packet->address, false, false);
+            if (cachesim::DEBUG_TIMING)
+                fmt::print("TIME {:#x} memory @{}\n", access_packet->address, t);
             uint64_t before = PerformanceModel::getCycles();
-            PerformanceModel::processMemory(fill_packet->address);
+            PerformanceModel::processMemory(fill_packet->address, t);
             dram_cycles = PerformanceModel::getCycles() - before;
+            t += dram_cycles;
         }
         // P-OPT: the next-ref engine's reads of the pinned columns for this access's LLC replacements. The
         // exclusive LLC is filled only by L1D victims (writebacks), so the engine is off the critical path:
@@ -979,15 +998,19 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         (void)dram_cycles;
         if (POPT::active) POPT::charge_engine(dram_cycles, true);
     }
+    access_packet->event_time = t;   // data back at the core
+    if (cachesim::DEBUG_TIMING)
+        fmt::print("TIME {:#x} done @{}\n", access_packet->address, t);
     return hit_at_level;
 }
 #else
 int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree) {
+            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time) {
 
     assert(cache.size() ==  1);
     access_packet->clear();
+    access_packet->event_time = issue_time;   // no timing model in the single-level build
     eviction_packet->clear();
     fill_packet->clear();
     access_packet->set_address(address);

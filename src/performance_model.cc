@@ -136,31 +136,37 @@ void PerformanceModel::processL1D(uint64_t /*address*/, bool is_hit, bool is_fil
 
 // Optional L2 (--l2). l2_latency comes from the config (default.cfg: 11); it
 // falls back to 11 cycles when a config file does not set it.
-void PerformanceModel::processL2(uint64_t /*address*/, bool is_hit, bool is_fill) {
+uint64_t PerformanceModel::l2LookupCycles() {
+    uint64_t latency = getParam("l2_latency");
+    if (latency == 0) latency = 11;
+    return (latency-1)/2;
+}
+
+uint64_t PerformanceModel::llcLookupCycles() {
+    return (getParam("llc_latency")-1)/2;
+}
+
+void PerformanceModel::processL2(uint64_t /*address*/, bool /*is_hit*/, bool is_fill) {
     uint64_t latency = getParam("l2_latency");
     if (latency == 0) latency = 11;
     if (is_fill) {
         numCycles += (latency+1)/2;
-    } else if (is_hit) {
-        numCycles += (latency-1)/2;
     } else {
-        numCycles += (latency-1)/2;
+        numCycles += l2LookupCycles();   // hit or miss
     }
 }
 
-void PerformanceModel::processLLC(uint64_t /*address*/, bool is_hit, bool is_fill) {
+void PerformanceModel::processLLC(uint64_t /*address*/, bool /*is_hit*/, bool is_fill) {
     if (is_fill) {
         numCycles += (getParam("llc_latency")+1)/2;
-    } else if (is_hit) {
-        numCycles += ((getParam("llc_latency")-1)/2);
     } else {
-        numCycles += ((getParam("llc_latency")-1)/2);
+        numCycles += llcLookupCycles();  // hit or miss
     }
 }
 
-void PerformanceModel::processMemory(const uint64_t address) {
+void PerformanceModel::processMemory(const uint64_t address, uint64_t now_cycles) {
     uint64_t processCycles = 0;
-    uint64_t memoryTicks = (numCycles*1000000.0d/getParam("cpu_frequency"));
+    uint64_t memoryTicks = (now_cycles*1000000.0d/getParam("cpu_frequency"));
     bool shouldRefresh = memoryTicks >= memory.lastRefresh + memory.tREF;
     if (performance::DETAILED_DRAM) {
         //TODO: Implement bus turnaround to switch between read and write

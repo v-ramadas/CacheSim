@@ -35,6 +35,7 @@ void Core::print_stats() const {
 bool Core::step() {
     // This core's cycles: what the (global) timing model gains while it steps.
     const uint64_t cycles_before = PerformanceModel::getCycles();
+    step_global_start_ = cycles_before;
     struct Charge {
         uint64_t before; uint64_t& acc;
         ~Charge() { acc += PerformanceModel::getCycles() - before; }
@@ -101,6 +102,10 @@ bool Core::barrier_line(const std::string& line) {
     return true;
 }
 
+uint64_t Core::clock_now() const {
+    return cycles_ + (PerformanceModel::getCycles() - step_global_start_);
+}
+
 void Core::release_barrier(uint64_t clock) {
     if (clock > cycles_) {
         barrier_wait_cycles_ += clock - cycles_;
@@ -115,13 +120,20 @@ void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reus
     // same way so PC-indexed predictors keep different applications apart (identity for app 0).
     address = translate(address, app_);
     pc = translate(pc, app_);
+    const uint64_t issue_time = clock_now();
     int hit_at_level =
 #ifdef MULTI_LEVEL
     access_multi_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,
-                       predictor_, address, pc, is_read, next_reuse, degree, avg_degree);
+                       predictor_, address, pc, is_read, next_reuse, degree, avg_degree, issue_time);
 #else
     access_single_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,
-                        pc, address, is_read, next_reuse, degree, avg_degree);
+                        pc, address, is_read, next_reuse, degree, avg_degree, issue_time);
+#endif
+#ifdef MULTI_LEVEL
+    // The access's event time when it completes must be the core's clock: both add up the same charges.
+    if (access_packet_.event_time != clock_now() && timing_mismatches_++ == 0)
+        fmt::print(stderr, "core {}: access {:#x} completes at {} but the core's clock is {} (first mismatch)\n",
+                   id_, address, access_packet_.event_time, clock_now());
 #endif
     ++accesses_;
     for (int i = 0; i < hit_at_level && i < (int)misses_.size(); ++i)
@@ -295,7 +307,7 @@ InvariantCounts check_invariants(const std::vector<Core>& cores, uint64_t step, 
     return r;
 }
 
-ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, InvariantStats* inv) {
+ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, InvariantStats* inv, SchedulerKind kind) {
     ScheduleStats st;
     auto check = [&](bool force) {
         if (!inv || check_every == 0 || (!force && st.steps % check_every != 0))
@@ -368,14 +380,21 @@ ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, Invarian
 
         // Next core: the first one after cur (in id order, wrapping) that is not ahead of cur.
         size_t next = n;
-        for (size_t k = 1; k < n; ++k) {
+        if (kind == SchedulerKind::MIN_CLOCK) {
+            for (size_t d = 0; d < n; ++d)        // the runnable core furthest behind (lowest id on ties)
+                if (cores[d].runnable() && (next == n || cores[d].cycles() < cores[next].cycles()))
+                    next = d;
+            if (next == n)
+                next = release();                 // nobody can run: everyone left is at the barrier
+        }
+        for (size_t k = 1; k < n && kind == SchedulerKind::ROUND_ROBIN_SKIP; ++k) {
             size_t d = (cur + k) % n;
             if (cores[d].runnable() && cores[d].cycles() <= cores[cur].cycles()) {
                 next = d;
                 break;
             }
         }
-        if (next == n) {
+        if (next == n && kind == SchedulerKind::ROUND_ROBIN_SKIP) {
             if (cores[cur].runnable()) {
                 next = cur;                       // every other core is ahead: keep going
             } else {

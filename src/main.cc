@@ -63,6 +63,7 @@ uint64_t cachesim::TAG_BDI_BASES = 8;
 uint64_t cachesim::TAG_BDI_DELTA = 10;
 bool cachesim::TAG_BDI_UNCONSTRAINED = false;
 bool cachesim::DEBUG_TAG_BDI = false;
+bool cachesim::DEBUG_TIMING = false;
 bool cachesim::AMOEBA = false;
 AmoebaInsert cachesim::AMOEBA_INSERT = AmoebaInsert::SPAN;
 uint64_t cachesim::AMOEBA_WORDS = 0;
@@ -173,9 +174,15 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets");
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
+    SchedulerKind scheduler = SchedulerKind::MIN_CLOCK;
+    app.add_option("--scheduler", scheduler, "Multicore: which core steps next - min_clock (default: the core with the smallest clock, lowest id on ties; LLC accesses then arrive in time order) or round_robin_skip (the next core in id order whose clock is not ahead of the current one) (YAML: scheduler)")->transform(CLI::CheckedTransformer(std::map<std::string, SchedulerKind>{
+        {"round_robin_skip", SchedulerKind::ROUND_ROBIN_SKIP},
+        {"min_clock", SchedulerKind::MIN_CLOCK},
+    }))->transform(yaml_config::keep_text("scheduler"))->default_str("min_clock");
     uint64_t check_invariants = 0;
     app.add_option("--check-invariants", check_invariants, "Check hierarchy invariants every N schedule steps and at the end (0 = off): words held twice in one cache, in a private level and the LLC, in two levels of one core, or in two cores' private levels; prints the first violation of each kind and a summary (YAML: debug.check_invariants)");
     app.add_flag("--debug-schedule", Core::debug_schedule, "Print a SCHED line for every core step, barrier arrival and release (multicore)");
+    app.add_flag("--debug-timing", cachesim::DEBUG_TIMING, "Print each demand access's event time at every level it looks up, at memory, and when its data is back (TIME lines)");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
     app.add_option("--amoeba-insert", cachesim::AMOEBA_INSERT, "amoeba: words of an L1D victim to store as one block - span (first to last touched word, default), line (whole line)")->transform(CLI::CheckedTransformer(std::map<std::string, AmoebaInsert>{
         {"span", AmoebaInsert::SPAN},
@@ -427,7 +434,7 @@ int main(int argc, char** argv) {
     }
     // Each core reads its trace and issues to its view of the hierarchy; run_cores interleaves them.
     InvariantStats invariants;
-    const ScheduleStats sched = run_cores(cores, check_invariants, &invariants);
+    const ScheduleStats sched = run_cores(cores, check_invariants, &invariants, scheduler);
     if (!sched.error.empty()) {
         fmt::print(stderr, "{}\n", sched.error);
         return 1;
@@ -463,6 +470,10 @@ int main(int argc, char** argv) {
             core.print_stats();
             end = std::max(end, core.cycles());
         }
+        const auto& o = cachesim::llc_order;
+        fmt::print("System: LLC arrival order: demand accesses {} | out of time order {} ({:.2f}%) | late by mean {:.1f} "
+                   "max {} cycles\n", o.accesses, o.out_of_order, o.accesses ? 100.0 * o.out_of_order / o.accesses : 0.0,
+                   o.out_of_order ? (double)o.late_sum / o.out_of_order : 0.0, o.late_max);
         fmt::print("System: cycles {} (latest core clock) | schedule steps {} switches {} max clock skew {} cycles "
                    "mean {:.1f} | barriers {}\n", end, sched.steps, sched.switches, sched.max_skew, sched.mean_skew(),
                    sched.barriers);

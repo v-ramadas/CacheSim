@@ -196,6 +196,12 @@ class PerformanceModel {
     static void updateCycles(const std::string& action, uint64_t numInstructions = 1);
 
     static void processCPU(const uint64_t numInstructions = 1);
+    // Cycles a demand access spends at each level before it hits there or moves on: the instruction's own cycle
+    // stands in for the L1D (IPC 1 on an L1D hit), then half of each lower level's latency (hit or miss alike).
+    // processCPU/processL2/processLLC charge exactly these; Packet::event_time steps by them.
+    static uint64_t l1LookupCycles() { return 1; }
+    static uint64_t l2LookupCycles();
+    static uint64_t llcLookupCycles();
 
     static void processL1D(uint64_t address, bool is_hit, bool is_fill);
 
@@ -203,7 +209,10 @@ class PerformanceModel {
 
     static void processLLC(uint64_t address, bool is_hit, bool is_fill);
 
-    static void processMemory(const uint64_t numInstructions = 1);
+    // A memory access by the request that reaches DRAM at core cycle now_cycles (its Packet::event_time). The
+    // DRAM model's time (refresh, bank-group stalls) is taken from the request, not from the cycle counter,
+    // which with several cores is the sum of all their clocks.
+    static void processMemory(uint64_t address, uint64_t now_cycles);
 
     private:
     struct Memory {

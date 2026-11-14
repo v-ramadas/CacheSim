@@ -76,8 +76,11 @@ Base+Delta tags, P-OPT paths, debug switches, and the timing model (core, cache 
 (`inc/core.h`). `trace` (`--trace`) runs on core 0; `traces` (`--traces t0 t1 ...`, `none` = idle) assigns one trace
 per core id.
 
-- **Scheduling:** after each memory access, control moves to the next core (in id order) whose clock is not ahead of
-  the current one; if every other core is ahead, the current core keeps running. The last `System:` line reports
+- **Scheduling** (`scheduler`, `--scheduler`): after each memory access, `min_clock` (default) steps the core with the
+  smallest clock (lowest id on ties), so demand accesses reach the LLC in time order. `round_robin_skip` moves to
+  the next core in id order whose clock is not ahead of the current one (the current core keeps running if every
+  other core is ahead); with 8 cores about 5% of LLC accesses then arrive out of time order (by ~39 cycles), which
+  changed LLC misses by under 0.05% and per-core cycles by under 0.15% on the pr web-BerkStan mix. The last `System:` line reports
   the run time (latest core clock) and the largest and mean clock skew: the gap between the running cores' clocks,
   measured after every step (cores waiting at a barrier or finished are excluded).
 - **Address spaces:** `core_apps` (`--core-apps`) gives each core an application id. The physical address the caches
@@ -103,6 +106,13 @@ per core id.
   from its schedule log against the scheduling rule and barrier semantics) and `--real` (2 and 8 cores on real
   traces with set dueling and invariant checks, minutes).
 - `--debug-start` / `--debug-end` compare against the instruction count summed over all cores.
+- **Event times:** every demand access carries `event_time` (`Packet`): the issuing core's clock at its L1D
+  access, advanced by each level's lookup cycles as it misses, and the time its data is back when it completes
+  (always equal to the core's clock; a mismatch is reported). `--debug-timing` prints the times. The DRAM model
+  takes its notion of "now" (refresh, bank-group stalls) from the request's time; it used the cycle counter, which
+  with several cores is the sum of their clocks (refresh fired too often). The `System: LLC arrival order` line
+  counts demand accesses that reach the LLC earlier in time than one it already saw (0 with `min_clock`; 8 cores
+  with `round_robin_skip` on the pr web-BerkStan mix: 4.9%, late by 39 cycles on average, at most 249).
 - **Not yet:** coherence (cores sharing a line keep duplicate copies). `popt`, `belady`, `grasp` and
   `--l1-amoeba` need a single active core.
 

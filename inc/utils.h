@@ -116,6 +116,7 @@ namespace cachesim {
     extern bool TAG_BDI_UNCONSTRAINED;
     // Print every Base+Delta encode / lookup / release / base replacement.
     extern bool DEBUG_TAG_BDI;
+    extern bool DEBUG_TIMING;   // --debug-timing: per-access event times at each level
     // Amoeba-Cache LLC (--replacement-policy amoeba, 8B blocks): each set is an
     // array of 64-bit words holding variable-size blocks, each a tag word plus
     // a contiguous run of data words from one 64B line (Kumar et al., MICRO
@@ -186,6 +187,11 @@ struct Packet {
     uint64_t pc;
     uint64_t address;            // physical address = translate(vaddr, app): caches index and tag with this
     uint64_t vaddr = 0;          // virtual address, as in the trace; kept in step by set_address()
+    // Timestamp (core cycles) of this packet's next event. A demand access starts with the issuing core's clock
+    // (its L1D access); each level it misses advances it by that level's lookup cycles, so before a lookup it is
+    // the time of that lookup; when the access completes it is the time the data returns (= the core's clock).
+    // Fill, eviction and invalidation packets copy the access's value but are not timed yet.
+    uint64_t event_time = 0;
     uint64_t aligned_address;
     uint64_t size;
     std::vector<uint64_t> blocks;
@@ -286,6 +292,7 @@ struct Packet {
         pc = packet.pc;
         address = packet.address;
         vaddr = packet.vaddr;
+        event_time = packet.event_time;
         aligned_address = packet.aligned_address;
         size = packet.size;
         blocks = packet.blocks;

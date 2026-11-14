@@ -714,15 +714,33 @@ class Cache: public BaseCache {
     }
 };
 
+// Order in which demand accesses reach the shared LLC, by their event times. An access is out of time order
+// when its time is earlier than the latest time the LLC has already seen (a core further ahead got there first
+// in simulation order); "late" is that difference. One core: never out of order.
+struct ArrivalOrder {
+    uint64_t accesses = 0, out_of_order = 0, late_sum = 0, late_max = 0, latest = 0;
+    void arrive(uint64_t t) {
+        ++accesses;
+        if (t < latest) {
+            ++out_of_order;
+            late_sum += latest - t;
+            late_max = std::max(late_max, latest - t);
+        } else {
+            latest = t;
+        }
+    }
+};
+namespace cachesim { inline ArrivalOrder llc_order; }
+
 // Both return the index of the level that hit (cache.size() = memory).
 #ifdef MULTI_LEVEL
 int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0);
 #else
 int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
+            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0);
 #endif
 
 // Per-PC hub stats (always printed, top PC_HUB_TOP_N PCs by accesses + the rest + all): per-PC accesses and per-level misses split by data class, from the trace's hubs.py labels

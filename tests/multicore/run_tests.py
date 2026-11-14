@@ -39,8 +39,14 @@ def misses(n0, n1, base, fmt="instructions"):        # accesses n0..n1-1 to line
 
 class Run:
     counter = 0
+    scheduler = "min_clock"        # scheduler for runs that do not name one (main() also reruns with the other)
 
-    def __init__(self, d, traces, args=(), binary=BIN, fmt="instructions", cores=None, config="two_level"):
+    def __init__(self, d, traces, args=(), binary=BIN, fmt="instructions", cores=None, config="two_level",
+                 scheduler=None):
+        scheduler = scheduler or Run.scheduler
+        self.scheduler = next((args[i + 1] for i in range(len(args) - 1) if args[i] == "--scheduler"), scheduler)
+        if "--scheduler" not in args:
+            args = [*args, "--scheduler", scheduler]
         self.paths = []
         for lines in traces:
             if lines is None:
@@ -82,7 +88,7 @@ def check(name, cond, detail=""):
     return cond
 
 
-def replay(r, n):
+def replay(r, n, mode="round_robin_skip"):
     """Re-derive every scheduling decision from the log. Returns (ok, message, waits per core).
 
     State: clock per core, waiting (arrived, not released), finished. After each step of core `prev`:
@@ -139,7 +145,9 @@ def replay(r, n):
                 return False, f"event {k}: core {cur} stepped while waiting/finished", waits
             if prev is not None:
                 runnable = [c for c in sorted(active) if c not in waiting and c not in finished]
-                if released:
+                if mode == "min_clock":
+                    exp = min(runnable, key=lambda c: (clock[c], c), default=None)
+                elif released:
                     exp = runnable[0] if runnable else None
                 else:
                     exp = None
@@ -162,9 +170,9 @@ def replay(r, n):
     return True, "", waits
 
 
-def common_checks(r, n, barriers_expected=None):
+def common_checks(r, n, barriers_expected=None, mode=None):
     check("run succeeds", r.rc == 0, r.err[-400:])
-    good, msg, waits = replay(r, n)
+    good, msg, waits = replay(r, n, mode or r.scheduler)
     check("every decision follows the rule and the barrier semantics", good, msg)
     check("barrier_wait_cycles match the log",
           all(r.cores.get(c, {}).get("wait", 0) == waits[c] for c in range(n)),
@@ -184,6 +192,9 @@ def t_two_core_barriers(d):
     # Running-core gap peaks after the first step: core 0 at 131 (a miss) while core 1 is still at 0.
     check("max clock skew 131", "max clock skew 131 cycles" in r.system, r.system)
     check("fast core waited, slow core did not", r.cores[0]["wait"] > 0 and r.cores[1]["wait"] == 0, str(r.cores))
+    order = next((l for l in r.out.splitlines() if l.startswith("System: LLC arrival order")), "")
+    # With two cores the rule always runs the core that is behind, so LLC arrivals are in time order.
+    check("2 cores: LLC demand accesses arrive in time order", "out of time order 0 " in order, order)
 
 
 def t_three_core_barriers(d):
@@ -308,6 +319,49 @@ def t_single_level_build(d):
     common_checks(r, 2, 1)
 
 
+def t_event_times(d):
+    print("packet event times: per-level lookup times, data-back time = core clock")
+    tiny = [acc(1, 0x10000000), acc(2, 0x10000000), acc(3, 0x10000040), acc(4, 0x10000000)]
+    cmd = [str(BIN), "--config", str(REPO / "configs/three_level.yaml"), "--trace-format", "instructions",
+           "--cache-block-size", "64", "--replacement-policy", "srrip", "--debug-timing"]
+    path = d / "tiny_time.txt"
+    path.write_text("\n".join(tiny) + "\n")
+    out = subprocess.run(cmd + ["--trace", str(path)], capture_output=True, text=True, cwd=REPO)
+    got = [l for l in out.stdout.splitlines() if l.startswith("TIME")]
+    # miss: L1D t, L2 t+1, LLC t+1+5, memory t+1+5+9, back t+15+121; L1D hit: back t+1
+    want = ["TIME 0x10000000 L1D @0", "TIME 0x10000000 L2 @1", "TIME 0x10000000 LLC @6",
+            "TIME 0x10000000 memory @15", "TIME 0x10000000 done @136",
+            "TIME 0x10000000 L1D @136", "TIME 0x10000000 done @137",
+            "TIME 0x10000040 L1D @137", "TIME 0x10000040 L2 @138", "TIME 0x10000040 LLC @143",
+            "TIME 0x10000040 memory @152", "TIME 0x10000040 done @273",
+            "TIME 0x10000000 L1D @273", "TIME 0x10000000 done @274"]
+    check("TIME lines follow the per-level charges", got == want, "\n".join(got))
+    check("no completion-time mismatch reported", "mismatch" not in out.stderr, out.stderr[-300:])
+    tr = [misses(1, 20, 0x10000000) + ["BARRIER:1"] + hits(20, 40, 0x18000000),
+          hits(1, 30, 0x20000000) + ["BARRIER:1"] + misses(30, 35, 0x20000000)]
+    r = Run(d, tr, config="three_level")
+    check("2 cores with a barrier: no completion-time mismatch", r.rc == 0 and "mismatch" not in r.err, r.err[-300:])
+
+
+def t_min_clock(d):
+    print("min_clock: LLC arrivals in time order with 4 active cores")
+    a = hits(1, 4, 0x10000000) + ["BARRIER:1"] + hits(4, 9, 0x10000000) + ["BARRIER:2"] + hits(9, 10, 0x10000000)
+    b = misses(1, 6, 0x20000000) + ["BARRIER:1"] + misses(6, 7, 0x20000000) + ["BARRIER:2"] + \
+        misses(7, 9, 0x20000000)
+    c = misses(1, 3, 0x40000000) + hits(3, 6, 0x50000000) + ["BARRIER:1"] + misses(6, 9, 0x40000000) + ["BARRIER:2"]
+    r = Run(d, [a, b, c], ["--scheduler", "min_clock"])
+    common_checks(r, 3, 2)
+    tr = [misses(1, 30, 0x10000000), None, hits(1, 40, 0x30000000),
+          misses(1, 10, 0x40000000) + hits(10, 30, 0x48000000), misses(1, 25, 0x60000000)]
+    r = Run(d, tr, ["--scheduler", "min_clock"], config="three_level")
+    common_checks(r, 5, 0)
+    order = next((l for l in r.out.splitlines() if l.startswith("System: LLC arrival order")), "")
+    check("4 active cores: LLC demand accesses arrive in time order", "out of time order 0 " in order, order)
+    r = Run(d, tr, ["--scheduler", "round_robin_skip"], config="three_level")
+    order = next((l for l in r.out.splitlines() if l.startswith("System: LLC arrival order")), "")
+    print(f"    (same traces, round_robin_skip: {order[len('System: LLC arrival order: '):]})")
+
+
 # ------------------------------------------------------------------------------------------------ real traces
 def real_run(args, label):
     cmd = [str(BIN), "--config", str(REPO / "configs/three_level.yaml"), "--check-invariants", "4000000", *args]
@@ -318,6 +372,7 @@ def real_run(args, label):
     inv = next((l for l in out.splitlines() if l.startswith("Invariants:")), "")
     print(f"  {label}: " + next((l for l in out.splitlines() if l.startswith("System: cycles")), ""))
     check(f"{label}: completes", p.returncode == 0, p.stderr[-300:])
+    check(f"{label}: no completion-time mismatch", "mismatch" not in p.stderr, p.stderr[-300:])
     check(f"{label}: per-core LLC misses sum to the LLC's", llc is not None and int(llc[1]) == per_core,
           f"{llc[1] if llc else None} vs {per_core}")
     zero = all(int(x) == 0 for x in re.findall(r"(?:cache|LLC|core|levels) (\d+)", inv))
@@ -341,8 +396,14 @@ def main():
         d = Path(tmp)
         for t in (t_two_core_barriers, t_three_core_barriers, t_rule_with_idle_core, t_finish_while_others_wait,
                   t_finish_before_barrier, t_marker_forms, t_iters, t_addresses_format, t_single_core, t_mismatch,
-                  t_determinism, t_invariants, t_single_level_build):
+                  t_determinism, t_invariants, t_single_level_build, t_event_times, t_min_clock):
             t(d)
+        print("--- again with --scheduler round_robin_skip")
+        Run.scheduler = "round_robin_skip"
+        for t in (t_two_core_barriers, t_three_core_barriers, t_rule_with_idle_core, t_finish_while_others_wait,
+                  t_finish_before_barrier, t_marker_forms, t_iters, t_addresses_format, t_single_level_build):
+            t(d)
+        Run.scheduler = "min_clock"
     if args.real:
         real_tests()
     print("ALL PASS" if not FAILS else f"FAILURES ({len(FAILS)}): " + "; ".join(FAILS))
