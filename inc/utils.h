@@ -166,9 +166,13 @@ inline const char* to_string(CacheLevel level) {
 // Lets fmt print a CacheLevel with "{}".
 inline const char* format_as(CacheLevel level) { return to_string(level); }
 
+// Virtual -> physical address. No page table is modeled yet: physical = virtual.
+inline uint64_t translate(uint64_t vaddr) { return vaddr; }
+
 struct Packet {
     uint64_t pc;
-    uint64_t address;
+    uint64_t address;            // virtual address, as in the trace; caches index and tag with this
+    uint64_t paddr = 0;          // physical address = translate(address); kept in step by set_address()
     uint64_t aligned_address;
     uint64_t size;
     std::vector<uint64_t> blocks;
@@ -202,8 +206,15 @@ struct Packet {
     Packet(const Packet &packet) = default;
      ~Packet() = default;
 
+    // Set the (virtual) address and its physical address together.
+    void set_address(uint64_t vaddr) {
+        address = vaddr;
+        paddr = vaddr == UINT64_MAX ? UINT64_MAX : translate(vaddr);
+    }
+
     void clear() {
         address = 0;
+        paddr = 0;
         aligned_address = 0;
         size = 0;
         blocks.clear();
@@ -231,6 +242,7 @@ struct Packet {
 
     void clear_address() {
         address = 0;
+        paddr = 0;
         aligned_address = 0;
         size = 0;
         blocks.clear();
@@ -253,13 +265,14 @@ struct Packet {
     }
 
     void print() {
-        fmt::print("Packet pc {:#x} address {:#x} aligned_address {:#x} size {} is_read {} is_high_reuse {} is_hub_node {} footprint {:#x} serviced_from_llc {} reuse_probability {} reuse_distance {} next_reuse {} l1_hits {} degree {} avg_degree {:4f}\n",
-            pc, address, aligned_address, size, is_read, is_high_reuse, is_hub_node, footprint, serviced_from_llc, reuse_probability, reuse_distance, next_reuse, l1_hits, degree, avg_degree);
+        fmt::print("Packet pc {:#x} address {:#x} paddr {:#x} aligned_address {:#x} size {} is_read {} is_high_reuse {} is_hub_node {} footprint {:#x} serviced_from_llc {} reuse_probability {} reuse_distance {} next_reuse {} l1_hits {} degree {} avg_degree {:4f}\n",
+            pc, address, paddr, aligned_address, size, is_read, is_high_reuse, is_hub_node, footprint, serviced_from_llc, reuse_probability, reuse_distance, next_reuse, l1_hits, degree, avg_degree);
     }
 
     Packet& operator=(const Packet &packet) {
         pc = packet.pc;
         address = packet.address;
+        paddr = packet.paddr;
         aligned_address = packet.aligned_address;
         size = packet.size;
         blocks = packet.blocks;

@@ -368,12 +368,12 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     }
     sets[set_idx]->handle_evict(eviction_packet);
     if (eviction_packet->blocks.size() == 0) {
-        eviction_packet->address = UINT64_MAX;
+        eviction_packet->set_address(UINT64_MAX);
     } else {
-        eviction_packet->address = *(std::find_if(eviction_packet->blocks.begin(),
+        eviction_packet->set_address(*(std::find_if(eviction_packet->blocks.begin(),
             eviction_packet->blocks.end(), [](uint64_t n) {
                 return n != UINT64_MAX;
-            }));
+            })));
     }
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     num_blocks_used += count_footprint(eviction_packet->footprint);
@@ -431,12 +431,12 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     evictions+=eviction_packet->blocks.size();
     evicted_words += eviction_packet->blocks.size() * (sets[set_idx]->get_block_size() / 8);
     if (eviction_packet->blocks.size() == 0) {
-        eviction_packet->address = UINT64_MAX;
+        eviction_packet->set_address(UINT64_MAX);
     } else {
-        eviction_packet->address = *(std::find_if(eviction_packet->blocks.begin(),
+        eviction_packet->set_address(*(std::find_if(eviction_packet->blocks.begin(),
             eviction_packet->blocks.end(), [](uint64_t n) {
                 return n != UINT64_MAX;
-            }));
+            })));
     }
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     sets[set_idx]->handle_fill(fill_packet);
@@ -475,19 +475,19 @@ void Cache<T>::handle_invalidate(PacketPtr packet) {
         //invalidate_packet.blocks.resize(num_blocks);
         //invalidate_packet.block_degrees.resize(num_blocks);
         //invalidate_packet.block_serviced_from_llc.resize(num_blocks);
-        invalidate_packet.address = packet->address;
+        invalidate_packet.set_address(packet->address);
         invalidate_packet.size = packet->size;
         invalidate_packet.aligned_address = align_address(invalidate_packet.address, CACHELINE_SIZE);
         sets[set_idx]->handle_invalidate(&invalidate_packet, 0);
     } else {
         //invalidate_packet.blocks.resize(1);
         for (uint64_t block = 0; block < num_blocks; block ++) {
-            invalidate_packet.address = aligned_address + block*block_size;
+            invalidate_packet.set_address(aligned_address + block*block_size);
             invalidate_packet.size = block_size;
             sets[set_idx]->handle_invalidate(&invalidate_packet, block);
             //fmt::print("Invalidated address {:#x} block {}, serviced_from_llc {}\n", address, block, invalidate_packet.serviced_from_llc);
         }
-        invalidate_packet.address = packet->address;
+        invalidate_packet.set_address(packet->address);
         invalidate_packet.size = packet->size;
     }
 
@@ -684,7 +684,7 @@ static std::vector<Packet> split_amoeba_victims(const Packet& ev) {
         auto it = std::find_if(out.begin(), out.end(), [line](const Packet& p) { return p.address == line; });
         if (it == out.end()) {
             Packet p = ev;
-            p.address = p.aligned_address = line;
+            p.set_address(p.aligned_address = line);
             p.size = CACHELINE_SIZE;
             p.footprint = 0;
             p.present_mask = 0;
@@ -718,7 +718,7 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
     p.degree = access.degree;
     p.avg_degree = access.avg_degree;
     p.next_reuse = access.next_reuse;
-    p.address = p.aligned_address = align_address(access.address, CACHELINE_SIZE);
+    p.set_address(p.aligned_address = align_address(access.address, CACHELINE_SIZE));
     p.size = CACHELINE_SIZE;
     p.present_mask = words;
     p.footprint = footprint & words;
@@ -738,7 +738,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
-    access_packet->address = address;
+    access_packet->set_address(address);
     access_packet->is_read = is_read;
     access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
     access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
@@ -819,7 +819,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                 // the LLC copy holds) around the demanded one; the rest of the
                 // line is dropped.
                 const uint64_t line = align_address(access_packet->address, CACHELINE_SIZE);
-                fill_packet->address = access_packet->address;
+                fill_packet->set_address(access_packet->address);
                 fill_packet->size = CACHELINE_SIZE;
                 fill_packet->clear_blocks();
                 for (uint64_t w = 0; w < CACHELINE_SIZE / 8; w++) {
@@ -853,7 +853,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             // fetches only around the missing one, so it is not invalidated.
             const int lowest = cachesim::L1_AMOEBA ? 1 : 0;
             for (int i = num_levels - 1; i >= lowest; i--) {
-                invalidation_packet->address = line_address;
+                invalidation_packet->set_address(line_address);
                 invalidation_packet->size = line_size;
                 cache[i]->handle_invalidate(invalidation_packet);
                 line_footprint |= invalidation_packet->footprint;
@@ -867,7 +867,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             // Copying an invalidation packet above clears next_reuse.
             fill_packet->next_reuse = access_packet->next_reuse;
             if (cachesim::L1_AMOEBA) {   // from memory: every word is available
-                fill_packet->address = access_packet->address;
+                fill_packet->set_address(access_packet->address);
                 fill_packet->present_mask = 0xff;
                 fill_packet->clear_blocks();
             }
@@ -990,7 +990,7 @@ int access_single_level(std::vector<BaseCache*> &cache,
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
-    access_packet->address = address;
+    access_packet->set_address(address);
     access_packet->is_read = is_read;
     access_packet->size = cache[0]->get_block_size(cache[0]->get_set_idx(access_packet->address));
     access_packet->aligned_address = align_address(access_packet->address, access_packet->size);
