@@ -125,6 +125,18 @@ set_dueling:                         # 8B LLC only; off for 64B and several poli
   log_metrics: false
 
 memory:
+  # DRAM timing: simple (default) = the original formula (no queue, no writebacks); sniper = Sniper's
+  # constant DRAM model (fixed latency + 64B transfer at per-controller bandwidth + queue delay; 64B
+  # writebacks occupy the queue); with detailed_dram our bank/row latency replaces the fixed latency.
+  # The sniper parameters below only apply with model: sniper.
+  model: simple
+  latency_ns: 100                    # Sniper perf_model/dram/latency (base.cfg)
+  per_controller_bandwidth: 5        # GB/s per controller (base.cfg)
+  num_controllers: -1                # -1: one controller every controllers_interleaving cores
+  controllers_interleaving: 0        # 0: one controller per core (base.cfg)
+  home_lookup_param: 6               # lines interleave across controllers every 2^6 = 64B
+  queue_enabled: true
+  queue_model: history_list          # history_list | windowed_mg1 | basic | contention
   detailed_dram: false
   frequency: 1600
   data_rate: 3200
@@ -143,6 +155,17 @@ memory:
   tRAS: 52
   refresh_period: 32
   refreshes_per_period: 8192
+
+queue_model:                         # Sniper queue_model/* parameters
+  history_list:
+    max_list_size: 100
+    analytical_model_enabled: true
+  windowed_mg1:
+    window_size: 1000                # ns
+  basic:
+    moving_avg_enabled: true
+    moving_avg_window_size: 1024
+    moving_avg_type: arithmetic_mean # arithmetic_mean | geometric_mean | median
 
 debug:
   all: false

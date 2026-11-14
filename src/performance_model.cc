@@ -164,53 +164,110 @@ void PerformanceModel::processLLC(uint64_t /*address*/, bool /*is_hit*/, bool is
     }
 }
 
-void PerformanceModel::processMemory(const uint64_t address, uint64_t now_cycles) {
+uint64_t PerformanceModel::detailedMemoryTicks(const uint64_t address, uint64_t memoryTicks, bool shouldRefresh) {
     uint64_t processCycles = 0;
-    uint64_t memoryTicks = (now_cycles*1000000.0d/getParam("cpu_frequency"));
-    bool shouldRefresh = memoryTicks >= memory.lastRefresh + memory.tREF;
-    if (performance::DETAILED_DRAM) {
-        //TODO: Implement bus turnaround to switch between read and write
-        // Refresh
-        if (shouldRefresh) {
-            memory.lastRefresh = memoryTicks;
-            processCycles += memory.tRFC;
-            std::fill(memory.openRowList.begin(), memory.openRowList.end(), UINT64_MAX);
-        }
-    
-        // Bank Access
-        uint64_t rank = memory.get_value(address, memory.rank_idx_max, memory.rank_idx_min);;
-        uint64_t bankgroup = memory.get_value(address, memory.bankgroup_idx_max, memory.bankgroup_idx_min); 
-        bankgroup = rank*getParam("memory_bankgroups"s) + bankgroup;
-        uint64_t bank = memory.get_value(address, memory.bank_idx_max, memory.bank_idx_min);
-        bank = bankgroup*getParam("memory_banks"s) + bank;
-        //TODO: Bus congestion
-        if (memory.bankgroupReadyStall[bankgroup] > memoryTicks) {
-            processCycles += (memory.bankgroupReadyStall[bankgroup]-memoryTicks) + memory.busReturnTime;
-        } else {
-            processCycles += memory.busReturnTime;
-        }
-        memory.bankgroupReadyStall[bankgroup] = memoryTicks + memory.busReturnTime + memory.busBankgroupStall;
-    
-        // Service Request
-        uint64_t row = memory.get_value(address, memory.row_idx_max, memory.row_idx_min);
-        if (memory.openRowList[bank] == row) {
-            processCycles++;
-        } else if (memory.openRowList[bank] == UINT64_MAX) {
-            // No open row
-            processCycles += memory.tRCD;
-            memory.openRowList[bank] = row;
-        } else {
-            processCycles += memory.tRP + memory.tRCD;
-            memory.openRowList[bank] = row;
-        }
-        processCycles += memory.tCAS;
-    } else {
-        processCycles += memory.tCAS + memory.tRCD + memory.busReturnTime;
-        if (shouldRefresh) {
-            memory.lastRefresh = memoryTicks;
-            processCycles += memory.tRFC;
-        }
+    //TODO: Implement bus turnaround to switch between read and write
+    // Refresh
+    if (shouldRefresh) {
+        memory.lastRefresh = memoryTicks;
+        processCycles += memory.tRFC;
+        std::fill(memory.openRowList.begin(), memory.openRowList.end(), UINT64_MAX);
     }
 
-    numCycles += uint64_t((processCycles/1000000.0d)*getParam("cpu_frequency"));
+    // Bank Access
+    uint64_t rank = memory.get_value(address, memory.rank_idx_max, memory.rank_idx_min);;
+    uint64_t bankgroup = memory.get_value(address, memory.bankgroup_idx_max, memory.bankgroup_idx_min); 
+    bankgroup = rank*getParam("memory_bankgroups"s) + bankgroup;
+    uint64_t bank = memory.get_value(address, memory.bank_idx_max, memory.bank_idx_min);
+    bank = bankgroup*getParam("memory_banks"s) + bank;
+    //TODO: Bus congestion
+    if (memory.bankgroupReadyStall[bankgroup] > memoryTicks) {
+        processCycles += (memory.bankgroupReadyStall[bankgroup]-memoryTicks) + memory.busReturnTime;
+    } else {
+        processCycles += memory.busReturnTime;
+    }
+    memory.bankgroupReadyStall[bankgroup] = memoryTicks + memory.busReturnTime + memory.busBankgroupStall;
+
+    // Service Request
+    uint64_t row = memory.get_value(address, memory.row_idx_max, memory.row_idx_min);
+    if (memory.openRowList[bank] == row) {
+        processCycles++;
+    } else if (memory.openRowList[bank] == UINT64_MAX) {
+        // No open row
+        processCycles += memory.tRCD;
+        memory.openRowList[bank] = row;
+    } else {
+        processCycles += memory.tRP + memory.tRCD;
+        memory.openRowList[bank] = row;
+    }
+    processCycles += memory.tCAS;
+    return processCycles;
+}
+
+void PerformanceModel::initDram(uint32_t num_cores) {
+    if (getParam("cpu_frequency") == 0)
+        throw std::runtime_error("Fatal: cpu_frequency is 0 (needed to convert DRAM nanoseconds to cycles)");
+    sniper_dram.init(sniper_cfg, num_cores, 64);
+    fs_remainder.assign(num_cores, 0);
+}
+
+void PerformanceModel::processMemory(const uint64_t address, uint64_t now_cycles, uint32_t core) {
+    uint64_t memoryTicks = (now_cycles*1000000.0d/getParam("cpu_frequency"));
+    bool shouldRefresh = memoryTicks >= memory.lastRefresh + memory.tREF;
+
+    if (dram_model == DramModel::SIMPLE) {
+        uint64_t processCycles = 0;
+        if (performance::DETAILED_DRAM) {
+            processCycles = detailedMemoryTicks(address, memoryTicks, shouldRefresh);
+        } else {
+            processCycles += memory.tCAS + memory.tRCD + memory.busReturnTime;
+            if (shouldRefresh) {
+                memory.lastRefresh = memoryTicks;
+                processCycles += memory.tRFC;
+            }
+        }
+        numCycles += uint64_t((processCycles/1000000.0d)*getParam("cpu_frequency"));
+        return;
+    }
+
+    // Sniper: the request reaches its controller at the core's true time (cycles plus carried femtoseconds).
+    if (core >= fs_remainder.size())
+        fs_remainder.resize(core + 1, 0);
+    const uint64_t period = periodFs();
+    const sniper::fs_t pkt_time = now_cycles * period + fs_remainder[core];
+    sniper::DramController& ctrl = sniper_dram.controller(address);
+    sniper::fs_t latency;
+    if (performance::DETAILED_DRAM) {
+        uint64_t ours = uint64_t((detailedMemoryTicks(address, memoryTicks, shouldRefresh)/1000000.0d)*getParam("cpu_frequency"));
+        latency = ctrl.getQueueAndTransfer(pkt_time, 64) + ours * period;
+    } else {
+        latency = ctrl.getAccessLatency(pkt_time, 64);
+    }
+    sniper_dram.reads++;
+    sniper_dram.read_latency_sum += latency;
+    sniper_dram.read_queue_sum += ctrl.last_queue_delay;
+    sniper::fs_t owed = latency + fs_remainder[core];
+    numCycles += owed / period;
+    fs_remainder[core] = owed % period;
+}
+
+void PerformanceModel::writebackMemory(const uint64_t address, uint64_t now_cycles, uint32_t core) {
+    if (dram_model == DramModel::SIMPLE)
+        return;
+    if (core >= fs_remainder.size())
+        fs_remainder.resize(core + 1, 0);
+    const sniper::fs_t pkt_time = now_cycles * periodFs() + fs_remainder[core];
+    sniper::DramController& ctrl = sniper_dram.controller(address);
+    // Sniper's putDataToDram goes through the same getAccessLatency; the evicting core does not wait for it.
+    if (performance::DETAILED_DRAM)
+        ctrl.getQueueAndTransfer(pkt_time, 64);
+    else
+        ctrl.getAccessLatency(pkt_time, 64);
+    sniper_dram.writes++;
+    sniper_dram.write_queue_sum += ctrl.last_queue_delay;
+}
+
+void PerformanceModel::printDramStats() {
+    if (dram_model == DramModel::SNIPER && sniper_dram.ready())
+        sniper_dram.print_stats();
 }

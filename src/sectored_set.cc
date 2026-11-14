@@ -17,6 +17,10 @@ void SectoredSet::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
 void SectoredSet::fill_packet(PacketPtr packet, uint64_t way_idx) {
+        for (uint64_t k = 0; k < way_sectors[way_idx].sectors.size(); k++)
+            if (way_sectors[way_idx].valid[k] && way_sectors[way_idx].dirty[k] && way_sectors[way_idx].sectors[k] != UINT64_MAX)
+                for (uint64_t off = 0; off < block_size; off += 8)
+                    packet->dirty_addrs.push_back(way_sectors[way_idx].sectors[k] + off);
         packet->pc = pc[way_idx];
 
         packet->next_reuse = next_reuse[way_idx];
@@ -243,6 +247,10 @@ void SectoredSet::handle_evict(PacketPtr packet) {
             packet->block_degrees.push_back(way_sectors[way_idx].degree[sector_idx]);
             packet->block_serviced_from_llc.push_back(way_sectors[way_idx].block_serviced_from_llc[sector_idx]);
             packet->block_prev_counter.push_back(way_sectors[way_idx].block_prev_counter[sector_idx]);
+            if (way_sectors[way_idx].valid[sector_idx] && way_sectors[way_idx].dirty[sector_idx] &&
+                way_sectors[way_idx].sectors[sector_idx] != UINT64_MAX)
+                for (uint64_t off = 0; off < block_size; off += 8)
+                    packet->dirty_addrs.push_back(way_sectors[way_idx].sectors[sector_idx] + off);
             //fmt::print("Level 0 Evicting address {:#x} sector {} counter {} serviced_from_llc {} vector size {} val {}\n",
 //                    way_sectors[way_idx].sectors[sector_idx], sector_idx, way_sectors[way_idx].block_serviced_from_llc[sector_idx], serviced_from_llc[way_idx], packet->block_serviced_from_llc.size(), packet->block_serviced_from_llc[sector_idx]);
 
@@ -307,3 +315,29 @@ void SectoredSet::handle_invalidate(PacketPtr packet, uint64_t block_num) {
 }
 
 
+
+bool SectoredSet::mark_dirty(uint64_t word) {
+    auto way = std::find(ways.begin(), ways.end(), align_address(word, CACHELINE_SIZE));
+    if (way == ways.end())
+        return false;
+    auto& sec = way_sectors[std::distance(ways.begin(), way)];
+    uint64_t block = align_address(word, block_size);
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.sectors[k] == block) {
+            sec.dirty[k] = true;
+            return true;
+        }
+    return false;
+}
+
+bool SectoredSet::holds_word(uint64_t word) const {
+    auto way = std::find(ways.begin(), ways.end(), align_address(word, CACHELINE_SIZE));
+    if (way == ways.end())
+        return false;
+    const auto& sec = way_sectors[std::distance(ways.begin(), way)];
+    uint64_t block = align_address(word, block_size);
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.sectors[k] == block)
+            return true;
+    return false;
+}

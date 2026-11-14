@@ -189,6 +189,7 @@ def t_two_core_barriers(d):
         misses(7, 8, 0x20000000)
     r = Run(d, [fast, slow])
     common_checks(r, 2, 2)
+    # (simple DRAM model: a miss to memory costs 131 cycles in two_level.)
     # Running-core gap peaks after the first step: core 0 at 131 (a miss) while core 1 is still at 0.
     check("max clock skew 131", "max clock skew 131 cycles" in r.system, r.system)
     check("fast core waited, slow core did not", r.cores[0]["wait"] > 0 and r.cores[1]["wait"] == 0, str(r.cores))
@@ -362,6 +363,54 @@ def t_min_clock(d):
     print(f"    (same traces, round_robin_skip: {order[len('System: LLC arrival order: '):]})")
 
 
+def t_sniper_timing(d):
+    print("Sniper DRAM timing: 100 ns + 64B at 5 GB/s = 112.8125 ns = 451.25 cycles at 4 GHz, quarter cycles carried")
+    tiny = [acc(i + 1, 0x10000000 + i * 0x100000) for i in range(8)]       # 8 misses to memory
+    path = d / "sniper_time.txt"
+    path.write_text("\n".join(tiny) + "\n")
+    cmd = [str(BIN), "--config", str(REPO / "configs/three_level.yaml"), "--trace", str(path), "--trace-format",
+           "instructions", "--cache-block-size", "64", "--replacement-policy", "srrip", "--debug-timing",
+           "--dram-model", "sniper", "--dram-latency", "100", "--dram-bandwidth", "5"]
+    out = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO).stdout
+    mem = [int(x) for x in re.findall(r"memory @(\d+)", out)]
+    done = [int(x) for x in re.findall(r"done @(\d+)", out)]
+    lat = [b - a for a, b in zip(mem, done)]
+    # Each miss owes 451.25 cycles: 451, 451, 451, 452 (the four quarters), repeating.
+    check("memory latencies 451,451,451,452 repeating", lat == [451, 451, 451, 452] * 2, str(lat))
+    dram = next((l for l in out.splitlines() if l.startswith("DRAM")), "")
+    check("average read latency 112.812 ns, no queueing for one core", "avg read latency 112.812 ns" in dram
+          and "reads 0.000 ns" in dram, dram)
+
+
+def t_writebacks(d):
+    print("dirty words and 64B writebacks (L1D 1x1 line, LLC 1 set x 2 ways; 64B and 8B LLC blocks)")
+    L = lambda i: 0x10000000 + i * 0x1000
+    w = lambda n, x: acc(n, x, write=True)
+    cases = {   # name: (trace, DRAM reads, DRAM writes)
+        "read only": ([acc(i + 1, L(i)) for i in range(5)], 5, 0),
+        "write, evict": ([w(1, L(0))] + [acc(i + 1, L(i)) for i in range(1, 5)], 5, 1),
+        # L0, L1 miss; L0, L1 hit in the LLC (promoted back); L1 hits in the L1D; L2..L4 miss: 5 reads.
+        "dirty line promoted back from the LLC, evicted again": (
+            [w(1, L(0)), acc(2, L(1)), acc(3, L(0)), acc(4, L(1))] + [acc(i + 4, L(i)) for i in range(1, 5)], 5, 1),
+        "two dirty words, one line": ([w(1, L(0)), w(2, L(0) + 8)] + [acc(i + 2, L(i)) for i in range(1, 5)], 5, 1),
+        "two dirty lines": ([w(1, L(0)), w(2, L(1))] + [acc(i + 1, L(i)) for i in range(2, 7)], 7, 2),
+        "written, evicted, refetched, written, evicted": (
+            [w(1, L(0)), acc(2, L(1)), acc(3, L(2)), acc(4, L(3)), w(5, L(0))] + [acc(i + 5, L(i)) for i in range(1, 5)], 9, 2),
+    }
+    for bs in ("64", "8"):
+        for name, (tr, reads, writes) in cases.items():
+            path = d / f"wb_{abs(hash(name))}.txt"
+            path.write_text("\n".join(tr) + "\n")
+            cmd = [str(BIN), "--config", str(REPO / "configs/two_level.yaml"), "--trace", str(path), "--trace-format",
+                   "instructions", "--l1-sets", "1", "--l1-ways", "1", "--num-cache-sets", "1", "--num-cache-ways", "2",
+                   "--cache-block-size", bs, "--replacement-policy", "lru", "--tag-bdi-bases", "0",
+                   "--check-invariants", "1", "--dram-model", "sniper"]
+            out = subprocess.run(cmd, capture_output=True, text=True, cwd=REPO).stdout
+            m = re.search(r"reads (\d+) writes (\d+)", out)
+            got = (int(m[1]), int(m[2])) if m else None
+            check(f"{bs}B LLC, {name}: {reads} reads, {writes} writebacks", got == (reads, writes), str(got))
+
+
 # ------------------------------------------------------------------------------------------------ real traces
 def real_run(args, label):
     cmd = [str(BIN), "--config", str(REPO / "configs/three_level.yaml"), "--check-invariants", "4000000", *args]
@@ -396,7 +445,8 @@ def main():
         d = Path(tmp)
         for t in (t_two_core_barriers, t_three_core_barriers, t_rule_with_idle_core, t_finish_while_others_wait,
                   t_finish_before_barrier, t_marker_forms, t_iters, t_addresses_format, t_single_core, t_mismatch,
-                  t_determinism, t_invariants, t_single_level_build, t_event_times, t_min_clock):
+                  t_determinism, t_invariants, t_single_level_build, t_event_times, t_min_clock, t_writebacks,
+                  t_sniper_timing):
             t(d)
         print("--- again with --scheduler round_robin_skip")
         Run.scheduler = "round_robin_skip"

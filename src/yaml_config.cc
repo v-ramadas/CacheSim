@@ -74,6 +74,21 @@ static const std::vector<std::pair<std::string, std::string>> kKeys = {
     {"set_dueling.log_metrics",        "log-dueling-metrics"},
 
     {"memory.detailed_dram",           "detailed-dram"},
+    {"memory.model",                   "dram-model"},
+    {"memory.latency_ns",              "dram-latency"},
+    {"memory.per_controller_bandwidth","dram-bandwidth"},
+    {"memory.num_controllers",         "dram-controllers"},
+    {"memory.controllers_interleaving","dram-controllers-interleaving"},
+    {"memory.home_lookup_param",       "dram-home-lookup-param"},
+    {"memory.queue_enabled",           "dram-queue-enabled"},
+    {"memory.queue_model",             "dram-queue-model"},
+
+    {"queue_model.history_list.max_list_size",            "queue-history-max-list"},
+    {"queue_model.history_list.analytical_model_enabled", "queue-history-analytical"},
+    {"queue_model.windowed_mg1.window_size",              "queue-mg1-window"},
+    {"queue_model.basic.moving_avg_enabled",              "queue-basic-ma-enabled"},
+    {"queue_model.basic.moving_avg_window_size",          "queue-basic-ma-window"},
+    {"queue_model.basic.moving_avg_type",                 "queue-basic-ma-type"},
 
     {"debug.all",                      "debug"},
     {"debug.llc",                      "debug-llc"},

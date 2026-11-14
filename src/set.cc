@@ -233,6 +233,12 @@ void Set::fill_way(PacketPtr /*packet*/, uint64_t /*way_idx*/) {
 }
 
 void Set::fill_packet(PacketPtr packet, uint64_t way_idx) {
+    if (valid[way_idx] && ways[way_idx] != UINT64_MAX && dirty_words[way_idx]) {
+        uint64_t line = align_address(ways[way_idx], CACHELINE_SIZE);
+        for (uint64_t w = 0; w < CACHELINE_SIZE / 8; w++)
+            if ((dirty_words[way_idx] >> w) & 1)
+                packet->dirty_addrs.push_back(line + 8 * w);
+    }
     packet->pc = pc[way_idx];
     packet->next_reuse = next_reuse[way_idx];
     packet->serviced_from_llc = std::max(packet->serviced_from_llc, serviced_from_llc[way_idx]);
@@ -255,6 +261,7 @@ void Set::invalidate_way(uint64_t way_idx) {
     set_way_address(way_idx, UINT64_MAX);
     valid[way_idx] = false;
     dirty[way_idx] = false;
+    dirty_words[way_idx] = 0;
 
     pc[way_idx] = UINT64_MAX;
     serviced_from_llc[way_idx] = 0;
@@ -531,6 +538,8 @@ void Set::print_reuse_by_degree(const char* name) {
 void Set::retire_way(uint64_t way_idx) {
     if (level != CacheLevel::LLC || !valid[way_idx])
         return;
+    if (dirty_words[way_idx] && ways[way_idx] != UINT64_MAX)   // dirty data leaves the hierarchy: write it back
+        cachesim::pending_writebacks.push_back(align_address(ways[way_idx], CACHELINE_SIZE));
     record_reuse(degree[way_idx], avg_degree[way_idx], serviced_from_llc[way_idx]);
     for (uint64_t word_idx = 0; word_idx < block_size/8; word_idx++) {
         life_pieces++;
@@ -1069,6 +1078,7 @@ void Set::set_breakdown(uint64_t new_block_size) {
             contract(is_hub_node, way_idx, 1);
             contract(distance_counts, way_idx, 1);
             contract(dirty, way_idx, 1);
+            contract(dirty_words, way_idx, 1);
             contract(footprint, way_idx, 1);
             contract(pc, way_idx, 1);
             contract(next_reuse, way_idx, 1);
@@ -1089,6 +1099,7 @@ void Set::set_breakdown(uint64_t new_block_size) {
     breakdown(is_hub_node, num_ways, scale_factor, false);
     breakdown(distance_counts, num_ways, scale_factor, false);
     breakdown(dirty, num_ways, scale_factor, false);
+    breakdown(dirty_words, num_ways, scale_factor, false);
     breakdown(footprint, num_ways, scale_factor, false);
     breakdown(pc, num_ways, scale_factor, false);
     breakdown(next_reuse, num_ways, scale_factor, false);
@@ -1159,6 +1170,7 @@ void Set::set_merge(uint64_t new_block_size) {
     is_hub_node.assign(new_num_ways, false);
     distance_counts.assign(new_num_ways, 0);
     dirty.assign(new_num_ways, false);
+    dirty_words.assign(new_num_ways, 0);
     footprint.assign(new_num_ways * new_block_size / 8, false);   // block_size/8 words per way
     pc.assign(new_num_ways, UINT64_MAX);
     next_reuse.assign(new_num_ways, 0);
@@ -1175,4 +1187,17 @@ void Set::set_merge(uint64_t new_block_size) {
     bits_per_block = block_size/8;
     bitmask = (1ULL << bits_per_block) - 1;
     bdi_reset();
+}
+
+bool Set::mark_dirty(uint64_t word) {
+    uint64_t way_idx = find_way(align_address(word, block_size));
+    if (way_idx >= tags.size() || !valid[way_idx])
+        return false;
+    dirty_words[way_idx] |= uint8_t(1u << ((word % CACHELINE_SIZE) / 8));
+    return true;
+}
+
+bool Set::holds_word(uint64_t word) const {
+    uint64_t way_idx = find_way(align_address(word, block_size));
+    return way_idx < tags.size() && valid[way_idx];
 }

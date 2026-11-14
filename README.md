@@ -69,6 +69,31 @@ Base+Delta tags, P-OPT paths, debug switches, and the timing model (core, cache 
   cache options given as flags. `configs/intel.cfg` uses parameter names the timing model does not have and is
   rejected (it was before this change too).
 
+### DRAM timing
+
+`memory.model` (`--dram-model`) selects the DRAM timing model:
+
+- **`sniper`**: a port of Sniper's `DramPerfModelConstant` and its queue models (`inc/sniper_dram.h`).
+  A read costs a fixed latency (`memory.latency_ns`) plus a 64B transfer at `memory.per_controller_bandwidth` plus
+  the queue delay of its controller. Controllers and interleaving follow Sniper: `num_controllers: -1` places one
+  every `controllers_interleaving` cores (0 = one per core); lines interleave by `home_lookup_param` (64B).
+  Queue models (`memory.queue_model`): `history_list` (default, Sniper's base.cfg), `windowed_mg1`, `basic`,
+  `contention`, with Sniper's `queue_model.*` parameters. Times are femtoseconds; each core carries the part of
+  a cycle not yet charged into its next DRAM latency, so its total time equals Sniper's. With `detailed_dram`, our
+  bank/row latency replaces the fixed latency (queue and transfer time are still Sniper's).
+- **`simple`** (default, until the Sniper model is adopted): the original formula (tCAS + tRCD + bus, refresh;
+  `detailed_dram`: bank/row model), no queue and no writebacks. Reproduces every result from before the Sniper
+  model, and the regression goldens.
+
+Writebacks: dirty data is tracked per 8B word through the hierarchy (`Packet::dirty_addrs`, per-way word masks in
+the LLC, per-sector bits in L1D/L2). With `model: sniper`, when dirty data leaves the hierarchy (LLC eviction, a block the LLC declines,
+set-dueling breakdown/merge, Amoeba words dropped) its 64B line is written back: it occupies the DRAM queue at
+the access's completion time and never delays the core. One core never queues (it issues one access at a time).
+
+`tests/sniper_queue/run.sh` compiles Sniper's own queue-model sources (from `../snipersim`, unchanged) next to the
+port and requires identical delays on 84 request-stream/setting combinations (1.68M checks), and identical
+bandwidth rounding and latency conversion.
+
 ### Cores
 
 `num_cores` (`--num-cores`) builds that many cores with ids 0..N-1. Each core has a private L1D (and L2 with

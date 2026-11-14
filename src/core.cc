@@ -124,10 +124,10 @@ void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reus
     int hit_at_level =
 #ifdef MULTI_LEVEL
     access_multi_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,
-                       predictor_, address, pc, is_read, next_reuse, degree, avg_degree, issue_time);
+                       predictor_, address, pc, is_read, next_reuse, degree, avg_degree, issue_time, id_);
 #else
     access_single_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,
-                        pc, address, is_read, next_reuse, degree, avg_degree, issue_time);
+                        pc, address, is_read, next_reuse, degree, avg_degree, issue_time, id_);
 #endif
 #ifdef MULTI_LEVEL
     // The access's event time when it completes must be the core's clock: both add up the same charges.
@@ -360,6 +360,15 @@ ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, Invarian
         ++st.steps;
         if (Core::debug_schedule)
             fmt::print("SCHED step core {} clock {}\n", cur, cores[cur].cycles());
+        // windowed_mg1's global time: the slowest running core's clock (Sniper: the barrier global time).
+        {
+            uint64_t lo = UINT64_MAX;
+            for (const auto& c : cores)
+                if (c.runnable())
+                    lo = std::min(lo, c.cycles());
+            if (lo != UINT64_MAX)
+                PerformanceModel::setGlobalTimeCycles(lo);
+        }
         // Clock skew: the gap between the running cores' clocks (waiting and finished cores excluded; waiting
         // is reported as barrier_wait_cycles). Only the stepped core's clock moved, so measuring after every
         // step sees every peak.

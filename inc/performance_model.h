@@ -8,6 +8,7 @@
 #include <vector>
 #include <unordered_map>
 #include <cmath>
+#include "sniper_dram.h"
 
 using ParamType = uint64_t;
 
@@ -209,10 +210,30 @@ class PerformanceModel {
 
     static void processLLC(uint64_t address, bool is_hit, bool is_fill);
 
-    // A memory access by the request that reaches DRAM at core cycle now_cycles (its Packet::event_time). The
-    // DRAM model's time (refresh, bank-group stalls) is taken from the request, not from the cycle counter,
-    // which with several cores is the sum of all their clocks.
-    static void processMemory(uint64_t address, uint64_t now_cycles);
+    // DRAM model (memory.model):
+    //   SNIPER: Sniper's DramPerfModelConstant - fixed latency + 64B transfer at per-controller
+    //     bandwidth + queue delay (sniper_dram.h), controllers and interleaving as Sniper. With --detailed-dram,
+    //     our bank/row latency replaces the fixed latency (queue and transfer time still Sniper's).
+    //   SIMPLE (default): the original formula (tCAS + tRCD + bus, refresh; --detailed-dram: bank/row model), no queue
+    //     and no writeback traffic - reproduces results from before the Sniper model.
+    enum class DramModel { SIMPLE, SNIPER };
+    inline static DramModel dram_model = DramModel::SIMPLE;   // default until the Sniper model is adopted
+    inline static sniper::Config sniper_cfg;
+    inline static sniper::Dram sniper_dram;
+    static void initDram(uint32_t num_cores);
+
+    // A demand read that reaches DRAM at core cycle now_cycles (its Packet::event_time) from core `core`: adds
+    // its latency to the cycle counter. The DRAM model's time is the request's, not the cycle counter (which
+    // with several cores is the sum of all their clocks). Sniper latencies are femtoseconds; each core carries
+    // the part of a cycle not yet charged to its next DRAM latency, so its total time matches Sniper's.
+    static void processMemory(uint64_t address, uint64_t now_cycles, uint32_t core = 0);
+    // A 64B writeback reaching DRAM at now_cycles: occupies the controller's queue, never delays the core.
+    static void writebackMemory(uint64_t address, uint64_t now_cycles, uint32_t core = 0);
+    static void printDramStats();
+    // Femtoseconds per core cycle (cpu_frequency in MHz), as Sniper's ComponentPeriod.
+    static uint64_t periodFs() { return 1000000000ULL / getParam("cpu_frequency"); }
+    // The earliest time any running core may still be at (windowed_mg1 forgets requests before it).
+    static void setGlobalTimeCycles(uint64_t cycles) { sniper::set_global_time(cycles * periodFs()); }
 
     private:
     struct Memory {
@@ -281,6 +302,9 @@ class PerformanceModel {
 
     public:
     inline static Memory memory;
+    // Detailed (bank/row) DRAM model: latency in memory ticks for a request at memoryTicks (also refresh).
+    static uint64_t detailedMemoryTicks(uint64_t address, uint64_t memoryTicks, bool shouldRefresh);
+    inline static std::vector<uint64_t> fs_remainder;   // per core: femtoseconds owed beyond its cycle count
 };
 
 #endif

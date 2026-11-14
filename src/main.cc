@@ -174,6 +174,25 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets");
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
+    // DRAM model (memory.*, queue_model.*): Sniper's constant DRAM model and queue models; see inc/sniper_dram.h.
+    auto& sc = PerformanceModel::sniper_cfg;
+    app.add_option("--dram-model", PerformanceModel::dram_model, "DRAM timing: simple (default: the original formula, no queue, no writebacks) or sniper (Sniper's constant model + queue + 64B writebacks; with --detailed-dram our bank/row latency + Sniper's queue) (YAML: memory.model)")->transform(CLI::CheckedTransformer(std::map<std::string, PerformanceModel::DramModel>{
+        {"sniper", PerformanceModel::DramModel::SNIPER},
+        {"simple", PerformanceModel::DramModel::SIMPLE},
+    }))->transform(yaml_config::keep_text("dram-model"))->default_str("simple");
+    app.add_option("--dram-latency", sc.latency_ns, "Sniper DRAM: fixed access latency in ns (perf_model/dram/latency) (YAML: memory.latency_ns)");
+    app.add_option("--dram-bandwidth", sc.per_controller_bandwidth, "Sniper DRAM: GB/s per controller (perf_model/dram/per_controller_bandwidth) (YAML: memory.per_controller_bandwidth)");
+    app.add_option("--dram-controllers", sc.num_controllers, "Sniper DRAM: number of controllers, -1 = one every controllers_interleaving cores (perf_model/dram/num_controllers) (YAML: memory.num_controllers)");
+    app.add_option("--dram-controllers-interleaving", sc.controllers_interleaving, "Sniper DRAM: with -1 controllers, one controller every N cores, 0 = every core (perf_model/dram/controllers_interleaving) (YAML: memory.controllers_interleaving)");
+    app.add_option("--dram-home-lookup-param", sc.home_lookup_param, "Sniper DRAM: addresses interleave across controllers every 2^N bytes (perf_model/dram_directory/home_lookup_param) (YAML: memory.home_lookup_param)");
+    app.add_option("--dram-queue-model", sc.queue_type, "Sniper DRAM queue model: history_list, windowed_mg1, basic, contention (perf_model/dram/queue_model/type) (YAML: memory.queue_model)")->check(CLI::IsMember({"history_list", "windowed_mg1", "basic", "contention"}));
+    app.add_option("--dram-queue-enabled", sc.queue_enabled, "Sniper DRAM: model queueing (perf_model/dram/queue_model/enabled) (YAML: memory.queue_enabled)");
+    app.add_option("--queue-history-max-list", sc.history_max_list_size, "history_list: free intervals kept (queue_model/history_list/max_list_size) (YAML: queue_model.history_list.max_list_size)");
+    app.add_option("--queue-history-analytical", sc.history_analytical, "history_list: use the average delay for requests older than every kept interval (queue_model/history_list/analytical_model_enabled) (YAML: queue_model.history_list.analytical_model_enabled)");
+    app.add_option("--queue-mg1-window", sc.mg1_window_ns, "windowed_mg1: window in ns (queue_model/windowed_mg1/window_size) (YAML: queue_model.windowed_mg1.window_size)");
+    app.add_option("--queue-basic-ma-enabled", sc.basic_ma_enabled, "basic: moving average of arrival times (queue_model/basic/moving_avg_enabled) (YAML: queue_model.basic.moving_avg_enabled)");
+    app.add_option("--queue-basic-ma-window", sc.basic_ma_window, "basic: moving average window (queue_model/basic/moving_avg_window_size) (YAML: queue_model.basic.moving_avg_window_size)");
+    app.add_option("--queue-basic-ma-type", sc.basic_ma_type, "basic: arithmetic_mean, geometric_mean or median (queue_model/basic/moving_avg_type) (YAML: queue_model.basic.moving_avg_type)")->check(CLI::IsMember({"arithmetic_mean", "geometric_mean", "median"}));
     SchedulerKind scheduler = SchedulerKind::MIN_CLOCK;
     app.add_option("--scheduler", scheduler, "Multicore: which core steps next - min_clock (default: the core with the smallest clock, lowest id on ties; LLC accesses then arrive in time order) or round_robin_skip (the next core in id order whose clock is not ahead of the current one) (YAML: scheduler)")->transform(CLI::CheckedTransformer(std::map<std::string, SchedulerKind>{
         {"round_robin_skip", SchedulerKind::ROUND_ROBIN_SKIP},
@@ -354,6 +373,7 @@ int main(int argc, char** argv) {
     try {
         const auto& timing = yaml_config::timing_params();
         PerformanceModel::populateModel(std::unordered_map<std::string, ParamType>(timing.begin(), timing.end()), "--config");
+        PerformanceModel::initDram(num_cores);
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         return 1;
@@ -464,6 +484,7 @@ int main(int argc, char** argv) {
     for (uint32_t c : active_cores)
         if (c != active_core && cache.size() > 1)
             print_private(cores[c], false, false);
+    PerformanceModel::printDramStats();
     if (num_cores > 1) {
         uint64_t end = 0;
         for (const auto& core : cores) {

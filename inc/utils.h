@@ -192,6 +192,10 @@ struct Packet {
     // the time of that lookup; when the access completes it is the time the data returns (= the core's clock).
     // Fill, eviction and invalidation packets copy the access's value but are not timed yet.
     uint64_t event_time = 0;
+    // Dirty data carried by this packet: the 8B-aligned addresses of its dirty words (any line). Set by a level
+    // a block leaves (eviction, promotion) and applied by the level it is filled into; a dirty word leaving the
+    // hierarchy is written back (Cache fills, Set::retire_way).
+    std::vector<uint64_t> dirty_addrs;
     uint64_t aligned_address;
     uint64_t size;
     std::vector<uint64_t> blocks;
@@ -232,6 +236,7 @@ struct Packet {
     }
 
     void clear() {
+        dirty_addrs.clear();
         address = 0;
         vaddr = 0;
         aligned_address = 0;
@@ -260,6 +265,7 @@ struct Packet {
     }
 
     void clear_address() {
+        dirty_addrs.clear();
         address = 0;
         vaddr = 0;
         aligned_address = 0;
@@ -293,6 +299,7 @@ struct Packet {
         address = packet.address;
         vaddr = packet.vaddr;
         event_time = packet.event_time;
+        dirty_addrs = packet.dirty_addrs;
         aligned_address = packet.aligned_address;
         size = packet.size;
         blocks = packet.blocks;
@@ -318,5 +325,9 @@ struct Packet {
 };
 
 typedef Packet *PacketPtr;
+
+// Lines with dirty data that left the hierarchy during the current access (LLC victims, blocks the LLC declined,
+// set breakdown/merge, Amoeba words dropped); access_multi_level writes each back (64B) when the access completes.
+namespace cachesim { inline std::vector<uint64_t> pending_writebacks; }
 
 #endif

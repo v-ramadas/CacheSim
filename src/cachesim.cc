@@ -327,6 +327,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     if (fill_packet->blocks.size() == 0) {
         if (cachesim::DEBUG)
             fmt::print("Level {} No blocks to fill since block list is empty\n", level);
+        apply_dirty(fill_packet);
         return;
     }
 
@@ -345,6 +346,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     populate_blocks(fill_packet);
 
     if (fill_packet->blocks.size() == 0) {
+        apply_dirty(fill_packet);   // every block already here (merge its dirty words) or declined (written back)
         return;
     }
 
@@ -352,6 +354,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     if (eviction_packet->size == 0)
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
+    eviction_packet->dirty_addrs.clear();
     eviction_packet->footprint = 0;
     if constexpr (std::is_same_v<T, Set>) {
         // Base+Delta tags: free a base for this line first if none fits; the
@@ -380,6 +383,7 @@ void Cache<T>::handle_fill_blocks(PacketPtr fill_packet, PacketPtr eviction_pack
     evictions+=eviction_packet->blocks.size();
     evicted_words += eviction_packet->blocks.size() * (sets[set_idx]->get_block_size() / 8);
     sets[set_idx]->handle_fill(fill_packet);
+    apply_dirty(fill_packet);
 
     idx++;
     if (cachesim::DEBUG)
@@ -412,6 +416,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     if (eviction_packet->size == 0)
         eviction_packet->size = fill_packet->size;//fill_packet->blocks.size()*sets[set_idx]->get_block_size();
     eviction_packet->clear_blocks();
+    eviction_packet->dirty_addrs.clear();
     eviction_packet->footprint = 0;
     eviction_packet->aligned_address = fill_packet->aligned_address;
     if constexpr (std::is_same_v<T, Set>) {
@@ -440,6 +445,7 @@ void Cache<T>::handle_fill_line(PacketPtr fill_packet, PacketPtr eviction_packet
     }
     eviction_packet->aligned_address = align_address(eviction_packet->address, eviction_packet->size);
     sets[set_idx]->handle_fill(fill_packet);
+    apply_dirty(fill_packet);
     //partial_misses[fill_packet->blocks.size()-1]++;
     fill_packet->clear_blocks();
     if (cachesim::DEBUG)
@@ -707,6 +713,17 @@ static std::vector<Packet> split_amoeba_victims(const Packet& ev) {
         }
         if (k < ev.block_prev_counter.size()) it->block_prev_counter[w] = ev.block_prev_counter[k];
     }
+    // Each victim line keeps only its own dirty words.
+    for (auto& p : out)
+        p.dirty_addrs.clear();
+    for (uint64_t d : ev.dirty_addrs) {
+        uint64_t line = align_address(d, CACHELINE_SIZE);
+        auto it = std::find_if(out.begin(), out.end(), [line](const Packet& p) { return p.address == line; });
+        if (it != out.end())
+            it->dirty_addrs.push_back(d);
+        else
+            cachesim::pending_writebacks.push_back(line);
+    }
     return out;
 }
 
@@ -734,7 +751,7 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
 
 int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time) {
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time, uint32_t core_id) {
     access_packet->clear();
     eviction_packet->clear();
     fill_packet->clear();
@@ -865,6 +882,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             const uint64_t line_address = invalidation_packet->address;
             const uint64_t line_size = invalidation_packet->size;
             uint64_t line_footprint = 0;   // touched sectors of every partial copy
+            std::vector<uint64_t> line_dirty;   // dirty words of every partial copy
             // An Amoeba L1D keeps the words of the line it already holds and
             // fetches only around the missing one, so it is not invalidated.
             const int lowest = cachesim::L1_AMOEBA ? 1 : 0;
@@ -873,10 +891,14 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                 invalidation_packet->size = line_size;
                 cache[i]->handle_invalidate(invalidation_packet);
                 line_footprint |= invalidation_packet->footprint;
+                line_dirty.insert(line_dirty.end(), invalidation_packet->dirty_addrs.begin(), invalidation_packet->dirty_addrs.end());
                 if (invalidation_packet->blocks.size() != 0)
                     *fill_packet = *invalidation_packet;
             }
             fill_packet->footprint |= line_footprint;
+            std::sort(line_dirty.begin(), line_dirty.end());
+            line_dirty.erase(std::unique(line_dirty.begin(), line_dirty.end()), line_dirty.end());
+            fill_packet->dirty_addrs = line_dirty;
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
@@ -895,6 +917,16 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                     keep_rest = true;
                 }
             }
+        }
+
+        // Dirty words of the line the L1D did not take (an Amoeba L1D keeps only some): into the part of the line
+        // kept in the LLC (--l1-amoeba-keep-llc), else written back.
+        for (uint64_t w : cache[0]->take_unheld_dirty()) {
+            const uint64_t line = align_address(w, CACHELINE_SIZE);
+            if (keep_rest && line == rest_of_line.address && ((rest_of_line.present_mask >> ((w % CACHELINE_SIZE) / 8)) & 1))
+                rest_of_line.dirty_addrs.push_back(w);
+            else
+                cachesim::pending_writebacks.push_back(line);
         }
 
         // Push the L1D's victim down through the levels below.
@@ -970,6 +1002,10 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     }
 
+    // A store dirties its word in the L1D (which holds the line now, after a hit or a fill).
+    if (!is_read)
+        cache[0]->mark_dirty(align_address(address, 8));
+
     count_pc_hub(pc, degree, avg_degree, hit_at_level);
 
     // L1D hit: we assume the CPU has an IPC of 1 on cache hit, already
@@ -988,7 +1024,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             if (cachesim::DEBUG_TIMING)
                 fmt::print("TIME {:#x} memory @{}\n", access_packet->address, t);
             uint64_t before = PerformanceModel::getCycles();
-            PerformanceModel::processMemory(fill_packet->address, t);
+            PerformanceModel::processMemory(fill_packet->address, t, core_id);
             dram_cycles = PerformanceModel::getCycles() - before;
             t += dram_cycles;
         }
@@ -999,6 +1035,15 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         if (POPT::active) POPT::charge_engine(dram_cycles, true);
     }
     access_packet->event_time = t;   // data back at the core
+    // Dirty lines that left the hierarchy during this access: one 64B write each (once per line per access), at
+    // the access's completion time - they do not delay the core.
+    if (!cachesim::pending_writebacks.empty()) {
+        auto& wb = cachesim::pending_writebacks;
+        for (size_t k = 0; k < wb.size(); k++)
+            if (std::find(wb.begin(), wb.begin() + k, wb[k]) == wb.begin() + k)
+                PerformanceModel::writebackMemory(wb[k], t, core_id);
+        wb.clear();
+    }
     if (cachesim::DEBUG_TIMING)
         fmt::print("TIME {:#x} done @{}\n", access_packet->address, t);
     return hit_at_level;
@@ -1006,7 +1051,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
 #else
 int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time) {
+            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time, uint32_t /*core_id*/) {
 
     assert(cache.size() ==  1);
     access_packet->clear();

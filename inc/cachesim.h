@@ -61,6 +61,9 @@ class Set {
     std::vector<bool> is_hub_node;
     std::vector<uint64_t> distance_counts;
     std::vector<bool> dirty;
+    // Per way: dirty 8B words of the block, bit i = word i of its 64B line (writeback tracking; `dirty` above is
+    // the older per-way flag, left as is).
+    std::vector<uint8_t> dirty_words;
     std::vector<bool> footprint;
     std::vector<uint64_t> pc;
     std::vector<uint64_t> next_reuse;
@@ -118,6 +121,7 @@ class Set {
         serviced_from_llc.resize(num_ways, 0);
         is_hub_node.resize(num_ways, false);
         dirty.resize(num_ways, false);
+        dirty_words.resize(num_ways, 0);
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size/8, false);
@@ -312,6 +316,9 @@ class Set {
     void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
+    // Writeback tracking: mark the 8B word dirty if this set holds it (false if it does not); does it hold it.
+    bool mark_dirty(uint64_t word);
+    bool holds_word(uint64_t word) const;
     // Every 8B word this set holds: each valid way covers block_size bytes from its block address.
     void collect_words(std::vector<uint64_t>& out) const {
         for (size_t i = 0; i < ways.size(); ++i)
@@ -440,6 +447,9 @@ class SectoredSet: public Set {
     void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
+    // Writeback tracking: mark the 8B word dirty if this set holds it (false if it does not); does it hold it.
+    bool mark_dirty(uint64_t word);
+    bool holds_word(uint64_t word) const;
     // Every 8B word this set holds: the valid sectors of each valid line.
     void collect_words(std::vector<uint64_t>& out) const {
         for (size_t i = 0; i < ways.size(); ++i)
@@ -507,6 +517,11 @@ class BaseCache {
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
     // Every 8B word the cache holds, one entry per copy (for --check-invariants).
     virtual void collect_words(std::vector<uint64_t>& out) const = 0;
+    // Writeback tracking: mark a held 8B word dirty (false if not held); does the cache hold the word; dirty words
+    // of the last fill that this (non-last) level did not take (an Amoeba L1D keeps only some words of a line).
+    virtual bool mark_dirty(uint64_t word) = 0;
+    virtual bool holds_word(uint64_t word) const = 0;
+    virtual std::vector<uint64_t> take_unheld_dirty() = 0;
 
     virtual bool is_eviction_needed(PacketPtr packet) const = 0;
 };
@@ -712,6 +727,22 @@ class Cache: public BaseCache {
         for (const auto& [idx, set] : sets)
             set->collect_words(out);
     }
+    bool mark_dirty(uint64_t word) { return sets.at(get_set_idx(word))->mark_dirty(word); }
+    bool holds_word(uint64_t word) const { return sets.at(get_set_idx(word))->holds_word(word); }
+    std::vector<uint64_t> take_unheld_dirty() { std::vector<uint64_t> v; v.swap(unheld_dirty); return v; }
+    // After a fill (or a fill that kept nothing new): mark the fill's dirty words this cache holds; a dirty word
+    // it does not hold is written back by the LLC, or left for the caller (take_unheld_dirty) at upper levels.
+    void apply_dirty(PacketPtr fill_packet) {
+        for (uint64_t w : fill_packet->dirty_addrs) {
+            if (mark_dirty(w))
+                continue;
+            if (level == CacheLevel::LLC)
+                cachesim::pending_writebacks.push_back(align_address(w, CACHELINE_SIZE));
+            else
+                unheld_dirty.push_back(w);
+        }
+    }
+    std::vector<uint64_t> unheld_dirty;
 };
 
 // Order in which demand accesses reach the shared LLC, by their event times. An access is out of time order
@@ -736,11 +767,11 @@ namespace cachesim { inline ArrivalOrder llc_order; }
 #ifdef MULTI_LEVEL
 int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0);
+            SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0, uint32_t core_id = 0);
 #else
 int access_single_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
-            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0);
+            uint64_t pc, uint64_t address, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time = 0, uint32_t core_id = 0);
 #endif
 
 // Per-PC hub stats (always printed, top PC_HUB_TOP_N PCs by accesses + the rest + all): per-PC accesses and per-level misses split by data class, from the trace's hubs.py labels
