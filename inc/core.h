@@ -58,6 +58,7 @@ class Core {
     static inline bool debug_schedule = false;     // --debug-schedule: log every step, arrival and release
     const std::string& trace() const { return trace_; }
     std::vector<BaseCache*>& caches() { return caches_; }
+    const std::vector<BaseCache*>& caches() const { return caches_; }
 
     // Read one trace record (one line, or one ChampSim instruction) and issue
     // its accesses. Returns false once every iteration of the trace is done.
@@ -131,6 +132,22 @@ struct ScheduleStats {
     uint64_t barriers = 0;       // barrier releases
     std::string error;           // set when the run cannot continue (barrier mismatch)
 };
-ScheduleStats run_cores(std::vector<Core>& cores);
+// Hierarchy invariants (--check-invariants N: every N steps and at the end), on the 8B words each cache holds:
+//   dup_in_cache    a word held twice in one cache (never expected)
+//   private_and_llc a word in some core's private level and in the shared LLC (breaks exclusivity)
+//   l1_and_l2       a word in two private levels of one core (breaks exclusivity)
+//   cross_core      a word in the private levels of two cores: only possible for cores of one application, and
+//                   expected until coherence is modeled (no coherence: each core keeps its own copy)
+// Counts are words; the run reports the largest count seen in any check. Skipped for Amoeba sets.
+struct InvariantCounts {
+    uint64_t dup_in_cache = 0, private_and_llc = 0, l1_and_l2 = 0, cross_core = 0;
+};
+struct InvariantStats {
+    uint64_t checks = 0;
+    InvariantCounts max;
+};
+InvariantCounts check_invariants(const std::vector<Core>& cores, uint64_t step, bool report_first);
+
+ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every = 0, InvariantStats* inv = nullptr);
 
 #endif

@@ -80,6 +80,7 @@ static const std::vector<std::pair<std::string, std::string>> kKeys = {
     {"debug.replacement_policy",       "debug-replacement-policy"},
     {"debug.tag_bdi",                  "debug-tag-bdi"},
     {"debug.schedule",                 "debug-schedule"},
+    {"debug.check_invariants",         "check-invariants"},
     {"debug.ghost_cache",              "debug-ghost-cache"},
     {"debug.start",                    "debug-start"},
     {"debug.end",                      "debug-end"},

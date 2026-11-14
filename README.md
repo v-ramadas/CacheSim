@@ -92,7 +92,17 @@ per core id.
   n. The core stops being scheduled until every core still running has reached barrier n; then all continue with
   their clocks set to the latest arrival, and each core reports `barriers` and `barrier_wait_cycles`. A core that has
   finished its trace counts as arrived; cores waiting at different ids stop the run with an error.
-  `--debug-schedule` logs every step, arrival and release. Tests: `python3 tests/multicore/run_tests.py`.
+  `--debug-schedule` logs every step, arrival, finish and release.
+- **Invariant checks:** `--check-invariants N` (YAML `debug.check_invariants`) looks at the 8B words every cache
+  holds, every N schedule steps and at the end, and reports the largest count of: words held twice in one cache;
+  words in a private level and the LLC; words in two levels of one core; words in several cores' private levels.
+  The first violation of each kind is printed with its address and holders. One core and separate programs give
+  0 everywhere; cores of one application give nonzero private+LLC and cross-core counts, expected until coherence
+  is modeled. Skipped for Amoeba sets.
+- **Tests:** `python3 tests/multicore/run_tests.py` (hand-written traces, seconds; every multi-core run is replayed
+  from its schedule log against the scheduling rule and barrier semantics) and `--real` (2 and 8 cores on real
+  traces with set dueling and invariant checks, minutes).
+- `--debug-start` / `--debug-end` compare against the instruction count summed over all cores.
 - **Not yet:** coherence (cores sharing a line keep duplicate copies). `popt`, `belady`, `grasp` and
   `--l1-amoeba` need a single active core.
 

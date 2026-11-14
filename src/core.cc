@@ -57,6 +57,8 @@ bool Core::step() {
         champsim_.reset();
         --iters_left_;
     }
+    if (!finished_ && debug_schedule)
+        fmt::print("SCHED finish core {} clock {}\n", id_, cycles_);
     finished_ = true;
     return false;
 }
@@ -214,8 +216,97 @@ Core::Read Core::step_champsim() {
     return Read::RECORD;
 }
 
-ScheduleStats run_cores(std::vector<Core>& cores) {
+InvariantCounts check_invariants(const std::vector<Core>& cores, uint64_t step, bool report_first) {
+    InvariantCounts r;
+    if (cores.empty() || cachesim::AMOEBA || cachesim::L1_AMOEBA)
+        return r;
+    // Holder of a word: core * 16 + private level, or SHARED for the last level (shared by all cores).
+    constexpr uint32_t SHARED = UINT32_MAX;
+    std::vector<std::pair<uint64_t, uint32_t>> held;
+    std::vector<std::string> names;
+    std::vector<uint64_t> words;
+    static bool reported_dup = false, reported_excl = false, reported_l1l2 = false;
+    auto add = [&](const BaseCache* c, uint32_t holder) {
+        words.clear();
+        c->collect_words(words);
+        std::sort(words.begin(), words.end());
+        for (size_t i = 1; i < words.size(); ++i)
+            if (words[i] == words[i - 1]) {
+                ++r.dup_in_cache;
+                if (report_first && !reported_dup) {
+                    reported_dup = true;
+                    fmt::print("INVARIANT step {}: word {:#x} held twice in {}\n", step, words[i], c->get_name());
+                }
+            }
+        words.erase(std::unique(words.begin(), words.end()), words.end());
+        for (uint64_t w : words)
+            held.emplace_back(w, holder);
+    };
+    const auto& shared_view = cores.front().caches();
+    add(shared_view.back(), SHARED);
+    for (const auto& core : cores)
+        for (size_t i = 0; i + 1 < core.caches().size(); ++i)
+            add(core.caches()[i], core.id() * 16 + static_cast<uint32_t>(i));
+    std::sort(held.begin(), held.end());
+    auto holder_name = [&](uint32_t h) {
+        return h == SHARED ? shared_view.back()->get_name() : cores[h / 16].caches()[h % 16]->get_name();
+    };
+    for (size_t i = 0; i < held.size();) {
+        size_t j = i;
+        while (j < held.size() && held[j].first == held[i].first)
+            ++j;
+        bool shared = false, l1l2 = false;
+        uint32_t first_core = UINT32_MAX;
+        bool two_cores = false, any_private = false;
+        for (size_t k = i; k < j; ++k) {
+            uint32_t h = held[k].second;
+            if (h == SHARED) { shared = true; continue; }
+            any_private = true;
+            uint32_t core = h / 16;
+            if (first_core == UINT32_MAX) first_core = core;
+            else if (core != first_core) two_cores = true;
+            if (k > i && held[k - 1].second != SHARED && held[k - 1].second / 16 == core)
+                l1l2 = true;
+        }
+        auto list = [&]() {
+            std::string s;
+            for (size_t k = i; k < j; ++k)
+                s += (k > i ? ", " : "") + holder_name(held[k].second);
+            return s;
+        };
+        if (shared && any_private) {
+            ++r.private_and_llc;
+            if (report_first && !reported_excl) {
+                reported_excl = true;
+                fmt::print("INVARIANT step {}: word {:#x} in a private level and the LLC: {}\n", step, held[i].first, list());
+            }
+        }
+        if (l1l2) {
+            ++r.l1_and_l2;
+            if (report_first && !reported_l1l2) {
+                reported_l1l2 = true;
+                fmt::print("INVARIANT step {}: word {:#x} in two levels of one core: {}\n", step, held[i].first, list());
+            }
+        }
+        if (two_cores)
+            ++r.cross_core;
+        i = j;
+    }
+    return r;
+}
+
+ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, InvariantStats* inv) {
     ScheduleStats st;
+    auto check = [&](bool force) {
+        if (!inv || check_every == 0 || (!force && st.steps % check_every != 0))
+            return;
+        InvariantCounts c = check_invariants(cores, st.steps, true);
+        ++inv->checks;
+        inv->max.dup_in_cache = std::max(inv->max.dup_in_cache, c.dup_in_cache);
+        inv->max.private_and_llc = std::max(inv->max.private_and_llc, c.private_and_llc);
+        inv->max.l1_and_l2 = std::max(inv->max.l1_and_l2, c.l1_and_l2);
+        inv->max.cross_core = std::max(inv->max.cross_core, c.cross_core);
+    };
     const size_t n = cores.size();
     size_t cur = n;
     for (size_t c = 0; c < n && cur == n; ++c)
@@ -298,7 +389,9 @@ ScheduleStats run_cores(std::vector<Core>& cores) {
         if (next != cur && next < n)
             ++st.switches;
         cur = next;
+        check(false);
 
     }
+    check(true);
     return st;
 }

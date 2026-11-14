@@ -312,6 +312,13 @@ class Set {
     void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
+    // Every 8B word this set holds: each valid way covers block_size bytes from its block address.
+    void collect_words(std::vector<uint64_t>& out) const {
+        for (size_t i = 0; i < ways.size(); ++i)
+            if (valid[i] && ways[i] != UINT64_MAX)
+                for (uint64_t off = 0; off < block_size; off += 8)
+                    out.push_back(ways[i] + off);
+    }
     bool get_valid(uint64_t idx) const {return valid[idx];}
     uint64_t get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
@@ -433,6 +440,15 @@ class SectoredSet: public Set {
     void set_block_accesses(uint64_t way_idx, uint64_t word_idx, uint64_t value);
 
     const std::vector<uint64_t>& get_ways() const {return ways;}
+    // Every 8B word this set holds: the valid sectors of each valid line.
+    void collect_words(std::vector<uint64_t>& out) const {
+        for (size_t i = 0; i < ways.size(); ++i)
+            if (valid[i] && ways[i] != UINT64_MAX)
+                for (size_t k = 0; k < way_sectors[i].valid.size(); ++k)
+                    if (way_sectors[i].valid[k] && way_sectors[i].sectors[k] != UINT64_MAX)
+                        for (uint64_t off = 0; off < block_size; off += 8)
+                            out.push_back(way_sectors[i].sectors[k] + off);
+    }
     bool get_valid(uint64_t idx) const {return valid[idx];}
     uint64_t get_serviced_from_llc(uint64_t idx) const {return serviced_from_llc[idx];}
     uint64_t get_num_invalid() const { return (uint64_t)(std::count(valid.begin(), valid.end(), false));}
@@ -489,6 +505,8 @@ class BaseCache {
     virtual void incr_partial_misses(uint64_t num_misses) = 0;
     virtual std::vector<uint64_t> get_partial_misses() const = 0; 
     virtual const std::vector<uint64_t>& get_ways(uint64_t set_idx) const = 0; 
+    // Every 8B word the cache holds, one entry per copy (for --check-invariants).
+    virtual void collect_words(std::vector<uint64_t>& out) const = 0;
 
     virtual bool is_eviction_needed(PacketPtr packet) const = 0;
 };
@@ -690,6 +708,10 @@ class Cache: public BaseCache {
     void incr_partial_misses(uint64_t num_misses) { partial_misses[num_misses]++; }
     std::vector<uint64_t> get_partial_misses() const {return partial_misses;}
     const std::vector<uint64_t>& get_ways(uint64_t set_idx) const {return sets.at(set_idx)->get_ways();}
+    void collect_words(std::vector<uint64_t>& out) const {
+        for (const auto& [idx, set] : sets)
+            set->collect_words(out);
+    }
 };
 
 // Both return the index of the level that hit (cache.size() = memory).

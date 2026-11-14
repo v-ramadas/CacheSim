@@ -173,6 +173,8 @@ int main(int argc, char** argv) {
     app.add_option("--tag-bdi-bases", cachesim::TAG_BDI_BASES, "Base+Delta LLC tag compression: base tags per set (default 8; 0 = off, uncompressed 51-bit tags). Applies to iso-area 8B sets");
     app.add_option("--tag-bdi-delta", cachesim::TAG_BDI_DELTA, "Base+Delta tag compression: signed delta bits per block (default 10)");
     app.add_flag("--tag-bdi-unconstrained", cachesim::TAG_BDI_UNCONSTRAINED, "Base+Delta tags: keep a tag that fits no base in full (step 2, capacity-only bound) instead of replacing the base with the fewest users");
+    uint64_t check_invariants = 0;
+    app.add_option("--check-invariants", check_invariants, "Check hierarchy invariants every N schedule steps and at the end (0 = off): words held twice in one cache, in a private level and the LLC, in two levels of one core, or in two cores' private levels; prints the first violation of each kind and a summary (YAML: debug.check_invariants)");
     app.add_flag("--debug-schedule", Core::debug_schedule, "Print a SCHED line for every core step, barrier arrival and release (multicore)");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
     app.add_option("--amoeba-insert", cachesim::AMOEBA_INSERT, "amoeba: words of an L1D victim to store as one block - span (first to last touched word, default), line (whole line)")->transform(CLI::CheckedTransformer(std::map<std::string, AmoebaInsert>{
@@ -424,7 +426,8 @@ int main(int argc, char** argv) {
         }
     }
     // Each core reads its trace and issues to its view of the hierarchy; run_cores interleaves them.
-    const ScheduleStats sched = run_cores(cores);
+    InvariantStats invariants;
+    const ScheduleStats sched = run_cores(cores, check_invariants, &invariants);
     if (!sched.error.empty()) {
         fmt::print(stderr, "{}\n", sched.error);
         return 1;
@@ -495,6 +498,12 @@ int main(int argc, char** argv) {
             cachesim::ghostCache.debug_lookup_count, cachesim::ghostCache.debug_hit_count,
             cachesim::ghostCache.debug_eviction_count, cachesim::ghostCache.debug_insert_rejected_count);
 
+    if (check_invariants)
+        fmt::print("Invariants: checks {} | largest count in a check: words held twice in one cache {} | in a private "
+                   "level and the LLC {} | in two levels of one core {} | in several cores' private levels {}{}\n",
+                   invariants.checks, invariants.max.dup_in_cache, invariants.max.private_and_llc,
+                   invariants.max.l1_and_l2, invariants.max.cross_core,
+                   (cachesim::AMOEBA || cachesim::L1_AMOEBA) ? " (skipped: Amoeba sets)" : "");
     // Free every core's private levels, then the shared last level.
     for (uint32_t c = 0; c < num_cores; ++c)
         for (size_t i = 0; i + 1 < per_core[c].size(); ++i)
