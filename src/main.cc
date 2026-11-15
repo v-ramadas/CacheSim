@@ -200,6 +200,13 @@ int main(int argc, char** argv) {
     }))->transform(yaml_config::keep_text("scheduler"))->default_str("min_clock");
     uint64_t check_invariants = 0;
     app.add_option("--check-invariants", check_invariants, "Check hierarchy invariants every N schedule steps and at the end (0 = off): words held twice in one cache, in a private level and the LLC, in two levels of one core, or in two cores' private levels; prints the first violation of each kind and a summary (YAML: debug.check_invariants)");
+    app.add_option("--coherence", cachesim::COHERENCE, "Multicore coherence among private caches: msi (default; unbounded snoop filter beside the exclusive LLC) or none (YAML: coherence.protocol)")->transform(CLI::CheckedTransformer(std::map<std::string, cachesim::Coherence>{
+        {"msi", cachesim::Coherence::MSI},
+        {"none", cachesim::Coherence::NONE},
+    }))->transform(yaml_config::keep_text("coherence"))->default_str("msi");
+    app.add_flag("--serviced-from-c2c,!--no-serviced-from-c2c", cachesim::SERVICED_FROM_C2C, "Coherence: a cache-to-cache transfer adds 1 to the serviced_from_llc counts (the demanded word's and the line's; PHRU's hub signal, SRRIP's reuse insertion) in the new and the source copy, as an LLC hit does - no separate counter; on by default, --no-serviced-from-c2c blocks every such increment (YAML: coherence.serviced_from_c2c: true|false)")->default_str("true");
+    app.add_option("--snoop-cycles", cachesim::SNOOP_CYCLES, "Coherence: cycles for a remote private-cache access (cache-to-cache transfer, invalidation, downgrade); 0 = l1d_latency (YAML: coherence.snoop_cycles)");
+    app.add_flag("--shared-llc-history", cachesim::SHARED_LLC_HISTORY, "Diagnostic: copies of a block in different cores' private caches share their LLC round-trip count (PHRU's hub signal) when inserted into the LLC; no effect with one core (YAML: debug.shared_llc_history)");
     app.add_flag("--debug-schedule", Core::debug_schedule, "Print a SCHED line for every core step, barrier arrival and release (multicore)");
     app.add_flag("--debug-timing", cachesim::DEBUG_TIMING, "Print each demand access's event time at every level it looks up, at memory, and when its data is back (TIME lines)");
     app.add_flag("--debug-tag-bdi", cachesim::DEBUG_TAG_BDI, "Print every Base+Delta tag encode, lookup, release and base replacement (LLC)");
@@ -437,6 +444,13 @@ int main(int argc, char** argv) {
     for (auto& view : per_core)
         view.push_back(only);
 #endif
+    for (const auto& view : per_core)        // each core's private levels, for the snoop filter
+        cachesim::core_private.emplace_back(view.begin(), view.end() - (view.size() > 1 ? 1 : 0));
+    for (const auto& view : per_core)        // every cache once (private levels, then the shared last level)
+        for (size_t i = 0; i + 1 < view.size(); ++i)
+            cachesim::all_caches.push_back(view[i]);
+    if (!per_core.empty() && !per_core[0].empty())
+        cachesim::all_caches.push_back(per_core[0].back());
     std::vector<Core> cores;
     for (uint32_t c = 0; c < num_cores; ++c)
         cores.emplace_back(c, core_traces[c], trace_format, per_core[c], predictor, num_iters, core_apps[c]);
@@ -491,6 +505,19 @@ int main(int argc, char** argv) {
             core.print_stats();
             end = std::max(end, core.cycles());
         }
+        if (cachesim::COHERENCE == cachesim::Coherence::MSI) {
+            const auto& c = cachesim::coh;
+            fmt::print("System: coherence MSI (unbounded snoop filter): cache-to-cache reads {} writes {} | downgrades {} | "
+                       "upgrades {} | invalidated copies {} | shared victims dropped {} | violations {}\n",
+                       c.c2c_reads, c.c2c_writes, c.downgrades, c.upgrades, c.invalidated_copies,
+                       c.shared_victims_dropped, c.violations);
+            fmt::print("System: coherence drops: words {} | not held elsewhere {} (re-fetched from DRAM {}) | count above every "
+                       "survivor {} (merged into survivors; hub signal kept {})\n",
+                       c.drop_words, c.drop_orphan_words, c.orphan_refetches, c.drop_count_higher, c.drop_hub_lost);
+        }
+        fmt::print("System: demand misses served by DRAM {} | of which another core's private cache held the word {} ({:.2f}%)\n",
+                   cachesim::memory_misses, cachesim::memory_misses_held_elsewhere,
+                   cachesim::memory_misses ? 100.0 * cachesim::memory_misses_held_elsewhere / cachesim::memory_misses : 0.0);
         const auto& o = cachesim::llc_order;
         fmt::print("System: LLC arrival order: demand accesses {} | out of time order {} ({:.2f}%) | late by mean {:.1f} "
                    "max {} cycles\n", o.accesses, o.out_of_order, o.accesses ? 100.0 * o.out_of_order / o.accesses : 0.0,

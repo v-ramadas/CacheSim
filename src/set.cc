@@ -396,6 +396,11 @@ void Set::handle_fill(PacketPtr packet) {
         am_l1_predicted_fills += am_l1_history.count(align_address(packet->address, CACHELINE_SIZE));
     }
 
+    // A victim resized to one 64B block keeps its 8 per-sector LLC service counts (resize_packet keeps them for
+    // hub_oracle); the block's count is the largest of them, as for 16B/32B blocks - not the first sector's.
+    if (packet->blocks.size() == 1 && packet->block_serviced_from_llc.size() > 1)
+        packet->block_serviced_from_llc[0] = *std::max_element(packet->block_serviced_from_llc.begin(),
+                                                               packet->block_serviced_from_llc.end());
     for (const auto block_address: packet->blocks) {
         bool was_accessed;
         if (level == CacheLevel::L1D) {
@@ -540,6 +545,8 @@ void Set::retire_way(uint64_t way_idx) {
         return;
     if (dirty_words[way_idx] && ways[way_idx] != UINT64_MAX)   // dirty data leaves the hierarchy: write it back
         cachesim::pending_writebacks.push_back(align_address(ways[way_idx], CACHELINE_SIZE));
+    if (cachesim::SHARED_LLC_HISTORY && ways[way_idx] != UINT64_MAX)
+        cachesim::history_leaving.push_back({ways[way_idx], block_size});
     record_reuse(degree[way_idx], avg_degree[way_idx], serviced_from_llc[way_idx]);
     for (uint64_t word_idx = 0; word_idx < block_size/8; word_idx++) {
         life_pieces++;

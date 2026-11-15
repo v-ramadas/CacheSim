@@ -1,3 +1,4 @@
+#include <unordered_set>
 #ifndef __CACHESIM_H__
 #define __CACHESIM_H__
 
@@ -450,6 +451,13 @@ class SectoredSet: public Set {
     // Writeback tracking: mark the 8B word dirty if this set holds it (false if it does not); does it hold it.
     bool mark_dirty(uint64_t word);
     bool holds_word(uint64_t word) const;
+    // Coherence: copy the line holding `word` into a packet (sectors, metadata, dirty words) without changing the
+    // set; clear the line's dirty bits, returning its dirty words.
+    bool copy_line(uint64_t word, Packet& out);
+    std::vector<uint64_t> clean_line(uint64_t line);
+    bool count_service(uint64_t word);
+    int64_t word_count(uint64_t word);
+    void raise_count(uint64_t word, uint64_t count);
     // Every 8B word this set holds: the valid sectors of each valid line.
     void collect_words(std::vector<uint64_t>& out) const {
         for (size_t i = 0; i < ways.size(); ++i)
@@ -522,6 +530,13 @@ class BaseCache {
     virtual bool mark_dirty(uint64_t word) = 0;
     virtual bool holds_word(uint64_t word) const = 0;
     virtual std::vector<uint64_t> take_unheld_dirty() = 0;
+    // Coherence: copy the line holding `word` into `out` without changing this cache (false if not held; private
+    // sectored caches only); clear the line's dirty bits and return its dirty words (M -> S).
+    virtual bool snoop_copy(uint64_t word, Packet& out) = 0;
+    virtual std::vector<uint64_t> snoop_clean(uint64_t line) = 0;
+    virtual bool snoop_count_service(uint64_t word) = 0;
+    virtual int64_t snoop_word_count(uint64_t word) = 0;               // -1: word not held
+    virtual void snoop_raise_count(uint64_t word, uint64_t count) = 0;
 
     virtual bool is_eviction_needed(PacketPtr packet) const = 0;
 };
@@ -730,6 +745,30 @@ class Cache: public BaseCache {
     bool mark_dirty(uint64_t word) { return sets.at(get_set_idx(word))->mark_dirty(word); }
     bool holds_word(uint64_t word) const { return sets.at(get_set_idx(word))->holds_word(word); }
     std::vector<uint64_t> take_unheld_dirty() { std::vector<uint64_t> v; v.swap(unheld_dirty); return v; }
+    bool snoop_copy(uint64_t word, Packet& out) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(word))->copy_line(word, out);
+        return false;
+    }
+    std::vector<uint64_t> snoop_clean(uint64_t line) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(line))->clean_line(line);
+        return {};
+    }
+    int64_t snoop_word_count(uint64_t word) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(word))->word_count(word);
+        return -1;
+    }
+    void snoop_raise_count(uint64_t word, uint64_t count) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            sets.at(get_set_idx(word))->raise_count(word, count);
+    }
+    bool snoop_count_service(uint64_t word) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(word))->count_service(word);
+        return {};
+    }
     // After a fill (or a fill that kept nothing new): mark the fill's dirty words this cache holds; a dirty word
     // it does not hold is written back by the LLC, or left for the caller (take_unheld_dirty) at upper levels.
     void apply_dirty(PacketPtr fill_packet) {
@@ -744,6 +783,41 @@ class Cache: public BaseCache {
     }
     std::vector<uint64_t> unheld_dirty;
 };
+
+// Every cache of the system (all cores' private levels and the LLC), for --shared-llc-history's "does anyone
+// still hold this block" check.
+namespace cachesim { inline std::vector<BaseCache*> all_caches; }
+// Coherence (--coherence): MSI over 64B lines among the cores' private caches, with an unbounded snoop filter
+// beside the exclusive LLC (it knows exactly which cores hold a line; sizing it is still to do). See
+// access_multi_level. core_private[c] = core c's private levels, top first.
+namespace cachesim {
+    enum class Coherence { NONE, MSI };
+    inline Coherence COHERENCE = Coherence::MSI;
+    inline uint64_t SNOOP_CYCLES = 0;          // remote private-cache access; 0 = l1d_latency
+    // --serviced-from-c2c: a cache-to-cache transfer adds 1 to the serviced_from_llc counts (demanded word and
+    // line) in the new copy and in the source copy, as an LLC hit does in the copy it fills. Off: no increment.
+    inline bool SERVICED_FROM_C2C = true;
+    inline std::vector<std::vector<BaseCache*>> core_private;
+    struct CoherenceStats {
+        uint64_t c2c_reads = 0, c2c_writes = 0;     // misses served by another core's private cache
+        uint64_t downgrades = 0;                    // M copies made S on another core's read (dirty data written back)
+        uint64_t upgrades = 0;                      // store hits that invalidated other cores' copies
+        uint64_t invalidated_copies = 0;            // copies invalidated by stores (hits and misses)
+        uint64_t shared_victims_dropped = 0;        // evicted copies dropped because other cores still hold the line
+        uint64_t violations = 0;                    // dirty data found where MSI forbids it (written back)
+        // Diagnostics of dropped copies (8B words):
+        uint64_t drop_words = 0;                    // valid words in dropped copies
+        uint64_t drop_orphan_words = 0;             //   of which no other core held (data lost from chip)
+        uint64_t drop_count_higher = 0;             //   shared words whose count beat every surviving copy's (merged)
+        uint64_t drop_hub_lost = 0;                 //   ... with count >= 1 while every survivor had 0
+        uint64_t orphan_refetches = 0;              // DRAM misses on a word lost by a drop (since the drop)
+    };
+    inline std::unordered_set<uint64_t> orphan_words;
+    inline CoherenceStats coh;
+}
+// Multicore: demand accesses that missed the whole hierarchy (served by DRAM) although another core's private
+// cache held the demanded word - a coherent system would serve them on chip (cache-to-cache transfer).
+namespace cachesim { inline uint64_t memory_misses = 0, memory_misses_held_elsewhere = 0; }
 
 // Order in which demand accesses reach the shared LLC, by their event times. An access is out of time order
 // when its time is earlier than the latest time the LLC has already seen (a core further ahead got there first

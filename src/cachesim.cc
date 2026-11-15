@@ -644,6 +644,8 @@ void Cache<T>::populate_blocks(PacketPtr fill_packet) {
             if (index < (decltype(index))fill_packet->block_prev_counter.size())
                 fill_packet->block_prev_counter.erase(fill_packet->block_prev_counter.begin() + index);
         } else if (dropBlock){
+            if (level == CacheLevel::LLC && cachesim::SHARED_LLC_HISTORY)
+                cachesim::history_leaving.push_back({*it, block_size});
             if (level == CacheLevel::LLC) {   // never inserted: its line lifetime ends here
                 auto index = std::distance(fill_packet->blocks.begin(), it);
                 Set::record_reuse(fill_packet->block_degrees[index], fill_packet->avg_degree,
@@ -749,6 +751,119 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
     return p;
 }
 
+// ---------------------------------------------------------------------------------------------- coherence (MSI)
+// Unbounded snoop filter beside the exclusive LLC: it knows exactly which cores' private caches hold a line (here:
+// by asking them). Lines are coherent at 64B. A line lives in private caches (any number of cores, S; or one core
+// with dirty words, M) or in the LLC, never both: a copy evicted while other cores still hold the line is dropped.
+static uint64_t snoop_cycles() {
+    return cachesim::SNOOP_CYCLES ? cachesim::SNOOP_CYCLES : PerformanceModel::getParam("l1d_latency");
+}
+
+static void line_holders(uint32_t core, uint64_t line, std::vector<BaseCache*>& out) {
+    out.clear();
+    for (uint32_t c = 0; c < cachesim::core_private.size(); ++c) {
+        if (c == core)
+            continue;
+        for (BaseCache* pc : cachesim::core_private[c])
+            for (uint64_t w = line; w < line + CACHELINE_SIZE; w += 8)
+                if (pc->holds_word(w)) {
+                    out.push_back(pc);
+                    break;
+                }
+    }
+}
+
+// Invalidate one private copy of `line`; returns its contents (blocks, metadata, dirty words).
+static Packet invalidate_copy(BaseCache* pc, uint64_t line) {
+    Packet p;
+    p.set_address(line);
+    p.aligned_address = line;
+    p.size = CACHELINE_SIZE;
+    pc->handle_invalidate(&p);
+    return p;
+}
+
+// A victim copy reaching the LLC while other cores hold its line (in `holders`) is dropped (a line is in private
+// caches or in the LLC, never both). Each dropped word's PHRU count is first passed on to the copies that stay,
+// when it is higher than theirs (else the hub signal is lost when the copy that stays goes to the LLC).
+static void drop_shared_victim(PacketPtr ev, const std::vector<BaseCache*>& holders, uint64_t block_size) {
+    auto& c = cachesim::coh;
+    // A victim resized to one 64B block keeps its 8 per-sector counts (resize_packet): use each word's own.
+    const bool per_sector = ev->blocks.size() == 1 && ev->block_serviced_from_llc.size() == CACHELINE_SIZE / 8;
+    for (size_t k = 0; k < ev->blocks.size(); k++) {
+        const uint64_t b = ev->blocks[k];
+        if (b == UINT64_MAX)
+            continue;
+        for (uint64_t w = b; w < b + block_size; w += 8) {
+            const size_t ci = per_sector ? (w % CACHELINE_SIZE) / 8 : k;
+            const uint64_t cnt = ci < ev->block_serviced_from_llc.size() ? ev->block_serviced_from_llc[ci] : 0;
+            ++c.drop_words;
+            // Under MSI a shared copy is clean; dirty data is a violation (written back).
+            if (std::find(ev->dirty_addrs.begin(), ev->dirty_addrs.end(), w) != ev->dirty_addrs.end()) {
+                ++c.violations;
+                cachesim::pending_writebacks.push_back(align_address(w, CACHELINE_SIZE));
+            }
+            int64_t best = -1;
+            for (BaseCache* h : holders)
+                best = std::max(best, h->snoop_word_count(w));
+            if (best < 0) {   // no other core holds this word: it leaves the chip
+                ++c.drop_orphan_words;
+                cachesim::orphan_words.insert(w);
+                continue;
+            }
+            if ((int64_t)cnt > best) {
+                ++c.drop_count_higher;
+                if (best == 0 && cnt >= 1)
+                    ++c.drop_hub_lost;
+                for (BaseCache* h : holders)
+                    h->snoop_raise_count(w, cnt);
+            }
+        }
+    }
+    ++c.shared_victims_dropped;
+    ev->clear();
+}
+
+// --shared-llc-history: a block inserted into the LLC takes the largest LLC round-trip count any copy of it has
+// had (and records its own), so copies in different cores' private caches share one history.
+static void share_llc_history(PacketPtr fill_packet, uint64_t block_size) {
+    for (size_t i = 0; i < fill_packet->blocks.size() && i < fill_packet->block_serviced_from_llc.size(); i++) {
+        uint64_t b = fill_packet->blocks[i];
+        if (b == UINT64_MAX)
+            continue;
+        uint64_t& h = cachesim::llc_history[cachesim::history_key(align_address(b, block_size), block_size)];
+        h = std::max(h, fill_packet->block_serviced_from_llc[i]);
+        fill_packet->block_serviced_from_llc[i] = h;
+    }
+    if (fill_packet->address != UINT64_MAX) {
+        uint64_t& h = cachesim::llc_history[cachesim::history_key(align_address(fill_packet->address, CACHELINE_SIZE), 0x40) | 4];
+        h = std::max(h, fill_packet->serviced_from_llc);
+        fill_packet->serviced_from_llc = h;
+    }
+}
+
+// Drop the history of blocks that left the LLC and are held by no cache any more (a later fetch from memory starts
+// from 0, as a single copy does).
+static void forget_llc_history() {
+    for (auto [block, size] : cachesim::history_leaving) {
+        bool held = false;
+        for (uint64_t w = block; w < block + size && !held; w += 8)
+            for (BaseCache* c : cachesim::all_caches)
+                if (c->holds_word(w)) { held = true; break; }
+        if (held)
+            continue;
+        cachesim::llc_history.erase(cachesim::history_key(block, size));
+        bool line_held = false;
+        uint64_t line = align_address(block, CACHELINE_SIZE);
+        for (uint64_t w = line; w < line + CACHELINE_SIZE && !line_held; w += 8)
+            for (BaseCache* c : cachesim::all_caches)
+                if (c->holds_word(w)) { line_held = true; break; }
+        if (!line_held)
+            cachesim::llc_history.erase(cachesim::history_key(line, 0x40) | 4);
+    }
+    cachesim::history_leaving.clear();
+}
+
 int access_multi_level(std::vector<BaseCache*> &cache,
             PacketPtr access_packet, PacketPtr eviction_packet, PacketPtr fill_packet, PacketPtr invalidation_packet,
             SparsityPredictor* predictor, uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree, uint64_t issue_time, uint32_t core_id) {
@@ -799,6 +914,13 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     };
     uint64_t t = issue_time;
+    // Coherence (MSI) state for this access.
+    const bool coherent = cachesim::COHERENCE == cachesim::Coherence::MSI && cachesim::core_private.size() > 1 &&
+                          core_id < cachesim::core_private.size();
+    const uint64_t coh_line = align_address(address, CACHELINE_SIZE), coh_word = align_address(address, 8);
+    std::vector<BaseCache*> holders;
+    bool c2c = false, snooped = false, write_invalidated = false;
+    Packet c2c_fill;
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
         access_packet->event_time = t;
@@ -806,6 +928,55 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             cachesim::llc_order.arrive(t);
         if (cachesim::DEBUG_TIMING)
             fmt::print("TIME {:#x} {} @{}\n", access_packet->address, cache[i]->get_name(), t);
+        // Missed every private level: the snoop filter (beside the LLC tags) finds other cores holding the line.
+        if (coherent && i == num_levels - 1) {
+            line_holders(core_id, coh_line, holders);
+            if (!holders.empty()) {
+                snooped = true;
+                BaseCache* src = nullptr;   // a holder of the demanded word supplies the data
+                for (BaseCache* h : holders)
+                    if (h->holds_word(coh_word)) { src = h; break; }
+                if (is_read) {
+                    // Read: M copies become S (their dirty data is written back); data from a holder if any.
+                    for (BaseCache* h : holders)
+                        if (!h->snoop_clean(coh_line).empty()) {
+                            ++cachesim::coh.downgrades;
+                            cachesim::pending_writebacks.push_back(coh_line);
+                        }
+                    if (src) {
+                        c2c_fill.set_address(address);
+                        src->snoop_copy(coh_word, c2c_fill);
+                        c2c_fill.dirty_addrs.clear();
+                        if (cachesim::SERVICED_FROM_C2C)   // the source copy counts this service too
+                            src->snoop_count_service(coh_word);
+                        c2c = true;
+                        ++cachesim::coh.c2c_reads;
+                    }
+                } else {
+                    // Write: every other copy is invalidated; the word's holder hands its data (dirty words
+                    // included) to the requester, which becomes M. Other dirty data is written back.
+                    for (BaseCache* h : holders) {
+                        Packet inv = invalidate_copy(h, coh_line);
+                        ++cachesim::coh.invalidated_copies;
+                        if (h == src) {
+                            c2c_fill = inv;
+                            c2c = true;
+                        } else if (!inv.dirty_addrs.empty()) {
+                            cachesim::pending_writebacks.push_back(coh_line);
+                        }
+                    }
+                    write_invalidated = true;
+                    if (c2c)
+                        ++cachesim::coh.c2c_writes;
+                }
+                if (c2c) {   // served on chip: the LLC is not looked up
+                    hit = true;
+                    hit_at_level = i;
+                    t += lookup_cycles(i);
+                    break;
+                }
+            }
+        }
         access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
         //access_packet->aligned_address = align_address(access_packet->aligned_address, access_packet->size);
         hit = cache[i]->try_hit(access_packet);
@@ -837,7 +1008,24 @@ int access_multi_level(std::vector<BaseCache*> &cache,
     if (hit_at_level != 0) {
         Packet rest_of_line;            // --l1-amoeba-keep-llc only
         bool keep_rest = false;
-        if (hit) {
+        if (c2c) {
+            // Cache-to-cache transfer: the holder's copy (sectors, history) fills the L1D. With --serviced-from-c2c
+            // it counts as served on chip like an LLC hit: +1 to the demanded word's and the line's serviced_from_llc.
+            // Without it, no count is incremented (the copy keeps the source's counts as they are).
+            if (cachesim::SERVICED_FROM_C2C)
+                for (size_t k = 0; k < c2c_fill.blocks.size() && k < c2c_fill.block_serviced_from_llc.size(); k++)
+                    if (c2c_fill.blocks[k] == coh_word) {   // private caches hold 8B sectors
+                        c2c_fill.block_serviced_from_llc[k]++;
+                        break;
+                    }
+            *fill_packet = c2c_fill;
+            fill_packet->set_address(access_packet->address);
+            fill_packet->size = CACHELINE_SIZE;
+            if (cachesim::SERVICED_FROM_C2C)
+                fill_packet->serviced_from_llc += 1;
+            fill_packet->next_reuse = access_packet->next_reuse;
+            cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
+        } else if (hit) {
             cache[hit_at_level]->handle_invalidate(invalidation_packet);
             *fill_packet = *invalidation_packet;
             fill_packet->footprint |= invalidation_packet->footprint;
@@ -949,6 +1137,12 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                     *fill_packet = *eviction_packet;
                     eviction_packet->clear();
                     cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
+                } else if (eviction_packet->blocks.size() > 0 && coherent && eviction_packet->address != UINT64_MAX &&
+                           [&] { line_holders(core_id, align_address(eviction_packet->address, CACHELINE_SIZE), holders);
+                                 return !holders.empty(); }()) {
+                    // Other cores still hold this line: the evicted copy is dropped (see drop_shared_victim).
+                    drop_shared_victim(eviction_packet, holders, curr_cache_block_size);
+                    break;
                 } else if (eviction_packet->blocks.size() > 0) {
                     // Train on data movement from LLC -> L1D
                     predictor->update_footprint(eviction_packet);
@@ -970,6 +1164,8 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                     }
                     fill_packet->next_reuse = eviction_packet->next_reuse;
                     eviction_packet->clear();
+                    if (cachesim::SHARED_LLC_HISTORY)
+                        share_llc_history(fill_packet, curr_cache_block_size);
                     cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
 
                     if (eviction_packet->blocks.size() > 0) {
@@ -1002,10 +1198,38 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     }
 
+    // A store that did not already invalidate the other copies (it hit privately, or no copy existed then):
+    // invalidate them now (upgrade S -> M). Another core cannot hold dirty data here under MSI.
+    if (coherent && !is_read && !write_invalidated) {
+        line_holders(core_id, coh_line, holders);
+        for (BaseCache* h : holders) {
+            Packet inv = invalidate_copy(h, coh_line);
+            ++cachesim::coh.invalidated_copies;
+            if (!inv.dirty_addrs.empty()) {
+                ++cachesim::coh.violations;
+                cachesim::pending_writebacks.push_back(coh_line);
+            }
+        }
+        if (!holders.empty()) {
+            ++cachesim::coh.upgrades;
+            snooped = true;
+        }
+    }
     // A store dirties its word in the L1D (which holds the line now, after a hit or a fill).
     if (!is_read)
         cache[0]->mark_dirty(align_address(address, 8));
 
+    if (hit_at_level == num_levels && cachesim::all_caches.size() > cache.size()) {
+        ++cachesim::memory_misses;
+        const uint64_t word = align_address(address, 8);
+        if (!cachesim::orphan_words.empty() && cachesim::orphan_words.erase(word))
+            ++cachesim::coh.orphan_refetches;
+        for (BaseCache* c : cachesim::all_caches)
+            if (std::find(cache.begin(), cache.end(), c) == cache.end() && c->holds_word(word)) {
+                ++cachesim::memory_misses_held_elsewhere;
+                break;
+            }
+    }
     count_pc_hub(pc, degree, avg_degree, hit_at_level);
 
     // L1D hit: we assume the CPU has an IPC of 1 on cache hit, already
@@ -1034,7 +1258,14 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         (void)dram_cycles;
         if (POPT::active) POPT::charge_engine(dram_cycles, true);
     }
+    if (snooped) {   // snoops of other cores' private caches run in parallel: one remote access
+        const uint64_t sc = snoop_cycles();
+        PerformanceModel::addCycles(sc);
+        t += sc;
+    }
     access_packet->event_time = t;   // data back at the core
+    if (cachesim::SHARED_LLC_HISTORY && !cachesim::history_leaving.empty())
+        forget_llc_history();
     // Dirty lines that left the hierarchy during this access: one 64B write each (once per line per access), at
     // the access's completion time - they do not delay the core.
     if (!cachesim::pending_writebacks.empty()) {

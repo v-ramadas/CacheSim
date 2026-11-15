@@ -132,13 +132,16 @@ bool SectoredSet::try_hit(PacketPtr packet) {
 }
 
 void SectoredSet::handle_fill(PacketPtr packet) {
-    auto way = std::find(valid.begin(), valid.end(), false);
-    uint64_t way_idx = std::distance(valid.begin(), way);
-    auto hit = false;
-    if (way_idx == num_ways) {
-        hit = (std::find(ways.begin(), ways.end(), packet->aligned_address) != ways.end());
-    }
-    assert(hit || (way_idx < num_ways));
+    // If the line is already here, merge the new sectors into its way, each at the slot its address gives (the
+    // packet may have lost entries, so positions do not line up). Single-core runs never get here: the exclusive
+    // hierarchy never holds parts of one line in this level and below at once. Threads that share data without
+    // coherence do - before, the fill went into a second way (two copies of the line in one cache) or, with no
+    // free way, indexed one past the last way.
+    auto present = std::find(ways.begin(), ways.end(), packet->aligned_address);
+    const bool merge = (present != ways.end());
+    uint64_t way_idx = merge ? (uint64_t)std::distance(ways.begin(), present)
+                             : (uint64_t)std::distance(valid.begin(), std::find(valid.begin(), valid.end(), false));
+    assert(way_idx < num_ways);
     repl_counter->init_counter(packet);
     valid[way_idx] = true;
     ways[way_idx] = packet->aligned_address;
@@ -155,14 +158,16 @@ void SectoredSet::handle_fill(PacketPtr packet) {
     repl_counter->fill_update(way_idx, 0, packet, true);
     auto way_sector = &way_sectors[way_idx];
 
-    uint64_t sector_idx = 0;
+    uint64_t pos = 0;   // position in the packet's per-block arrays
     for (const auto block_address: packet->blocks) {
+        // Sector slot: the packet position (normal fill), or the block's own slot when merging.
+        uint64_t sector_idx = (merge && block_address != UINT64_MAX) ? (block_address % CACHELINE_SIZE) / block_size : pos;
         assert(packet->blocks.size() <= 8);
         assert(sector_idx < 8);
         assert(way_sector->valid.size() == 8);
         if (way_sector->valid[sector_idx]) {
-            assert(way_sector->sectors[sector_idx] == block_address);
-            sector_idx++;
+            assert(merge || way_sector->sectors[sector_idx] == block_address);
+            pos++;
             continue;
         }
         if (block_address != UINT64_MAX) {
@@ -171,10 +176,10 @@ void SectoredSet::handle_fill(PacketPtr packet) {
             if (packet->block_degrees.size() == 0) {
                 way_sector->degree[sector_idx] = packet->degree;
             } else {
-                way_sector->degree[sector_idx] = packet->block_degrees[sector_idx];
-                way_sector->block_serviced_from_llc[sector_idx] = packet->block_serviced_from_llc[sector_idx];
-                way_sector->block_prev_counter[sector_idx] = (sector_idx < packet->block_prev_counter.size())
-                    ? packet->block_prev_counter[sector_idx] : UINT64_MAX;
+                way_sector->degree[sector_idx] = packet->block_degrees[pos];
+                way_sector->block_serviced_from_llc[sector_idx] = packet->block_serviced_from_llc[pos];
+                way_sector->block_prev_counter[sector_idx] = (pos < packet->block_prev_counter.size())
+                    ? packet->block_prev_counter[pos] : UINT64_MAX;
             }
             way_sector->avg_degree[sector_idx] = packet->avg_degree;
 
@@ -209,7 +214,7 @@ void SectoredSet::handle_fill(PacketPtr packet) {
                 set_footprint(way_idx, word_idx, true);
             }
         }
-        sector_idx++;
+        pos++;
     }
     return;
 }
@@ -340,4 +345,73 @@ bool SectoredSet::holds_word(uint64_t word) const {
         if (sec.valid[k] && sec.sectors[k] == block)
             return true;
     return false;
+}
+
+bool SectoredSet::copy_line(uint64_t word, Packet& out) {
+    const uint64_t line = align_address(word, CACHELINE_SIZE);
+    auto way = std::find(ways.begin(), ways.end(), line);
+    if (way == ways.end())
+        return false;
+    out.clear_blocks();
+    out.dirty_addrs.clear();
+    fill_packet(&out, std::distance(ways.begin(), way));   // blocks, per-sector metadata, dirty words
+    out.footprint = 0;                                      // the requester's own use starts now
+    return true;
+}
+
+// Coherence: a cache-to-cache transfer served `word` from this copy; count it as an on-chip service of the word
+// here too (as an LLC hit counts it), so this copy's PHRU history matches the requester's.
+bool SectoredSet::count_service(uint64_t word) {
+    const uint64_t line = align_address(word, CACHELINE_SIZE);
+    auto way = std::find(ways.begin(), ways.end(), line);
+    if (way == ways.end())
+        return false;
+    const uint64_t way_idx = std::distance(ways.begin(), way);
+    auto& sec = way_sectors[way_idx];
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.sectors[k] != UINT64_MAX && sec.sectors[k] <= word && word < sec.sectors[k] + block_size) {
+            sec.block_serviced_from_llc[k]++;
+            serviced_from_llc[way_idx]++;
+            return true;
+        }
+    return false;
+}
+
+int64_t SectoredSet::word_count(uint64_t word) {
+    auto way = std::find(ways.begin(), ways.end(), align_address(word, CACHELINE_SIZE));
+    if (way == ways.end())
+        return -1;
+    auto& sec = way_sectors[std::distance(ways.begin(), way)];
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.sectors[k] != UINT64_MAX && sec.sectors[k] <= word && word < sec.sectors[k] + block_size)
+            return (int64_t)sec.block_serviced_from_llc[k];
+    return -1;
+}
+
+void SectoredSet::raise_count(uint64_t word, uint64_t count) {
+    auto way = std::find(ways.begin(), ways.end(), align_address(word, CACHELINE_SIZE));
+    if (way == ways.end())
+        return;
+    const uint64_t way_idx = std::distance(ways.begin(), way);
+    auto& sec = way_sectors[way_idx];
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.sectors[k] != UINT64_MAX && sec.sectors[k] <= word && word < sec.sectors[k] + block_size) {
+            sec.block_serviced_from_llc[k] = std::max(sec.block_serviced_from_llc[k], count);
+            serviced_from_llc[way_idx] = std::max(serviced_from_llc[way_idx], count);
+        }
+}
+
+std::vector<uint64_t> SectoredSet::clean_line(uint64_t line) {
+    std::vector<uint64_t> dirty_words;
+    auto way = std::find(ways.begin(), ways.end(), line);
+    if (way == ways.end())
+        return dirty_words;
+    auto& sec = way_sectors[std::distance(ways.begin(), way)];
+    for (uint64_t k = 0; k < sec.sectors.size(); k++)
+        if (sec.valid[k] && sec.dirty[k] && sec.sectors[k] != UINT64_MAX) {
+            for (uint64_t off = 0; off < block_size; off += 8)
+                dirty_words.push_back(sec.sectors[k] + off);
+            sec.dirty[k] = false;
+        }
+    return dirty_words;
 }

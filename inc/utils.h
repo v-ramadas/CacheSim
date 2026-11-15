@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <vector>
+#include <unordered_map>
 #include <fmt/chrono.h>
 #include <fmt/core.h>
 #include "performance_model.h"
@@ -329,5 +330,18 @@ typedef Packet *PacketPtr;
 // Lines with dirty data that left the hierarchy during the current access (LLC victims, blocks the LLC declined,
 // set breakdown/merge, Amoeba words dropped); access_multi_level writes each back (64B) when the access completes.
 namespace cachesim { inline std::vector<uint64_t> pending_writebacks; }
+
+// --shared-llc-history (diagnostic): copies of one block in different cores' private caches (no coherence) each
+// carry their own LLC round-trip count (serviced_from_llc), which PHRU uses to find hubs. With this on, a block
+// inserted into the LLC takes the largest count any copy has had (table keyed by block), and the entry is dropped
+// once no cache holds the block - so with one core (one copy) nothing changes.
+namespace cachesim {
+    inline bool SHARED_LLC_HISTORY = false;
+    inline std::unordered_map<uint64_t, uint64_t> llc_history;          // key: block address | size class
+    inline std::vector<std::pair<uint64_t, uint64_t>> history_leaving;  // (block address, block size) left the LLC
+    inline uint64_t history_key(uint64_t block, uint64_t size) {
+        return block | (size >= 64 ? 3 : size >= 32 ? 2 : size >= 16 ? 1 : 0);
+    }
+}
 
 #endif
