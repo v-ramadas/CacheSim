@@ -102,25 +102,10 @@ void PerformanceModel::printParams() {
     }
 }
 
-void PerformanceModel::processCPU(const uint64_t /*numInstructions*/) {
-    //uint64_t progressCycles = 0;
-
-    //uint64_t num_decode_windows = (numInstructions + getParam("cpu_decode_width"))/getParam("cpu_decode_width");
-    //progressCycles += getParam("cpu_decode_latency")*num_decode_windows;
-
-    //uint64_t num_dispatch_windows = (numInstructions + getParam("cpu_dispatch_width"))/getParam("cpu_dispatch_width");
-    //progressCycles += getParam("cpu_dispatch_latency")*num_dispatch_windows;
-
-    //uint64_t num_scheduling_windows = (numInstructions + getParam("cpu_scheduler_size"))/getParam("cpu_scheduler_size");
-    //progressCycles += getParam("cpu_schedule_latency")*num_scheduling_windows;
-
-    //uint64_t num_execution_windows = (numInstructions + getParam("cpu_lq_width"))/getParam("cpu_lq_width");
-    //progressCycles += getParam("cpu_execute_latency")*num_execution_windows;
-
-    //numCycles += progressCycles;
-
-    // We assume an IPC of 1. So update time by 1
-    numCycles++;
+void PerformanceModel::processCPU(const uint64_t numInstructions) {
+    // IPC 1: every instruction takes one cycle (a memory access's cycle is its L1D lookup; misses add the lower
+    // levels' cycles separately). The caller passes the instructions retired since the core's previous access.
+    numCycles += numInstructions;
 }
 
 

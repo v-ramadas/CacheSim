@@ -103,7 +103,6 @@ int main(int argc, char** argv) {
     app.add_option("--traces", core_traces, "Trace per core, by core id; 'none' = idle core (YAML: traces). Replaces --trace. Currently at most one core may run a trace");
     app.add_option("--trace-format", trace_format, "Trace format")->transform(CLI::CheckedTransformer(std::map<std::string, TraceFormat>{
         {"champsim", TraceFormat::CHAMPSIM},
-        {"addresses", TraceFormat::ADDRESSES},
         {"instructions", TraceFormat::INSTRUCTIONS},
         {"pin", TraceFormat::PIN},
     }))->transform(yaml_config::keep_text("trace-format"))->default_str("champsim");
@@ -549,6 +548,8 @@ int main(int argc, char** argv) {
                        "upgrades {} | invalidated copies {} | shared victims dropped {} | violations {}\n",
                        cachesim::PROTOCOL->name(), c.c2c_reads, c.c2c_writes, c.downgrades, c.upgrades, c.invalidated_copies,
                        c.shared_victims_dropped, c.violations);
+            fmt::print("System: coherence push-to-sharers candidates: reads filled from LLC/memory while other cores hold the line {} | "
+                       "sharer copies that would be filled {} | words pushed {}\n", c.push_fills, c.push_sharers, c.push_words);
             fmt::print("System: coherence ownership hand-over: read fills with dirty words: reader became owner {} | "
                        "written back on fill {}\n", c.dirty_fills_owned, c.dirty_fills_cleaned);
             fmt::print("System: coherence drops: words {} | not held elsewhere {} (re-fetched from DRAM {}) | count above every "

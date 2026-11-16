@@ -821,6 +821,8 @@ namespace cachesim {
         uint64_t violations = 0;                    // dirty data found where MSI forbids it (written back)
         uint64_t dirty_fills_owned = 0;             // read fills with dirty words: the reader became the owner
         uint64_t dirty_fills_cleaned = 0;           // ... written back as the line filled (others hold it)
+        // Measurement for pushing fills to sharers: reads filled from the LLC / memory while other cores hold the line
+        uint64_t push_fills = 0, push_sharers = 0, push_words = 0;   // fills; (fill, other core) pairs; words added
         // Diagnostics of dropped copies (8B words):
         uint64_t drop_words = 0;                    // valid words in dropped copies
         uint64_t drop_orphan_words = 0;             //   of which no other core held (data lost from chip)

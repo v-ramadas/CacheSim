@@ -104,6 +104,7 @@ class Core {
     std::vector<uint64_t> misses_;
     std::vector<std::string> level_names_;           // kept: main deletes the caches before stats print
     uint64_t pass_base_ = 0;                         // instructions format: count before this pass
+    uint64_t last_issue_instructions_ = 0;           // this core's instruction count at its previous access
 
     Packet access_packet_, eviction_packet_, fill_packet_, invalidation_packet_;
 };

@@ -22,19 +22,17 @@ FAILS = []
 
 
 # ------------------------------------------------------------------------------------------------ helpers
-def acc(n, addr, write=False, fmt="instructions"):
+def acc(n, addr, write=False):
     kind = "Write" if write else "Read"
-    if fmt == "addresses":
-        return f"PC:4198400 {kind.lower()}:{addr:#x} 0 0 0.00"
     return f"instCount:{n},PC:0x401000,{kind}:{addr:#x},NextReuse:0,NodeDegree:0,PCAvgDegree:0.00"
 
 
-def hits(n0, n1, addr, fmt="instructions"):          # accesses n0..n1-1 to one line (hits after the first)
-    return [acc(i, addr, fmt=fmt) for i in range(n0, n1)]
+def hits(n0, n1, addr):          # accesses n0..n1-1 to one line (hits after the first)
+    return [acc(i, addr) for i in range(n0, n1)]
 
 
-def misses(n0, n1, base, fmt="instructions"):        # accesses n0..n1-1 to lines 1 MB apart (all miss)
-    return [acc(i, base + i * 0x100000, fmt=fmt) for i in range(n0, n1)]
+def misses(n0, n1, base):        # accesses n0..n1-1 to lines 1 MB apart (all miss)
+    return [acc(i, base + i * 0x100000) for i in range(n0, n1)]
 
 
 class Run:
@@ -263,15 +261,6 @@ def t_iters(d):
           str(r.cores))
 
 
-def t_addresses_format(d):
-    print("addresses trace format with barriers")
-    a = hits(1, 4, 0x10000000, "addresses") + ["BARRIER:1"] + hits(4, 6, 0x10000000, "addresses")
-    b = misses(1, 4, 0x20000000, "addresses") + ["BARRIER:1"] + misses(4, 6, 0x20000000, "addresses")
-    r = Run(d, [a, b], fmt="addresses")
-    common_checks(r, 2, 1)
-    check("5 accesses per core", all(r.cores.get(c, {}).get("acc") == 5 for c in (0, 1)), str(r.cores))
-
-
 def t_single_core(d):
     print("1 core: barrier lines change nothing")
     body = [acc(i, 0x10000000 + (i % 7) * 0x40) for i in range(1, 30)]
@@ -444,14 +433,14 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
         for t in (t_two_core_barriers, t_three_core_barriers, t_rule_with_idle_core, t_finish_while_others_wait,
-                  t_finish_before_barrier, t_marker_forms, t_iters, t_addresses_format, t_single_core, t_mismatch,
+                  t_finish_before_barrier, t_marker_forms, t_iters, t_single_core, t_mismatch,
                   t_determinism, t_invariants, t_single_level_build, t_event_times, t_min_clock, t_writebacks,
                   t_sniper_timing):
             t(d)
         print("--- again with --scheduler round_robin_skip")
         Run.scheduler = "round_robin_skip"
         for t in (t_two_core_barriers, t_three_core_barriers, t_rule_with_idle_core, t_finish_while_others_wait,
-                  t_finish_before_barrier, t_marker_forms, t_iters, t_addresses_format, t_single_level_build):
+                  t_finish_before_barrier, t_marker_forms, t_iters, t_single_level_build):
             t(d)
         Run.scheduler = "min_clock"
     if args.real:

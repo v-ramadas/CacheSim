@@ -4,7 +4,6 @@
 // Trace input: one reader per trace format, all producing the same TraceRecord, which a Core turns into
 // instruction counts, barriers and memory accesses (core.cc). Formats (--trace-format):
 //   champsim      ChampSim binary traces (ChampSim's tracereader): one record per instruction, its loads then stores
-//   addresses     text "PC:<pc> <read|write>:0x<addr> [next_reuse degree avg_degree]", one instruction per line
 //   instructions  text "instCount:N,PC:0x..,Read|Write:0x..,NextReuse:..,NodeDegree:..,PCAvgDegree:.." (GAP Pin
 //                 traces), one access per line, N = the program's running instruction count
 //   pin           live: CacheSim runs the program under Pin with our ROI tracer and reads its records while it runs
@@ -18,7 +17,6 @@
 
 enum class TraceFormat {
     CHAMPSIM,
-    ADDRESSES,
     INSTRUCTIONS,
     PIN,
 };
@@ -40,7 +38,6 @@ struct TraceRecord {
     uint64_t barrier_id = 0;
     Count count = Count::NONE;          // ADD: retire `instructions`; AT: the trace's running count is `instructions`
     uint64_t instructions = 0;
-    bool next_reuse_from_now = false;   // addresses format: NextReuse is relative to the count after retiring
     bool oracle_hooks = false;          // instructions format: feed P-OPT / Belady before issuing
     bool reset_packets = false;         // champsim: clear the core's packets before issuing
     std::vector<TraceAccess> accesses;  // in issue order
@@ -72,13 +69,6 @@ int parse_instructions_line(const std::string& line, InstructionsLine& out);   /
 bool parse_instructions_access(const std::string& line, uint64_t& inst, uint64_t& pc, char (&action)[16],
                                uint64_t& address);
 
-struct AddressesLine {
-    uint64_t pc = 0, address = 0, next_reuse = UINT64_MAX, degree = 0;
-    float avg_degree = 0.0f;
-    char action[16] = {0};
-    bool is_read() const;                        // action == "read"
-};
-int parse_addresses_line(const std::string& line, AddressesLine& out);         // 6 fields when complete
 
 // "BARRIER" or "BARRIER:<n>": true for a barrier line; has_id/id say whether a number was given.
 bool parse_barrier_line(const std::string& line, bool& has_id, uint64_t& id);

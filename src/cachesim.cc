@@ -777,6 +777,44 @@ static void hand_over_dirty(PacketPtr fill, uint64_t line, uint8_t& state, uint8
     }
 }
 
+// Measurement for a "push to sharers" design: a read filled from the LLC / memory while other cores hold the line.
+// Per other core holding the line: the fetched words it does not hold (what pushing the fill to it would add).
+static void count_push_candidates(PacketPtr fill, uint32_t core, uint64_t line, bool whole_line) {
+    std::vector<uint64_t> words;
+    if (whole_line)   // memory fill: the whole 64B line arrives
+        for (uint64_t w = line; w < line + CACHELINE_SIZE; w += 8)
+            words.push_back(w);
+    else
+        for (uint64_t b : fill->blocks)
+            if (b != UINT64_MAX && align_address(b, CACHELINE_SIZE) == line)
+                words.push_back(align_address(b, 8));
+    if (words.empty())
+        return;
+    bool any = false;
+    for (uint32_t c = 0; c < cachesim::core_private.size(); ++c) {
+        if (c == core)
+            continue;
+        const auto& caches = cachesim::core_private[c];
+        bool holds_line = false;
+        for (BaseCache* pc : caches)
+            for (uint64_t w = line; w < line + CACHELINE_SIZE && !holds_line; w += 8)
+                holds_line = pc->holds_word(w);
+        if (!holds_line)
+            continue;
+        any = true;
+        ++cachesim::coh.push_sharers;
+        for (uint64_t w : words) {
+            bool has = false;
+            for (BaseCache* pc : caches)
+                has = has || pc->holds_word(w);
+            if (!has)
+                ++cachesim::coh.push_words;
+        }
+    }
+    if (any)
+        ++cachesim::coh.push_fills;
+}
+
 // The requester's own state for `line`: its most owning private copy.
 static uint8_t own_state(const std::vector<BaseCache*>& cache, int num_levels, uint64_t line) {
     uint8_t s = coh::INVALID;
@@ -914,8 +952,11 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     }
 
-    PerformanceModel::processCPU(cachesim::instCount - cachesim::prevInstCount);
-    cachesim::prevInstCount = cachesim::instCount;
+    // IPC 1: the instructions this core retired since its previous access (cachesim::ISSUE_INSTRUCTIONS, set by
+    // Core::issue; this access's instruction included) take one cycle each, the last of them being the L1D lookup.
+    // A further access of the same instruction (gap 0) still costs its 1-cycle L1D lookup.
+    const uint64_t inst_cycles = std::max<uint64_t>(cachesim::ISSUE_INSTRUCTIONS, 1);
+    PerformanceModel::processCPU(inst_cycles);
     // Event time: the L1D access happens at the issue time; each level missed adds its lookup cycles, so before
     // level i's lookup t is the time of that lookup (kept in a local: cache code may copy packets over it).
     auto lookup_cycles = [&](int lvl) {
@@ -925,7 +966,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             default:              return PerformanceModel::llcLookupCycles();
         }
     };
-    uint64_t t = issue_time;
+    uint64_t t = issue_time + (inst_cycles - 1);   // the non-memory instructions before this access
     // Coherence state for this access.
     const coh::Protocol* proto = cachesim::PROTOCOL.get();
     const bool coherent = proto && cachesim::core_private.size() > 1 && core_id < cachesim::core_private.size();
@@ -1054,8 +1095,11 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                 fill_packet->serviced_from_llc += 1;
             // An LLC hit fills in the state the protocol decided; an L2 hit keeps the L2 copy's state.
             if (coherent && cache[hit_at_level]->get_level() == CacheLevel::LLC) {
-                if (is_read)
+                if (is_read) {
                     hand_over_dirty(fill_packet, coh_line, requester_state, dirty_fill_state, clean_dirty_fill);
+                    if (!holders.empty())
+                        count_push_candidates(fill_packet, core_id, coh_line, false);
+                }
                 fill_packet->coh_state = requester_state;
             }
             // The line's next use is this access's NextReuse, not the one
@@ -1114,8 +1158,11 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             line_dirty.erase(std::unique(line_dirty.begin(), line_dirty.end()), line_dirty.end());
             fill_packet->dirty_addrs = line_dirty;
             if (coherent) {
-                if (is_read)
+                if (is_read) {
                     hand_over_dirty(fill_packet, coh_line, requester_state, dirty_fill_state, clean_dirty_fill);
+                    if (!holders.empty())
+                        count_push_candidates(fill_packet, core_id, coh_line, true);
+                }
                 fill_packet->coh_state = requester_state;
             }
 

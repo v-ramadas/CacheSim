@@ -13,13 +13,12 @@ void TraceRecord::clear() {
     barrier_id = 0;
     count = Count::NONE;
     instructions = 0;
-    next_reuse_from_now = oracle_hooks = reset_packets = false;
+    oracle_hooks = reset_packets = false;
     accesses.clear();
     line.clear();
 }
 
 bool InstructionsLine::is_read() const { return std::strcmp(action, "Read") == 0; }
-bool AddressesLine::is_read() const { return std::strcmp(action, "read") == 0; }
 
 int parse_instructions_line(const std::string& line, InstructionsLine& o) {
     return std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx,NextReuse:%lu,NodeDegree:%lu,PCAvgDegree:%f",
@@ -31,10 +30,6 @@ bool parse_instructions_access(const std::string& line, uint64_t& inst, uint64_t
     return std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &address) == 4;
 }
 
-int parse_addresses_line(const std::string& line, AddressesLine& o) {
-    return std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %f", &o.pc, o.action, &o.address, &o.next_reuse,
-                       &o.degree, &o.avg_degree);
-}
 
 bool parse_barrier_line(const std::string& line, bool& has_id, uint64_t& id) {
     if (line.rfind("BARRIER", 0) != 0)
@@ -47,10 +42,10 @@ bool parse_barrier_line(const std::string& line, bool& has_id, uint64_t& id) {
 
 namespace {
 
-// Text formats: one record per line.
+// Instructions-format text traces: one record per line.
 class TextReader : public TraceReader {
   public:
-    TextReader(const std::string& path, TraceFormat format) : file_(path), format_(format) {}
+    explicit TextReader(const std::string& path) : file_(path) {}
     bool ok() const override { return file_.is_open(); }
     bool next(TraceRecord& rec) override {
         rec.clear();
@@ -61,34 +56,22 @@ class TextReader : public TraceReader {
             rec.barrier = true;
             return true;
         }
-        if (format_ == TraceFormat::ADDRESSES) {
-            // Every line is one instruction (only a parsable access line counts).
-            AddressesLine a;
-            if (parse_addresses_line(rec.line, a) >= 3) {
-                rec.count = TraceRecord::Count::ADD;
-                rec.instructions = 1;
-                rec.next_reuse_from_now = true;
-                rec.accesses.push_back({a.address, a.pc, a.is_read(), a.next_reuse, a.degree, a.avg_degree});
-            }
-        } else {
-            // The line carries the program's running instruction count; an access needs PC, action and address.
-            InstructionsLine l;
-            int parsed = parse_instructions_line(rec.line, l);
-            if (parsed >= 1) {
-                rec.count = TraceRecord::Count::AT;
-                rec.instructions = l.inst;
-            }
-            if (parsed >= 3) {
-                rec.oracle_hooks = true;
-                rec.accesses.push_back({l.address, l.pc, l.is_read(), l.next_reuse, l.degree, l.avg_degree});
-            }
+        // The line carries the program's running instruction count; an access needs PC, action and address.
+        InstructionsLine l;
+        int parsed = parse_instructions_line(rec.line, l);
+        if (parsed >= 1) {
+            rec.count = TraceRecord::Count::AT;
+            rec.instructions = l.inst;
+        }
+        if (parsed >= 3) {
+            rec.oracle_hooks = true;
+            rec.accesses.push_back({l.address, l.pc, l.is_read(), l.next_reuse, l.degree, l.avg_degree});
         }
         return true;
     }
 
   private:
     TraceFile file_;
-    TraceFormat format_;
 };
 
 // ChampSim binary traces: one record per instruction, its source (load) then destination (store) addresses.
@@ -124,9 +107,8 @@ std::unique_ptr<TraceReader> open_trace(TraceFormat format, const std::string& p
     switch (format) {
         case TraceFormat::CHAMPSIM:
             return std::make_unique<ChampSimReader>(path, core_id);
-        case TraceFormat::ADDRESSES:
         case TraceFormat::INSTRUCTIONS:
-            return std::make_unique<TextReader>(path, format);
+            return std::make_unique<TextReader>(path);
         case TraceFormat::PIN:
             return pin_input::reader(core_id);   // live: the path is only a label
     }

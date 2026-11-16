@@ -49,6 +49,9 @@ enum class L1AmoebaFetch {
 namespace cachesim {
     extern uint64_t instCount;
     extern uint64_t prevInstCount;
+    // Instructions the issuing core retired since its previous memory access, this access's instruction included
+    // (0 for a further access of the same instruction); Core::issue sets it, the timing model charges it (IPC 1).
+    inline uint64_t ISSUE_INSTRUCTIONS = 1;
 
     extern uint64_t BLOCK_SIZE;
 

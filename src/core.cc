@@ -110,6 +110,9 @@ void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reus
     address = translate(address, app_);
     pc = translate(pc, app_);
     const uint64_t issue_time = clock_now();
+    // IPC 1: this core's instructions since its previous access are charged with this access (timing model).
+    cachesim::ISSUE_INSTRUCTIONS = instructions_ - last_issue_instructions_;
+    last_issue_instructions_ = instructions_;
     int hit_at_level =
 #ifdef MULTI_LEVEL
     access_multi_level(caches_, &access_packet_, &eviction_packet_, &fill_packet_, &invalidation_packet_,
@@ -167,9 +170,7 @@ Core::Read Core::step_record() {
     }
     for (auto& a : r.accesses) {
         try {
-            uint64_t next_reuse = a.next_reuse;
-            if (r.next_reuse_from_now && next_reuse != UINT64_MAX)
-                next_reuse += cachesim::instCount;
+            const uint64_t next_reuse = a.next_reuse;
             if (r.oracle_hooks) {
                 if (POPT::active) POPT::on_access(a.pc, a.address, a.is_read);   // gathers advance P-OPT's currDstID
                 if (Belady::oracle_active) Belady::on_access(a.address);        // next-use oracle
