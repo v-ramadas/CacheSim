@@ -1,5 +1,6 @@
 #include "popt_replacement_policy.h"
 #include "trace_file.h"
+#include "tracer.h"
 #include "defs.h"
 #include <fmt/core.h>
 #include <cstring>
@@ -123,7 +124,7 @@ bool POPT::setup(const std::string& trace_path) {
     uint64_t inst, pc, addr;
     while (trace.getline(line)) {
         line_idx++;
-        if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) != 4) continue;
+        if (!parse_instructions_access(line, inst, pc, action, addr)) continue;
         auto& p = pcs[pc];
         uint64_t n_before = p.reads + p.writes;
         if (n_before == 0) p.first_idx = line_idx;

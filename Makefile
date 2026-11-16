@@ -49,7 +49,7 @@ INC_FLAGS      := -I$(CHAMPSIM_DIR) -I$(CHAMPSIM_DIR)/inc \
 LDFLAGS        := $(BUILD_LDFLAGS) -L$(CHAMPSIM_DIR)/vcpkg_installed/x64-linux/lib \
                   -L$(CHAMPSIM_DIR)/vcpkg_installed/x64-linux/lib/manual-link
 
-LDLIBS         := -llzma -lfmt -lbz2 -lz -lCLI11 -lstdc++ -lm
+LDLIBS         := -llzma -lfmt -lbz2 -lz -lCLI11 -lstdc++ -lm -pthread
 
 # --- Binary names (suffixed per build type so debug/asan don't clobber release) ---
 CACHESIM_BIN       := $(BIN_DIR)/cachesim$(SUFFIX)

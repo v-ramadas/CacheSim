@@ -36,6 +36,7 @@ void SectoredSet::fill_packet(PacketPtr packet, uint64_t way_idx) {
         packet->block_degrees = way_sectors[way_idx].degree;
         packet->block_serviced_from_llc = way_sectors[way_idx].block_serviced_from_llc;
         packet->block_prev_counter = way_sectors[way_idx].block_prev_counter;
+        packet->coh_state = coh_state[way_idx];
 }
 
 void SectoredSet::invalidate_way(uint64_t way_idx) {
@@ -49,6 +50,7 @@ void SectoredSet::invalidate_way(uint64_t way_idx) {
     way_hits[way_idx] = 0;
     degree[way_idx] = 0;
     avg_degree[way_idx] = 0.0f;
+    coh_state[way_idx] = 0;
     way_sectors[way_idx].invalidate();
     repl_counter->evict(way_idx);
 }
@@ -149,6 +151,8 @@ void SectoredSet::handle_fill(PacketPtr packet) {
     pc[way_idx] = packet->pc;
     next_reuse[way_idx] = packet->next_reuse;
     serviced_from_llc[way_idx] += packet->serviced_from_llc;
+    // Coherence: a line merging with a copy of itself keeps the more owning state (both are this core's copies).
+    coh_state[way_idx] = merge ? std::max(coh_state[way_idx], packet->coh_state) : packet->coh_state;
     if (!is_hub_node[way_idx])
         is_hub_node[way_idx] = packet->is_hub_node;
     if (degree[way_idx] < packet->degree)
@@ -281,6 +285,7 @@ void SectoredSet::handle_evict(PacketPtr packet) {
 
 
     packet->pc = pc[way_idx];
+    packet->coh_state = coh_state[way_idx];   // the victim carries its coherence state to the level below
     packet->next_reuse = next_reuse[way_idx];
     packet->serviced_from_llc = std::max(packet->serviced_from_llc, serviced_from_llc[way_idx]);
     packet->is_hub_node = is_hub_node[way_idx];
@@ -399,6 +404,43 @@ void SectoredSet::raise_count(uint64_t word, uint64_t count) {
             sec.block_serviced_from_llc[k] = std::max(sec.block_serviced_from_llc[k], count);
             serviced_from_llc[way_idx] = std::max(serviced_from_llc[way_idx], count);
         }
+}
+
+uint8_t SectoredSet::line_state(uint64_t line) const {
+    auto way = std::find(ways.begin(), ways.end(), line);
+    return way == ways.end() ? 0 : coh_state[std::distance(ways.begin(), way)];
+}
+
+bool SectoredSet::line_dirty(uint64_t line) const {
+    auto way = std::find(ways.begin(), ways.end(), line);
+    if (way == ways.end())
+        return false;
+    const auto& sec = way_sectors[std::distance(ways.begin(), way)];
+    for (size_t k = 0; k < sec.sectors.size(); ++k)
+        if (sec.valid[k] && sec.dirty[k] && sec.sectors[k] != UINT64_MAX)
+            return true;
+    return false;
+}
+
+void SectoredSet::set_line_state(uint64_t line, uint8_t state) {
+    auto way = std::find(ways.begin(), ways.end(), line);
+    if (way != ways.end())
+        coh_state[std::distance(ways.begin(), way)] = state;
+}
+
+void SectoredSet::collect_lines(std::vector<LineInfo>& out) const {
+    for (size_t i = 0; i < ways.size(); ++i) {
+        if (!valid[i] || ways[i] == UINT64_MAX)
+            continue;
+        bool any = false, dirty_any = false;
+        for (size_t k = 0; k < way_sectors[i].valid.size(); ++k)
+            if (way_sectors[i].valid[k] && way_sectors[i].sectors[k] != UINT64_MAX) {
+                any = true;
+                dirty_any |= (bool)way_sectors[i].dirty[k];
+            }
+        if (any)
+            out.push_back({ways[i], coh_state[i], dirty_any});
+    }
 }
 
 std::vector<uint64_t> SectoredSet::clean_line(uint64_t line) {

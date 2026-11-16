@@ -2,6 +2,7 @@
 #include "popt_replacement_policy.h"
 #include "popt_matrix_build.h"
 #include "trace_file.h"
+#include "tracer.h"
 #include "performance_model.h"
 #include <fmt/core.h>
 #include <algorithm>
@@ -88,7 +89,7 @@ bool POPT::setup_push(const std::string& trace_path, const std::string& base) {
         TraceFile trace(trace_path);
         if (!trace.is_open()) return false;
         while (trace.getline(line)) {
-            if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) != 4) continue;
+            if (!parse_instructions_access(line, inst, pc, action, addr)) continue;
             if (strcmp(action, "Read") != 0) continue;
             auto& s = st[pc];
             if (s.reads) { if (addr - s.last == 4) s.s4++; else if (addr - s.last == 8) s.s8++; }
@@ -124,7 +125,7 @@ bool POPT::setup_push(const std::string& trace_path, const std::string& base) {
         uint64_t li = 0;
         while (trace.getline(line)) {
             li++;
-            if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) != 4) continue;
+            if (!parse_instructions_access(line, inst, pc, action, addr)) continue;
             if (strcmp(action, "Read") != 0) continue;
             auto ci = cidx.find(pc);
             if (ci != cidx.end()) { int i = ci->second; last_c[i] = addr; last_line[i] = li; seq[i]++; }

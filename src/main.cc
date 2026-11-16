@@ -1,6 +1,7 @@
 #include "cachesim.h"
 #include "yaml_config.h"
 #include "core.h"
+#include "pin_input.h"
 
 uint64_t cachesim::instCount = 0;
 uint64_t cachesim::prevInstCount = 0;
@@ -104,6 +105,7 @@ int main(int argc, char** argv) {
         {"champsim", TraceFormat::CHAMPSIM},
         {"addresses", TraceFormat::ADDRESSES},
         {"instructions", TraceFormat::INSTRUCTIONS},
+        {"pin", TraceFormat::PIN},
     }))->transform(yaml_config::keep_text("trace-format"))->default_str("champsim");
     app.add_option("--num-cache-sets", llc_num_sets, "Number of sets in cache (YAML: llc.sets)")->required();
     app.add_option("--num-cache-ways", llc_num_ways, "Number of ways in cache (YAML: llc.ways)")->required();
@@ -140,6 +142,16 @@ int main(int argc, char** argv) {
     app.add_option("--debug-start", cachesim::START_DEBUG, "Start debugging here");
     app.add_option("--debug-end", cachesim::END_DEBUG, "End debugging here");
     app.add_option("--iters", num_iters, "Number of iterations");
+    PinConfig pin_cfg;
+    app.add_option("--pin-cmd", pin_cfg.cmd, "--trace-format pin: program and arguments to run under Pin, e.g. \"/path/gapbs/pr_spmv_omp -f g.sg -n 1 -i 1\" (YAML: pin.cmd)");
+    app.add_option("--pin-roi", pin_cfg.roi, "--trace-format pin: ROI marker offsets from _init, \"<start>,<end>\" (as in pin/pin/scripts/gen_traces.sh), or \"magic\": the program's Sniper ROI magic instructions (sim_api.h SimRoiStart/SimRoiEnd, e.g. gapbs_magic/) (YAML: pin.roi)");
+    app.add_option("--pin-root", pin_cfg.pin_root, "--trace-format pin: Pin kit directory (default $PIN_ROOT) (YAML: pin.root)");
+    app.add_option("--pin-tool", pin_cfg.tool, "--trace-format pin: pintool (default ../pin/pin/obj-intel64/gap_roi_tracer_mt.so beside CacheSim) (YAML: pin.tool)");
+    app.add_option("--pin-bmk", pin_cfg.bmk, "--trace-format pin: image the tracer instruments, a substring of its path (default: the program) (YAML: pin.bmk)");
+    app.add_option("--pin-tool-args", pin_cfg.tool_args, "--trace-format pin: extra tracer knobs, e.g. \"-roiOnce 1\" (YAML: pin.tool_args)");
+    app.add_option("--pin-dir", pin_cfg.dir, "--trace-format pin: directory for the FIFOs and the program's output (default: a temporary one, removed after a clean run) (YAML: pin.dir)");
+    app.add_option("--pin-dump", pin_cfg.dump, "--trace-format pin: also save the received records as DIR/trace.t<c>.log, replayable with --trace-format instructions (YAML: pin.dump)");
+    app.add_flag("--pin-aslr", pin_cfg.aslr, "--trace-format pin: keep address-space randomization for the program (default: off, for reproducible runs) (YAML: pin.aslr)");
     app.add_option("--warmup-instructions", cachesim::WARMUP_INSTRUCTIONS, "Warmup instruction count");
     app.add_flag("--gen-stats", cachesim::GEN_STATS, "Disable iso-area mode");
     app.add_flag("--enable-predictor", cachesim::ENABLE_PREDICTOR, "Enable predictor (not implemented)");
@@ -200,10 +212,11 @@ int main(int argc, char** argv) {
     }))->transform(yaml_config::keep_text("scheduler"))->default_str("min_clock");
     uint64_t check_invariants = 0;
     app.add_option("--check-invariants", check_invariants, "Check hierarchy invariants every N schedule steps and at the end (0 = off): words held twice in one cache, in a private level and the LLC, in two levels of one core, or in two cores' private levels; prints the first violation of each kind and a summary (YAML: debug.check_invariants)");
-    app.add_option("--coherence", cachesim::COHERENCE, "Multicore coherence among private caches: msi (default; unbounded snoop filter beside the exclusive LLC) or none (YAML: coherence.protocol)")->transform(CLI::CheckedTransformer(std::map<std::string, cachesim::Coherence>{
-        {"msi", cachesim::Coherence::MSI},
-        {"none", cachesim::Coherence::NONE},
-    }))->transform(yaml_config::keep_text("coherence"))->default_str("msi");
+    app.add_option("--coherence", cachesim::COHERENCE, "Multicore coherence protocol among private caches (coherence.h): mesi (default), msi or none; unbounded exact directory beside the exclusive LLC (YAML: coherence.protocol)")->transform(CLI::CheckedTransformer(std::map<std::string, coh::Kind>{
+        {"msi", coh::Kind::MSI},
+        {"mesi", coh::Kind::MESI},
+        {"none", coh::Kind::NONE},
+    }))->transform(yaml_config::keep_text("coherence"))->default_str("mesi");
     app.add_flag("--serviced-from-c2c,!--no-serviced-from-c2c", cachesim::SERVICED_FROM_C2C, "Coherence: a cache-to-cache transfer adds 1 to the serviced_from_llc counts (the demanded word's and the line's; PHRU's hub signal, SRRIP's reuse insertion) in the new and the source copy, as an LLC hit does - no separate counter; on by default, --no-serviced-from-c2c blocks every such increment (YAML: coherence.serviced_from_c2c: true|false)")->default_str("true");
     app.add_option("--snoop-cycles", cachesim::SNOOP_CYCLES, "Coherence: cycles for a remote private-cache access (cache-to-cache transfer, invalidation, downgrade); 0 = l1d_latency (YAML: coherence.snoop_cycles)");
     app.add_flag("--shared-llc-history", cachesim::SHARED_LLC_HISTORY, "Diagnostic: copies of a block in different cores' private caches share their LLC round-trip count (PHRU's hub signal) when inserted into the LLC; no effect with one core (YAML: debug.shared_llc_history)");
@@ -236,6 +249,19 @@ int main(int argc, char** argv) {
         std::cout << app.config_to_str(true, false);
         return 0;
     }
+    // Live Pin input: core c simulates application thread c; there are no trace files.
+    if (trace_format == TraceFormat::PIN) {
+        if (!core_traces.empty() || !tracename.empty()) {
+            fmt::print(stderr, "--trace-format pin runs the program (--pin-cmd): give no --trace / --traces\n");
+            return 1;
+        }
+        if (num_iters != 1) {
+            fmt::print(stderr, "--trace-format pin: a live run is one pass (--iters 1)\n");
+            return 1;
+        }
+        for (uint32_t c = 0; c < num_cores; ++c)
+            core_traces.push_back(fmt::format("pin:t{}", c));
+    }
     // Trace per core: --traces (by core id, 'none' = idle), or --trace on core 0.
     if (!core_traces.empty() && !tracename.empty()) {
         fmt::print(stderr, "Give either --trace (core 0) or --traces (one per core), not both\n");
@@ -254,7 +280,8 @@ int main(int argc, char** argv) {
             core_traces[c].clear();
             continue;
         }
-        if (FILE* f = std::fopen(core_traces[c].c_str(), "r")) std::fclose(f);
+        if (trace_format == TraceFormat::PIN) {}
+        else if (FILE* f = std::fopen(core_traces[c].c_str(), "r")) std::fclose(f);
         else {
             fmt::print(stderr, "core {}: trace '{}' does not exist\n", c, core_traces[c]);
             return 1;
@@ -263,6 +290,11 @@ int main(int argc, char** argv) {
     }
     if (active_cores.empty()) {
         fmt::print(stderr, "No trace: pass --trace, or --traces / 'traces' in the --config YAML\n");
+        return 1;
+    }
+    if (trace_format == TraceFormat::PIN && (replacement_policy == ReplacementPolicy::POPT || replacement_policy == ReplacementPolicy::GRASP ||
+                                             replacement_policy == ReplacementPolicy::Belady)) {
+        fmt::print(stderr, "popt, belady and grasp read the trace file ahead of the run: not available with --trace-format pin\n");
         return 1;
     }
     if (active_cores.size() > 1 && (replacement_policy == ReplacementPolicy::POPT || replacement_policy == ReplacementPolicy::GRASP ||
@@ -385,6 +417,7 @@ int main(int argc, char** argv) {
         std::cerr << e.what() << std::endl;
         return 1;
     }
+    cachesim::PROTOCOL = coh::make(cachesim::COHERENCE);   // null for --coherence none
     // per_core[c] = core c's view of the hierarchy: its private levels, then the shared LLC.
     std::vector<std::vector<BaseCache*>> per_core(num_cores);
     SparsityPredictor* predictor = new SparsityPredictor(0.4, 1024, cachesim::WARMUP_INSTRUCTIONS);
@@ -467,12 +500,17 @@ int main(int argc, char** argv) {
         }
     }
     // Each core reads its trace and issues to its view of the hierarchy; run_cores interleaves them.
+    if (trace_format == TraceFormat::PIN && !pin_input::start(pin_cfg, num_cores, argv[0]))
+        return 1;
     InvariantStats invariants;
     const ScheduleStats sched = run_cores(cores, check_invariants, &invariants, scheduler);
     if (!sched.error.empty()) {
         fmt::print(stderr, "{}\n", sched.error);
+        pin_input::abort();
         return 1;
     }
+    if (trace_format == TraceFormat::PIN)
+        pin_input::finish();
 
     // Print the first active core's L1D, then the LLC, then its middle level (L2), so the LLC stays the
     // 2nd stats block - every results parser takes the 2nd MPKI line as the LLC. Then the other active
@@ -505,12 +543,14 @@ int main(int argc, char** argv) {
             core.print_stats();
             end = std::max(end, core.cycles());
         }
-        if (cachesim::COHERENCE == cachesim::Coherence::MSI) {
+        if (cachesim::PROTOCOL) {
             const auto& c = cachesim::coh;
-            fmt::print("System: coherence MSI (unbounded snoop filter): cache-to-cache reads {} writes {} | downgrades {} | "
+            fmt::print("System: coherence {} (unbounded snoop filter): cache-to-cache reads {} writes {} | downgrades {} | "
                        "upgrades {} | invalidated copies {} | shared victims dropped {} | violations {}\n",
-                       c.c2c_reads, c.c2c_writes, c.downgrades, c.upgrades, c.invalidated_copies,
+                       cachesim::PROTOCOL->name(), c.c2c_reads, c.c2c_writes, c.downgrades, c.upgrades, c.invalidated_copies,
                        c.shared_victims_dropped, c.violations);
+            fmt::print("System: coherence ownership hand-over: read fills with dirty words: reader became owner {} | "
+                       "written back on fill {}\n", c.dirty_fills_owned, c.dirty_fills_cleaned);
             fmt::print("System: coherence drops: words {} | not held elsewhere {} (re-fetched from DRAM {}) | count above every "
                        "survivor {} (merged into survivors; hub signal kept {})\n",
                        c.drop_words, c.drop_orphan_words, c.orphan_refetches, c.drop_count_higher, c.drop_hub_lost);
@@ -563,6 +603,11 @@ int main(int argc, char** argv) {
                    invariants.checks, invariants.max.dup_in_cache, invariants.max.private_and_llc,
                    invariants.max.l1_and_l2, invariants.max.cross_core,
                    (cachesim::AMOEBA || cachesim::L1_AMOEBA) ? " (skipped: Amoeba sets)" : "");
+    if (check_invariants && cachesim::PROTOCOL && num_cores > 1)
+        fmt::print("Invariants: coherence {}: largest count in a check (lines): without a state {} | exclusive while another "
+                   "core holds the line {} | dirty while another core holds the line {} | dirty in a non-owning state {}\n",
+                   cachesim::PROTOCOL->name(), invariants.max.coh_no_state, invariants.max.coh_exclusive_shared,
+                   invariants.max.coh_dirty_shared, invariants.max.coh_dirty_state);
     // Free every core's private levels, then the shared last level.
     for (uint32_t c = 0; c < num_cores; ++c)
         for (size_t i = 0; i + 1 < per_core[c].size(); ++i)

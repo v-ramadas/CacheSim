@@ -238,23 +238,6 @@ void Cache<T>::print_stats(uint64_t instCount, std::string tracename) {
             fmt::print(" | lines {} mean {:.4f} of 8\n", lines, (double)used / lines);
         }
     }
-    if constexpr (std::is_same_v<T, Set>) {
-        // Cache efficiency: live word-time over capacity x run length. The
-        // stays still open end now (print_stats runs once, after the trace).
-        uint64_t capacity_words = 0;
-        for (const auto& [idx, s] : sets) {
-            s->eff_close_residents();
-            capacity_words += s->get_ways().size() * s->get_block_size() / 8;
-        }
-        double total = (double)capacity_words * instCount;
-        uint64_t dead = Set::eff_dead_after_use + Set::eff_dead_unused;
-        uint64_t occupied = Set::eff_live + dead;
-        auto pct = [](double x, double of) { return of > 0 ? 100.0 * x / of : 0.0; };
-        fmt::print("Cache efficiency {:.4f}% (live word-time / capacity x time) | occupied {:.4f}% of capacity, "
-                   "live {:.4f}% of occupied | dead: never used {:.4f}%, after last use {:.4f}% of occupied\n",
-            pct(Set::eff_live, total), pct(occupied, total), pct(Set::eff_live, occupied),
-            pct(Set::eff_dead_unused, occupied), pct(Set::eff_dead_after_use, occupied));
-    }
     // Misses by how many 8B-or-larger blocks of the requested 64B line were
     // already present at this level (64B LLC: always 0).
     fmt::print("Partial Misses (blocks of the 64B line present on a miss) ");
@@ -751,26 +734,55 @@ static Packet amoeba_rest_of_line(const Packet& access, uint8_t words, uint64_t 
     return p;
 }
 
-// ---------------------------------------------------------------------------------------------- coherence (MSI)
-// Unbounded snoop filter beside the exclusive LLC: it knows exactly which cores' private caches hold a line (here:
-// by asking them). Lines are coherent at 64B. A line lives in private caches (any number of cores, S; or one core
-// with dirty words, M) or in the LLC, never both: a copy evicted while other cores still hold the line is dropped.
+// ---------------------------------------------------------------------------------------------- coherence
+// Engine for the protocol in cachesim::PROTOCOL (coherence.h): it finds the other cores' copies (an unbounded, exact
+// directory: the other cores' private caches are asked), asks the protocol, and carries the decision out on the
+// caches. Lines are coherent at 64B; the LLC is exclusive of the private levels (a copy evicted while other cores
+// hold the line is dropped, when the protocol says so).
 static uint64_t snoop_cycles() {
     return cachesim::SNOOP_CYCLES ? cachesim::SNOOP_CYCLES : PerformanceModel::getParam("l1d_latency");
 }
 
-static void line_holders(uint32_t core, uint64_t line, std::vector<BaseCache*>& out) {
-    out.clear();
+// The other cores' private copies of `line`: one per private cache holding any of its words, core order then level
+// order, with their states and whether they hold `word`.
+static void line_copies(uint32_t core, uint64_t line, uint64_t word, std::vector<BaseCache*>& caches,
+                        std::vector<coh::Copy>& copies) {
+    caches.clear();
+    copies.clear();
     for (uint32_t c = 0; c < cachesim::core_private.size(); ++c) {
         if (c == core)
             continue;
         for (BaseCache* pc : cachesim::core_private[c])
             for (uint64_t w = line; w < line + CACHELINE_SIZE; w += 8)
                 if (pc->holds_word(w)) {
-                    out.push_back(pc);
+                    caches.push_back(pc);
+                    copies.push_back({pc->snoop_state(line), pc->holds_word(word), pc->snoop_dirty(line)});
                     break;
                 }
     }
+}
+
+// Ownership hand-over on a read fill from the LLC / memory: dirty words that come with the line make the requester
+// the owner (dirty_fill_state), or are written back as the line fills (clean_dirty_fill), as the protocol decided.
+static void hand_over_dirty(PacketPtr fill, uint64_t line, uint8_t& state, uint8_t dirty_state, bool clean) {
+    if (fill->dirty_addrs.empty())
+        return;
+    if (clean) {
+        cachesim::pending_writebacks.push_back(line);
+        fill->dirty_addrs.clear();
+        ++cachesim::coh.dirty_fills_cleaned;
+    } else {
+        state = std::max(state, dirty_state);
+        ++cachesim::coh.dirty_fills_owned;
+    }
+}
+
+// The requester's own state for `line`: its most owning private copy.
+static uint8_t own_state(const std::vector<BaseCache*>& cache, int num_levels, uint64_t line) {
+    uint8_t s = coh::INVALID;
+    for (int l = 0; l < num_levels - 1; ++l)
+        s = std::max(s, cache[l]->snoop_state(line));
+    return s;
 }
 
 // Invalidate one private copy of `line`; returns its contents (blocks, metadata, dirty words).
@@ -914,12 +926,16 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     };
     uint64_t t = issue_time;
-    // Coherence (MSI) state for this access.
-    const bool coherent = cachesim::COHERENCE == cachesim::Coherence::MSI && cachesim::core_private.size() > 1 &&
-                          core_id < cachesim::core_private.size();
+    // Coherence state for this access.
+    const coh::Protocol* proto = cachesim::PROTOCOL.get();
+    const bool coherent = proto && cachesim::core_private.size() > 1 && core_id < cachesim::core_private.size();
     const uint64_t coh_line = align_address(address, CACHELINE_SIZE), coh_word = align_address(address, 8);
     std::vector<BaseCache*> holders;
+    std::vector<coh::Copy> copies;
     bool c2c = false, snooped = false, write_invalidated = false;
+    uint8_t requester_state = coh::INVALID;   // state of the line filled into the L1D on a miss
+    uint8_t dirty_fill_state = coh::INVALID;  // ... if dirty words come with it from the LLC / own copies (read miss)
+    bool clean_dirty_fill = false;            // ... or write those dirty words back as it fills
     Packet c2c_fill;
     // Check for hits
     for (int i = 0; i < num_levels; i++) {
@@ -928,53 +944,56 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             cachesim::llc_order.arrive(t);
         if (cachesim::DEBUG_TIMING)
             fmt::print("TIME {:#x} {} @{}\n", access_packet->address, cache[i]->get_name(), t);
-        // Missed every private level: the snoop filter (beside the LLC tags) finds other cores holding the line.
+        // Missed every private level: the directory (beside the LLC tags) finds the other cores' copies and the
+        // protocol decides what they do, where the data comes from, and the requester's state.
         if (coherent && i == num_levels - 1) {
-            line_holders(core_id, coh_line, holders);
-            if (!holders.empty()) {
+            line_copies(core_id, coh_line, coh_word, holders, copies);
+            const coh::Decision d = proto->decide(is_read ? coh::Event::READ_MISS : coh::Event::WRITE_MISS, copies,
+                                                  own_state(cache, num_levels, coh_line));
+            requester_state = d.requester_state;
+            dirty_fill_state = d.dirty_fill_state;
+            clean_dirty_fill = d.clean_dirty_fill;
+            if (d.request)
                 snooped = true;
-                BaseCache* src = nullptr;   // a holder of the demanded word supplies the data
-                for (BaseCache* h : holders)
-                    if (h->holds_word(coh_word)) { src = h; break; }
-                if (is_read) {
-                    // Read: M copies become S (their dirty data is written back); data from a holder if any.
-                    for (BaseCache* h : holders)
-                        if (!h->snoop_clean(coh_line).empty()) {
-                            ++cachesim::coh.downgrades;
-                            cachesim::pending_writebacks.push_back(coh_line);
-                        }
-                    if (src) {
-                        c2c_fill.set_address(address);
-                        src->snoop_copy(coh_word, c2c_fill);
-                        c2c_fill.dirty_addrs.clear();
-                        if (cachesim::SERVICED_FROM_C2C)   // the source copy counts this service too
-                            src->snoop_count_service(coh_word);
+            for (size_t h = 0; h < holders.size(); ++h) {
+                if (d.orders[h].act == coh::Act::DOWNGRADE) {
+                    // Dirty words are written back; the copy stays in its new state.
+                    if (!holders[h]->snoop_clean(coh_line).empty()) {
+                        ++cachesim::coh.downgrades;
+                        cachesim::pending_writebacks.push_back(coh_line);
+                    }
+                    holders[h]->snoop_set_state(coh_line, d.orders[h].new_state);
+                } else if (d.orders[h].act == coh::Act::INVALIDATE) {
+                    // The supplier hands its line (dirty words included) over; others' dirty data is written back.
+                    Packet inv = invalidate_copy(holders[h], coh_line);
+                    ++cachesim::coh.invalidated_copies;
+                    if ((int)h == d.supplier) {
+                        c2c_fill = inv;
                         c2c = true;
-                        ++cachesim::coh.c2c_reads;
+                    } else if (!inv.dirty_addrs.empty()) {
+                        cachesim::pending_writebacks.push_back(coh_line);
                     }
-                } else {
-                    // Write: every other copy is invalidated; the word's holder hands its data (dirty words
-                    // included) to the requester, which becomes M. Other dirty data is written back.
-                    for (BaseCache* h : holders) {
-                        Packet inv = invalidate_copy(h, coh_line);
-                        ++cachesim::coh.invalidated_copies;
-                        if (h == src) {
-                            c2c_fill = inv;
-                            c2c = true;
-                        } else if (!inv.dirty_addrs.empty()) {
-                            cachesim::pending_writebacks.push_back(coh_line);
-                        }
-                    }
-                    write_invalidated = true;
-                    if (c2c)
-                        ++cachesim::coh.c2c_writes;
                 }
-                if (c2c) {   // served on chip: the LLC is not looked up
-                    hit = true;
-                    hit_at_level = i;
-                    t += lookup_cycles(i);
-                    break;
-                }
+            }
+            if (d.supplier >= 0 && !c2c) {
+                // The supplier keeps its copy and sends a clean copy of it.
+                BaseCache* src = holders[d.supplier];
+                c2c_fill.set_address(address);
+                src->snoop_copy(coh_word, c2c_fill);
+                c2c_fill.dirty_addrs.clear();
+                if (cachesim::SERVICED_FROM_C2C)   // the source copy counts this service too
+                    src->snoop_count_service(coh_word);
+                c2c = true;
+            }
+            if (!is_read)
+                write_invalidated = !holders.empty();
+            if (c2c)
+                ++(is_read ? cachesim::coh.c2c_reads : cachesim::coh.c2c_writes);
+            if (c2c) {   // served on chip: the LLC is not looked up
+                hit = true;
+                hit_at_level = i;
+                t += lookup_cycles(i);
+                break;
             }
         }
         access_packet->size = cache[i]->get_block_size(cache[i]->get_set_idx(access_packet->address));
@@ -1024,6 +1043,7 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             if (cachesim::SERVICED_FROM_C2C)
                 fill_packet->serviced_from_llc += 1;
             fill_packet->next_reuse = access_packet->next_reuse;
+            fill_packet->coh_state = requester_state;
             cache[0]->handle_fill_blocks(fill_packet, eviction_packet);
         } else if (hit) {
             cache[hit_at_level]->handle_invalidate(invalidation_packet);
@@ -1032,6 +1052,12 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             // serviced_from_llc counts LLC round trips only, not L2 hits.
             if (cache[hit_at_level]->get_level() == CacheLevel::LLC)
                 fill_packet->serviced_from_llc += 1;
+            // An LLC hit fills in the state the protocol decided; an L2 hit keeps the L2 copy's state.
+            if (coherent && cache[hit_at_level]->get_level() == CacheLevel::LLC) {
+                if (is_read)
+                    hand_over_dirty(fill_packet, coh_line, requester_state, dirty_fill_state, clean_dirty_fill);
+                fill_packet->coh_state = requester_state;
+            }
             // The line's next use is this access's NextReuse, not the one
             // stored with it (which was this access).
             fill_packet->next_reuse = access_packet->next_reuse;
@@ -1087,6 +1113,11 @@ int access_multi_level(std::vector<BaseCache*> &cache,
             std::sort(line_dirty.begin(), line_dirty.end());
             line_dirty.erase(std::unique(line_dirty.begin(), line_dirty.end()), line_dirty.end());
             fill_packet->dirty_addrs = line_dirty;
+            if (coherent) {
+                if (is_read)
+                    hand_over_dirty(fill_packet, coh_line, requester_state, dirty_fill_state, clean_dirty_fill);
+                fill_packet->coh_state = requester_state;
+            }
 
             fill_packet->degree = access_packet->degree;
             fill_packet->avg_degree = access_packet->avg_degree;
@@ -1138,9 +1169,12 @@ int access_multi_level(std::vector<BaseCache*> &cache,
                     eviction_packet->clear();
                     cache[i]->handle_fill_blocks(fill_packet, eviction_packet);
                 } else if (eviction_packet->blocks.size() > 0 && coherent && eviction_packet->address != UINT64_MAX &&
-                           [&] { line_holders(core_id, align_address(eviction_packet->address, CACHELINE_SIZE), holders);
-                                 return !holders.empty(); }()) {
-                    // Other cores still hold this line: the evicted copy is dropped (see drop_shared_victim).
+                           [&] {
+                               const uint64_t vline = align_address(eviction_packet->address, CACHELINE_SIZE);
+                               line_copies(core_id, vline, vline, holders, copies);
+                               return proto->decide(coh::Event::EVICT, copies, eviction_packet->coh_state).drop_victim;
+                           }()) {
+                    // The protocol drops the evicted copy (other cores still hold the line; see drop_shared_victim).
                     drop_shared_victim(eviction_packet, holders, curr_cache_block_size);
                     break;
                 } else if (eviction_packet->blocks.size() > 0) {
@@ -1198,26 +1232,38 @@ int access_multi_level(std::vector<BaseCache*> &cache,
         }
     }
 
-    // A store that did not already invalidate the other copies (it hit privately, or no copy existed then):
-    // invalidate them now (upgrade S -> M). Another core cannot hold dirty data here under MSI.
+    // A store that did not already invalidate the other copies (it hit privately, or no copy existed then): the
+    // protocol decides the upgrade (e.g. S -> M invalidates the other copies).
     if (coherent && !is_read && !write_invalidated) {
-        line_holders(core_id, coh_line, holders);
-        for (BaseCache* h : holders) {
-            Packet inv = invalidate_copy(h, coh_line);
-            ++cachesim::coh.invalidated_copies;
-            if (!inv.dirty_addrs.empty()) {
-                ++cachesim::coh.violations;
-                cachesim::pending_writebacks.push_back(coh_line);
+        line_copies(core_id, coh_line, coh_word, holders, copies);
+        const coh::Decision d = proto->decide(coh::Event::STORE, copies, cache[0]->snoop_state(coh_line));
+        for (size_t h = 0; h < holders.size(); ++h) {
+            if (d.orders[h].act == coh::Act::INVALIDATE) {
+                Packet inv = invalidate_copy(holders[h], coh_line);
+                ++cachesim::coh.invalidated_copies;
+                if (!inv.dirty_addrs.empty()) {   // another core cannot hold dirty data when this one writes
+                    ++cachesim::coh.violations;
+                    cachesim::pending_writebacks.push_back(coh_line);
+                }
+            } else if (d.orders[h].act == coh::Act::DOWNGRADE) {
+                if (!holders[h]->snoop_clean(coh_line).empty())
+                    cachesim::pending_writebacks.push_back(coh_line);
+                holders[h]->snoop_set_state(coh_line, d.orders[h].new_state);
             }
         }
-        if (!holders.empty()) {
+        if (d.request) {
             ++cachesim::coh.upgrades;
             snooped = true;
         }
+        requester_state = d.requester_state;
     }
-    // A store dirties its word in the L1D (which holds the line now, after a hit or a fill).
-    if (!is_read)
+    // A store dirties its word in the L1D (which holds the line now, after a hit or a fill), whose copy takes the
+    // state the protocol gave the writer.
+    if (!is_read) {
         cache[0]->mark_dirty(align_address(address, 8));
+        if (coherent)
+            cache[0]->snoop_set_state(coh_line, requester_state);
+    }
 
     if (hit_at_level == num_levels && cachesim::all_caches.size() > cache.size()) {
         ++cachesim::memory_misses;

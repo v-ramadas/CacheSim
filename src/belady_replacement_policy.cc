@@ -1,5 +1,6 @@
 #include "belady_replacement_policy.h"
 #include "trace_file.h"
+#include "tracer.h"
 #include <fmt/core.h>
 #include <cstdio>
 
@@ -16,7 +17,7 @@ bool Belady::prescan(const std::string& trace_path) {
     uint64_t idx = 0;
     while (trace.getline(line)) {
         oracle.next_line.append(1, BeladyOracle::NONE);
-        if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx", &inst, &pc, action, &addr) == 4) {
+        if (parse_instructions_access(line, inst, pc, action, addr)) {
             uint64_t s = oracle.slot(addr >> 3, true);
             if (oracle.last[s] == BeladyOracle::NONE) {                            // first access
                 oracle.next_use[s] = (uint32_t)idx;

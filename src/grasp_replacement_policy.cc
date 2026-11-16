@@ -1,5 +1,6 @@
 #include "grasp_replacement_policy.h"
 #include "trace_file.h"
+#include "tracer.h"
 #include <fmt/core.h>
 #include <unordered_map>
 
@@ -18,13 +19,12 @@ void GRASP::compute_thresholds() {
     uint64_t shift = (uint64_t)log2(cachesim::BLOCK_SIZE);
     std::unordered_map<uint64_t, uint64_t> block_degree;
     std::string line;
-    char action[16];
-    uint64_t inst, pc, address, next_reuse, degree;
-    float avg_degree;
     while (trace.getline(line)) {
-        if (std::sscanf(line.c_str(), "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx,NextReuse:%lu,NodeDegree:%lu,PCAvgDegree:%f",
-                        &inst, &pc, action, &address, &next_reuse, &degree, &avg_degree) != 7)
+        InstructionsLine l;
+        if (parse_instructions_line(line, l) != 7)
             continue;
+        const uint64_t address = l.address, degree = l.degree;
+        const float avg_degree = l.avg_degree;
         // Skip unlabelled accesses and the tracer's scalar labels, whose
         // degree equals the PC average (about the node count).
         if (degree == 0 || (float)degree == avg_degree)

@@ -22,19 +22,11 @@
 // notion of time is still the global cycle counter.
 
 #include "cachesim.h"
-#include "trace_file.h"
-#include "tracereader.h"
+#include "tracer.h"
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
-
-enum class TraceFormat {
-    CHAMPSIM,
-    ADDRESSES,
-    INSTRUCTIONS,
-};
 
 class Core {
   public:
@@ -80,12 +72,10 @@ class Core {
     enum class Read { RECORD, END_OF_PASS };
 
     bool open_pass();
-    Read step_addresses();
-    Read step_instructions();
-    Read step_champsim();
+    Read step_record();                          // read one record from the trace (tracer.cc) and apply it
     void retire(uint64_t n);                     // count n instructions on this core and in the global total
-    bool debug_stop();
-    bool barrier_line(const std::string& line);  // "BARRIER[:n]": enter the barrier   // END_DEBUG reached (text traces); also raises cachesim::DEBUG at START_DEBUG
+    bool debug_stop();                           // END_DEBUG reached (text traces); also raises cachesim::DEBUG at START_DEBUG
+    void enter_barrier(bool has_id, uint64_t id);  // "BARRIER[:n]": enter the barrier (no id: the next one)
     void issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reuse, uint64_t degree, float avg_degree);
 
     uint32_t id_;
@@ -103,8 +93,8 @@ class Core {
     uint64_t barrier_wait_cycles_ = 0;
     bool pass_open_ = false;
     uint64_t line_idx_ = 0;                          // NextReuse indexes lines within one pass
-    std::unique_ptr<TraceFile> text_;                // addresses / instructions formats
-    std::optional<champsim::tracereader> champsim_;  // champsim format
+    std::unique_ptr<TraceReader> reader_;            // this pass's reader (tracer.cc)
+    TraceRecord record_;
 
     uint64_t step_global_start_ = 0;                 // PerformanceModel cycles when this step began
     uint64_t timing_mismatches_ = 0;                 // accesses whose completion time != the core's clock
@@ -144,8 +134,13 @@ struct ScheduleStats {
 //   cross_core      a word in the private levels of two cores: only possible for cores of one application, and
 //                   expected until coherence is modeled (no coherence: each core keeps its own copy)
 // Counts are words; the run reports the largest count seen in any check. Skipped for Amoeba sets.
+//   coherence (with a protocol, several cores; counts are lines): coh_no_state = a held private line without a
+//   state; coh_exclusive_shared = an exclusive copy (e.g. M) while another core holds the line; coh_dirty_shared =
+//   a copy with dirty words while another core holds the line (forbidden unless the protocol shares dirty data);
+//   coh_dirty_state = dirty words in a state that may not be dirty (ownership hand-over keeps dirty data owned)
 struct InvariantCounts {
     uint64_t dup_in_cache = 0, private_and_llc = 0, l1_and_l2 = 0, cross_core = 0;
+    uint64_t coh_no_state = 0, coh_dirty_shared = 0, coh_exclusive_shared = 0, coh_dirty_state = 0;
 };
 struct InvariantStats {
     uint64_t checks = 0;

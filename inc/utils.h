@@ -221,6 +221,9 @@ struct Packet {
     // all-ones only with --l1-amoeba, whose L1D keeps and evicts partial lines.
     uint8_t present_mask = 0xff;
     bool from_ghost_cache = false;
+    // Coherence state of the line this packet carries (coherence.h; 0 = invalid / not tracked): set by the private
+    // level it leaves, applied by the private level it fills.
+    uint8_t coh_state = 0;
 
     Packet() {
         clear_pc();
@@ -259,6 +262,7 @@ struct Packet {
         block_prev_counter.clear();
         present_mask = 0xff;
         from_ghost_cache = false;
+        coh_state = 0;
     }
 
     void clear_pc() {
@@ -320,6 +324,7 @@ struct Packet {
         block_prev_counter = packet.block_prev_counter;
         present_mask = packet.present_mask;
         from_ghost_cache = packet.from_ghost_cache;
+        coh_state = packet.coh_state;
 
         return *this;
     }

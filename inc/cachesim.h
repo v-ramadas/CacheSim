@@ -1,3 +1,4 @@
+#include "coherence.h"
 #include <unordered_set>
 #ifndef __CACHESIM_H__
 #define __CACHESIM_H__
@@ -126,8 +127,6 @@ class Set {
         pc.resize(num_ways, UINT64_MAX);
         distance_counts.resize(num_ways, 0);
         footprint.resize(num_ways*block_size/8, false);
-        eff_fill.resize(num_ways, 0);
-        eff_last_use.resize(num_ways*block_size/8, UINT64_MAX);
         next_reuse.resize(num_ways, 0);
         way_hits.resize(num_ways, 0);
         degree.resize(num_ways, 0);
@@ -180,26 +179,6 @@ class Set {
     inline static uint64_t line_used_hist[9] = {};
     void record_line_used(uint64_t way_idx);
     void record_line_used_residents();
-    // Cache efficiency (Burger, Goodman and Kagi), per 8B word, last level
-    // only: a word is live from its fill until its last use in that stay and
-    // dead from then until it leaves (all of its stay if never used). A use
-    // is the demanded word of a single-level fill or a hit on the word - in
-    // the exclusive multi-level LLC only the word an LLC hit asks for, not
-    // the rest of the line that moves up with it. Stays still open at the
-    // end of the run close then. Time is instructions.
-    std::vector<uint64_t> eff_fill;       // per way: instCount at fill
-    std::vector<uint64_t> eff_last_use;   // per word: last use, UINT64_MAX = none
-    inline static uint64_t eff_live = 0, eff_dead_after_use = 0, eff_dead_unused = 0;
-    bool eff_tracked() const {
-#ifdef MULTI_LEVEL
-        return level == CacheLevel::LLC;
-#else
-        return true;
-#endif
-    }
-    void eff_use(uint64_t way_idx, uint64_t word_idx);
-    void eff_close(uint64_t way_idx);
-    void eff_close_residents();
     // Reuse by degree (LLC only): one record per block when its lifetime ends
     // (evicted, dropped at fill, or resident at end of run). Reuse = times it
     // was serviced from the LLC. Degree rows are power-of-two buckets
@@ -427,6 +406,7 @@ class SectoredSet: public Set {
         way_hits.resize(num_ways, 0);
         degree.resize(num_ways, 0);
         avg_degree.resize(num_ways, 0.0f);
+        coh_state.resize(num_ways, 0);
 
     }
 
@@ -458,6 +438,15 @@ class SectoredSet: public Set {
     bool count_service(uint64_t word);
     int64_t word_count(uint64_t word);
     void raise_count(uint64_t word, uint64_t count);
+    // Coherence state of a line (coherence.h; 0 = invalid or not held); every line held, for invariant checks.
+    uint8_t line_state(uint64_t line) const;
+    bool line_dirty(uint64_t line) const;
+    void set_line_state(uint64_t line, uint8_t state);
+    struct LineInfo { uint64_t line; uint8_t state; bool dirty; };
+    void collect_lines(std::vector<LineInfo>& out) const;
+  protected:
+    std::vector<uint8_t> coh_state;    // per way
+  public:
     // Every 8B word this set holds: the valid sectors of each valid line.
     void collect_words(std::vector<uint64_t>& out) const {
         for (size_t i = 0; i < ways.size(); ++i)
@@ -535,6 +524,12 @@ class BaseCache {
     virtual bool snoop_copy(uint64_t word, Packet& out) = 0;
     virtual std::vector<uint64_t> snoop_clean(uint64_t line) = 0;
     virtual bool snoop_count_service(uint64_t word) = 0;
+    // Coherence state of the private copy of `line` (0 = not held / not tracked) and setting it.
+    virtual uint8_t snoop_state(uint64_t line) const = 0;
+    virtual void snoop_set_state(uint64_t line, uint8_t state) = 0;
+    virtual bool snoop_dirty(uint64_t line) const = 0;   // the private copy of `line` holds dirty words
+    // Lines this cache holds with their coherence state and whether any word is dirty (invariant checks).
+    virtual void collect_lines(std::vector<SectoredSet::LineInfo>& out) const = 0;
     virtual int64_t snoop_word_count(uint64_t word) = 0;               // -1: word not held
     virtual void snoop_raise_count(uint64_t word, uint64_t count) = 0;
 
@@ -764,6 +759,25 @@ class Cache: public BaseCache {
         if constexpr (std::is_same_v<T, SectoredSet>)
             sets.at(get_set_idx(word))->raise_count(word, count);
     }
+    uint8_t snoop_state(uint64_t line) const {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(line))->line_state(line);
+        return 0;
+    }
+    bool snoop_dirty(uint64_t line) const {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            return sets.at(get_set_idx(line))->line_dirty(line);
+        return false;
+    }
+    void snoop_set_state(uint64_t line, uint8_t state) {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            sets.at(get_set_idx(line))->set_line_state(line, state);
+    }
+    void collect_lines(std::vector<SectoredSet::LineInfo>& out) const {
+        if constexpr (std::is_same_v<T, SectoredSet>)
+            for (const auto& entry : sets)
+                entry.second->collect_lines(out);
+    }
     bool snoop_count_service(uint64_t word) {
         if constexpr (std::is_same_v<T, SectoredSet>)
             return sets.at(get_set_idx(word))->count_service(word);
@@ -791,8 +805,8 @@ namespace cachesim { inline std::vector<BaseCache*> all_caches; }
 // beside the exclusive LLC (it knows exactly which cores hold a line; sizing it is still to do). See
 // access_multi_level. core_private[c] = core c's private levels, top first.
 namespace cachesim {
-    enum class Coherence { NONE, MSI };
-    inline Coherence COHERENCE = Coherence::MSI;
+    inline coh::Kind COHERENCE = coh::Kind::MESI;             // --coherence (default MESI)
+    inline std::unique_ptr<coh::Protocol> PROTOCOL;            // made from COHERENCE in main (null = none)
     inline uint64_t SNOOP_CYCLES = 0;          // remote private-cache access; 0 = l1d_latency
     // --serviced-from-c2c: a cache-to-cache transfer adds 1 to the serviced_from_llc counts (demanded word and
     // line) in the new copy and in the source copy, as an LLC hit does in the copy it fills. Off: no increment.
@@ -805,6 +819,8 @@ namespace cachesim {
         uint64_t invalidated_copies = 0;            // copies invalidated by stores (hits and misses)
         uint64_t shared_victims_dropped = 0;        // evicted copies dropped because other cores still hold the line
         uint64_t violations = 0;                    // dirty data found where MSI forbids it (written back)
+        uint64_t dirty_fills_owned = 0;             // read fills with dirty words: the reader became the owner
+        uint64_t dirty_fills_cleaned = 0;           // ... written back as the line filled (others hold it)
         // Diagnostics of dropped copies (8B words):
         uint64_t drop_words = 0;                    // valid words in dropped copies
         uint64_t drop_orphan_words = 0;             //   of which no other core held (data lost from chip)

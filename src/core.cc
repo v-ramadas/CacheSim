@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <algorithm>
+#include <unordered_map>
 #include <iostream>
 
 Core::Core(uint32_t id, std::string trace, TraceFormat format, std::vector<BaseCache*> caches,
@@ -46,16 +47,12 @@ bool Core::step() {
             finished_ = true;
             return false;
         }
-        Read r = format_ == TraceFormat::ADDRESSES    ? step_addresses()
-               : format_ == TraceFormat::INSTRUCTIONS ? step_instructions()
-                                                      : step_champsim();
-        if (r == Read::RECORD)
+        if (step_record() == Read::RECORD)
             return true;
         // End of one pass over the trace (or the debug window ended it): the next
         // iteration reopens the trace from the start.
         pass_open_ = false;
-        text_.reset();
-        champsim_.reset();
+        reader_.reset();
         --iters_left_;
     }
     if (!finished_ && debug_schedule)
@@ -67,15 +64,11 @@ bool Core::step() {
 bool Core::open_pass() {
     line_idx_ = 0;
     pass_base_ = instructions_;   // a later pass continues the count
-    if (format_ == TraceFormat::CHAMPSIM) {
-        champsim_.emplace(get_tracereader(trace_, static_cast<uint8_t>(id_), false, false));
-    } else {
-        text_ = std::make_unique<TraceFile>(trace_);
-        if (!text_->is_open()) {
-            std::cerr << "Error: Could not open the file!" << std::endl;
-            text_.reset();
-            return false;
-        }
+    reader_ = open_trace(format_, trace_, id_);
+    if (!reader_ || !reader_->ok()) {
+        std::cerr << "Error: Could not open the file!" << std::endl;
+        reader_.reset();
+        return false;
     }
     pass_open_ = true;
     return true;
@@ -91,15 +84,11 @@ bool Core::debug_stop() {
     return false;
 }
 
-bool Core::barrier_line(const std::string& line) {
-    if (line.rfind("BARRIER", 0) != 0)
-        return false;
-    unsigned long long id = 0;
-    barrier_id_ = std::sscanf(line.c_str(), "BARRIER:%llu", &id) == 1 ? id : barriers_ + 1;
+void Core::enter_barrier(bool has_id, uint64_t id) {
+    barrier_id_ = has_id ? id : barriers_ + 1;
     at_barrier_ = true;
     if (debug_schedule)
         fmt::print("SCHED arrive core {} barrier {} clock {}\n", id_, barrier_id_, cycles_);
-    return true;
 }
 
 uint64_t Core::clock_now() const {
@@ -140,91 +129,56 @@ void Core::issue(uint64_t address, uint64_t pc, bool is_read, uint64_t next_reus
         ++misses_[i];
 }
 
-// "PC:<pc> <read|write>:0x<addr> [next_reuse degree avg_degree]"; every line is one instruction.
-Core::Read Core::step_addresses() {
-    std::string line;
-    if (!text_->getline(line))
+// One trace record (tracer.cc parses it): a text line (one access, or a barrier) or one ChampSim instruction.
+Core::Read Core::step_record() {
+    // ChampSim traces end the debug window by instruction count (text traces: debug_stop below).
+    if (format_ == TraceFormat::CHAMPSIM &&
+        (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) &&
+        cachesim::instCount > 5000000)
         return Read::END_OF_PASS;
-    cachesim::TRACE_LINE = line_idx_++;
-    if (debug_stop())
+    TraceRecord& r = record_;
+    if (!reader_->next(r))
         return Read::END_OF_PASS;
-    if (barrier_line(line))
-        return Read::RECORD;
-    uint64_t pc = 0, address = 0, next_reuse = UINT64_MAX, degree = 0;
-    float avg_degree = 0.0f;
-    char action[16];
-    int parsed = std::sscanf(line.c_str(), "PC:%lu %15[^:]:0x%lx %lu %lu %f", &pc, action, &address, &next_reuse,
-                             &degree, &avg_degree);
-    if (parsed >= 3) {
-        try {
-            retire(1);
-            if (next_reuse != UINT64_MAX)
-                next_reuse += cachesim::instCount;
-            issue(address, pc, strcmp(action, "read") == 0, next_reuse, degree, avg_degree);
-        } catch (const std::exception& e) {
-            std::cerr << "Conversion error on line: " << line << " -> " << e.what() << std::endl;
-        }
+    if (r.text_line) {
+        cachesim::TRACE_LINE = line_idx_++;
+        if (debug_stop())
+            return Read::END_OF_PASS;
     }
-    return Read::RECORD;
-}
-
-// "instCount:N,PC:0x..,Read|Write:0x..,NextReuse:..,NodeDegree:..,PCAvgDegree:.." (GAP Pin traces).
-Core::Read Core::step_instructions() {
-    std::string line;
-    if (!text_->getline(line))
-        return Read::END_OF_PASS;
-    cachesim::TRACE_LINE = line_idx_++;
-    if (debug_stop())
-        return Read::END_OF_PASS;
-    if (barrier_line(line))
+    if (r.barrier) {
+        enter_barrier(r.barrier_has_id, r.barrier_id);
         return Read::RECORD;
-    uint64_t pc = 0, address = 0, next_reuse = UINT64_MAX, degree = 0, trace_count = 0;
-    float avg_degree = 0.0f;
-    char action[16];
-    int parsed = std::sscanf(line.c_str(),
-                             "instCount:%lu,PC:0x%lx,%15[^:]:0x%lx,NextReuse:%lu,NodeDegree:%lu,PCAvgDegree:%f",
-                             &trace_count, &pc, action, &address, &next_reuse, &degree, &avg_degree);
-    if (parsed >= 1) {
+    }
+    if (r.count == TraceRecord::Count::ADD) {
+        retire(r.instructions);
+    } else if (r.count == TraceRecord::Count::AT) {
         // The trace carries the program's instruction count, which only increases. A smaller value is a
         // corrupted line: the program's or tracer's own output was written into the middle of a record
         // ("instCount:19999998 Another 100 million instructions gone by..." for 199999987), so such a line
         // carries no valid access. Keep the largest count seen: this core = earlier passes + that value.
-        uint64_t now = pass_base_ + trace_count;
+        uint64_t now = pass_base_ + r.instructions;
         if (now > instructions_)
             retire(now - instructions_);
     }
-    if (parsed >= 3) {
+    if (r.reset_packets) {
+        access_packet_.clear();
+        eviction_packet_.clear();
+        fill_packet_.clear();
+        invalidation_packet_.clear();
+    }
+    for (auto& a : r.accesses) {
         try {
-            bool is_read = strcmp(action, "Read") == 0;
-            if (POPT::active) POPT::on_access(pc, address, is_read);   // gathers advance P-OPT's currDstID
-            if (Belady::oracle_active) Belady::on_access(address);      // next-use oracle
-            issue(address, pc, is_read, next_reuse, degree, avg_degree);
+            uint64_t next_reuse = a.next_reuse;
+            if (r.next_reuse_from_now && next_reuse != UINT64_MAX)
+                next_reuse += cachesim::instCount;
+            if (r.oracle_hooks) {
+                if (POPT::active) POPT::on_access(a.pc, a.address, a.is_read);   // gathers advance P-OPT's currDstID
+                if (Belady::oracle_active) Belady::on_access(a.address);        // next-use oracle
+            }
+            issue(a.address, a.pc, a.is_read, next_reuse, a.degree, a.avg_degree);
         } catch (const std::exception& e) {
-            std::cerr << "Conversion error on line: " << line << " -> " << e.what() << std::endl;
+            std::cerr << "Conversion error on line: " << r.line << " -> " << e.what() << std::endl;
         }
     }
-    return Read::RECORD;
-}
-
-// One ChampSim instruction: its loads, then its stores.
-Core::Read Core::step_champsim() {
-    if (champsim_->eof())
-        return Read::END_OF_PASS;
-    if (cachesim::DEBUG || cachesim::L1_DEBUG || cachesim::LLC_DEBUG || cachesim::REPLACEMENT_POLICY_DEBUG) {
-        if (cachesim::instCount > 5000000)
-            return Read::END_OF_PASS;
-    }
-    retire(1);
-    auto inst = (*champsim_)();
-    access_packet_.clear();
-    eviction_packet_.clear();
-    fill_packet_.clear();
-    invalidation_packet_.clear();
-    uint64_t pc = inst.ip.to<uint64_t>();
-    for (auto& smem : inst.source_memory)
-        issue(smem.to<uint64_t>(), pc, true, 0, 0, 0.0f);
-    for (auto& dmem : inst.destination_memory)
-        issue(dmem.to<uint64_t>(), pc, false, 0, 0, 0.0f);
     return Read::RECORD;
 }
 
@@ -304,6 +258,61 @@ InvariantCounts check_invariants(const std::vector<Core>& cores, uint64_t step, 
             ++r.cross_core;
         i = j;
     }
+    // Coherence (multicore with a protocol): every held private line has a state; an exclusive copy (e.g. M) only
+    // while no other core holds the line; dirty data only while no other core holds the line, unless the protocol
+    // shares dirty data (an O state).
+    if (const coh::Protocol* proto = cachesim::PROTOCOL.get(); proto && cores.size() > 1) {
+        static bool reported_state = false, reported_dirty = false, reported_exclusive = false, reported_dirty_state = false;
+        struct H { uint32_t core; uint8_t state; bool dirty; };
+        std::unordered_map<uint64_t, std::vector<H>> line_holders;
+        std::vector<SectoredSet::LineInfo> lines;
+        for (const Core& core : cores)
+            for (size_t l = 0; l + 1 < core.caches().size(); ++l) {
+                lines.clear();
+                core.caches()[l]->collect_lines(lines);
+                for (const auto& li : lines) {
+                    line_holders[li.line].push_back({core.id(), li.state, li.dirty});
+                    if (li.dirty && li.state != coh::INVALID && !proto->may_be_dirty(li.state)) {
+                        ++r.coh_dirty_state;
+                        if (report_first && !reported_dirty_state) {
+                            reported_dirty_state = true;
+                            fmt::print("INVARIANT step {}: line {:#x} dirty in state {} at core {} {}\n", step, li.line,
+                                       proto->state_name(li.state), core.id(), core.caches()[l]->get_name());
+                        }
+                    }
+                    if (li.state == coh::INVALID) {
+                        ++r.coh_no_state;
+                        if (report_first && !reported_state) {
+                            reported_state = true;
+                            fmt::print("INVARIANT step {}: line {:#x} held by core {} {} without a coherence state\n",
+                                       step, li.line, core.id(), core.caches()[l]->get_name());
+                        }
+                    }
+                }
+            }
+        for (const auto& [line, hs] : line_holders)
+            for (const H& h : hs) {
+                const bool shared = std::any_of(hs.begin(), hs.end(), [&](const H& o) { return o.core != h.core; });
+                if (!shared)
+                    continue;
+                if (proto->exclusive(h.state)) {
+                    ++r.coh_exclusive_shared;
+                    if (report_first && !reported_exclusive) {
+                        reported_exclusive = true;
+                        fmt::print("INVARIANT step {}: line {:#x} in state {} at core {} while another core holds it\n",
+                                   step, line, proto->state_name(h.state), h.core);
+                    }
+                }
+                if (h.dirty && !proto->shares_dirty()) {
+                    ++r.coh_dirty_shared;
+                    if (report_first && !reported_dirty) {
+                        reported_dirty = true;
+                        fmt::print("INVARIANT step {}: line {:#x} dirty (state {}) at core {} while another core holds it\n",
+                                   step, line, proto->state_name(h.state), h.core);
+                    }
+                }
+            }
+    }
     return r;
 }
 
@@ -318,6 +327,10 @@ ScheduleStats run_cores(std::vector<Core>& cores, uint64_t check_every, Invarian
         inv->max.private_and_llc = std::max(inv->max.private_and_llc, c.private_and_llc);
         inv->max.l1_and_l2 = std::max(inv->max.l1_and_l2, c.l1_and_l2);
         inv->max.cross_core = std::max(inv->max.cross_core, c.cross_core);
+        inv->max.coh_no_state = std::max(inv->max.coh_no_state, c.coh_no_state);
+        inv->max.coh_dirty_shared = std::max(inv->max.coh_dirty_shared, c.coh_dirty_shared);
+        inv->max.coh_dirty_state = std::max(inv->max.coh_dirty_state, c.coh_dirty_state);
+        inv->max.coh_exclusive_shared = std::max(inv->max.coh_exclusive_shared, c.coh_exclusive_shared);
     };
     const size_t n = cores.size();
     size_t cur = n;
